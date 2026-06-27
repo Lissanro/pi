@@ -3093,6 +3093,12 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/continue") {
+				// Continue the current session by sending the LLM the existing messages
+				this.editor.setText("");
+				await this.handleContinueCommand();
+				return;
+			}
 			if (text === "/quit") {
 				this.editor.setText("");
 				await this.shutdown();
@@ -5169,6 +5175,30 @@ export class InteractiveMode {
 			this.showStatus("Cloned to new session");
 		} catch (error: unknown) {
 			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	/**
+	 * Continue the session by sending the LLM the existing messages.
+	 * The LLM continues from the last user/tool-result message.
+	 */
+	private async handleContinueCommand(): Promise<void> {
+		if (this.session.isStreaming) {
+			this.showStatus("Cannot continue while streaming is in progress");
+			return;
+		}
+
+		try {
+			await this.session.agent.continue();
+		} catch (error: unknown) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			if (errorMessage.includes("No messages to continue from")) {
+				this.showStatus("No messages to continue from");
+			} else if (errorMessage.includes("Cannot continue from message role: assistant")) {
+				this.showStatus("Last message is from assistant. Send a message first or use /new to start fresh.");
+			} else {
+				this.showError(errorMessage);
+			}
 		}
 	}
 
