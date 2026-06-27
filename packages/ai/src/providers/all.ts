@@ -67,6 +67,10 @@ export function getBuiltinModel<TProvider extends BuiltinProvider, TModelId exte
 }
 
 export function getBuiltinProviders(): BuiltinProvider[] {
+	// Local-only mode: skip all cloud API providers
+	if (process.env.PI_DISABLE_CLOUD_PROVIDERS === "1") {
+		return [];
+	}
 	return Object.keys(MODELS) as BuiltinProvider[];
 }
 
@@ -85,8 +89,13 @@ export function getBuiltinModels<TProvider extends BuiltinProvider>(
 		: [];
 }
 
-/** All built-in providers, freshly constructed. */
+/** All built-in providers, freshly constructed.
+ * Set PI_DISABLE_CLOUD_PROVIDERS=1 to return empty array (local-only mode). */
 export function builtinProviders(): Provider[] {
+	// Local-only mode: skip all cloud API providers
+	if (process.env.PI_DISABLE_CLOUD_PROVIDERS === "1") {
+		return [];
+	}
 	return [
 		amazonBedrockProvider(),
 		antLingProvider(),
