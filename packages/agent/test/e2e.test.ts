@@ -412,4 +412,103 @@ describe("Agent.continue() with faux provider", () => {
 			expect(getTextContent(lastMessage)).toContain("8");
 		});
 	});
+
+	describe("continue strips harness notifications", () => {
+		it("removes a trailing abort notification and continues from the last user message", async () => {
+			const faux = createFauxRegistration();
+			faux.setResponses([fauxAssistantMessage("HELLO WORLD")]);
+			const model = faux.getModel();
+			const agent = new Agent({
+				initialState: {
+					systemPrompt: "You are a helpful assistant. Follow instructions exactly.",
+					model,
+					thinkingLevel: "off",
+					tools: [],
+				},
+			});
+
+			const userMessage: UserMessage = {
+				role: "user",
+				content: [{ type: "text", text: "Say exactly: HELLO WORLD" }],
+				timestamp: Date.now(),
+			};
+			const aborted: AssistantMessage = {
+				role: "assistant",
+				content: [],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "aborted",
+				errorMessage: "Operation aborted",
+				timestamp: Date.now(),
+			};
+			agent.state.messages = [userMessage, aborted];
+
+			await agent.continue();
+
+			expect(agent.state.isStreaming).toBe(false);
+			// The abort notification was stripped, then the assistant response was appended
+			expect(agent.state.messages.length).toBe(2);
+			expect(agent.state.messages[0].role).toBe("user");
+			expect(agent.state.messages[1].role).toBe("assistant");
+			const assistantMsg = agent.state.messages[1];
+			if (assistantMsg.role !== "assistant") throw new Error("Expected assistant message");
+			expect(getTextContent(assistantMsg).toUpperCase()).toContain("HELLO WORLD");
+		});
+
+		it("removes a trailing empty-text abort notification and continues from the last user message", async () => {
+			const faux = createFauxRegistration();
+			faux.setResponses([fauxAssistantMessage("HELLO WORLD")]);
+			const model = faux.getModel();
+			const agent = new Agent({
+				initialState: {
+					systemPrompt: "You are a helpful assistant. Follow instructions exactly.",
+					model,
+					thinkingLevel: "off",
+					tools: [],
+				},
+			});
+
+			const userMessage: UserMessage = {
+				role: "user",
+				content: [{ type: "text", text: "Say exactly: HELLO WORLD" }],
+				timestamp: Date.now(),
+			};
+			// Harness notification with an empty text block (as produced by agent.ts failure path)
+			const aborted: AssistantMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: "" }],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "aborted",
+				errorMessage: "Operation aborted",
+				timestamp: Date.now(),
+			};
+			agent.state.messages = [userMessage, aborted];
+
+			await agent.continue();
+
+			expect(agent.state.isStreaming).toBe(false);
+			expect(agent.state.messages.length).toBe(2);
+			expect(agent.state.messages[0].role).toBe("user");
+			expect(agent.state.messages[1].role).toBe("assistant");
+		});
+	});
 });

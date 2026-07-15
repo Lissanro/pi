@@ -7,7 +7,7 @@ import type {
 	ThinkingBudgets,
 	Transport,
 } from "@earendil-works/pi-ai";
-import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
+import { runAgentLoop, runAgentLoopContinue, stripTrailingHarnessNotifications } from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AfterToolCallContext,
@@ -361,6 +361,14 @@ export class Agent {
 	async continue(): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
+		}
+
+		// Strip trailing harness notifications (aborts/errors with no real content).
+		// Continuing dismisses these notifications; they must not block continuation
+		// or be re-sent to the model.
+		const stripped = stripTrailingHarnessNotifications(this._state.messages);
+		if (stripped.length !== this._state.messages.length) {
+			this._state.messages = stripped;
 		}
 
 		const lastMessage = this._state.messages[this._state.messages.length - 1];
