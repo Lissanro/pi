@@ -3099,6 +3099,13 @@ export class InteractiveMode {
 				await this.handleContinueCommand();
 				return;
 			}
+			if (text === "/delete" || text.startsWith("/delete ")) {
+				const arg = text.startsWith("/delete ") ? text.slice(7).trim() : "";
+				const count = arg === "" ? 1 : Number.parseInt(arg, 10);
+				this.editor.setText("");
+				await this.handleDeleteCommand(count);
+				return;
+			}
 			if (text === "/quit") {
 				this.editor.setText("");
 				await this.shutdown();
@@ -5200,6 +5207,31 @@ export class InteractiveMode {
 				this.showError(errorMessage);
 			}
 		}
+	}
+
+	/**
+	 * Delete the last N messages from the session. Harness messages (aborts/errors
+	 * with no real content) are skipped when counting and removed if they trail
+	 * the deletion point.
+	 */
+	private async handleDeleteCommand(count: number): Promise<void> {
+		if (this.session.isStreaming) {
+			this.showStatus("Cannot delete while streaming is in progress");
+			return;
+		}
+		if (!Number.isInteger(count) || count < 1) {
+			this.showStatus("Usage: /delete [count]");
+			return;
+		}
+		const removed = this.session.deleteLastMessages(count);
+		if (removed === 0) {
+			this.showStatus("No messages to delete");
+			return;
+		}
+		this.chatContainer.clear();
+		this.renderInitialMessages();
+		this.showStatus(`Deleted ${removed} message${removed === 1 ? "" : "s"}`);
+		void this.flushCompactionQueue({ willRetry: false });
 	}
 
 	private showTreeSelector(initialSelectedId?: string): void {

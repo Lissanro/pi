@@ -25,13 +25,13 @@ import type {
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
 
 /**
- * A harness notification is an assistant message with no meaningful content:
+ * A harness message is an assistant message with no meaningful content:
  * no non-empty thinking, no non-empty text, and no tool calls. The harness
  * emits these for aborts, errors, and timeouts (e.g. `stopReason: "aborted"`
  * with empty content). They are user-facing notifications, not real assistant
  * turns, so they must not block continuation or be re-sent to the model.
  */
-export function isHarnessNotification(message: AgentMessage): boolean {
+export function isHarnessMessage(message: AgentMessage): boolean {
 	if (message.role !== "assistant") {
 		return false;
 	}
@@ -44,12 +44,12 @@ export function isHarnessNotification(message: AgentMessage): boolean {
 }
 
 /**
- * Remove trailing harness notification messages. Continuing dismisses these
- * notifications; they should not be re-sent to the model or block continuation.
+ * Remove trailing harness messages. Continuing dismisses these notifications;
+ * they should not be re-sent to the model or block continuation.
  */
-export function stripTrailingHarnessNotifications(messages: AgentMessage[]): AgentMessage[] {
+export function stripTrailingHarnessMessages(messages: AgentMessage[]): AgentMessage[] {
 	let end = messages.length;
-	while (end > 0 && isHarnessNotification(messages[end - 1])) {
+	while (end > 0 && isHarnessMessage(messages[end - 1])) {
 		end--;
 	}
 	return end < messages.length ? messages.slice(0, end) : messages;
@@ -98,7 +98,7 @@ export function agentLoopContinue(
 	signal: AbortSignal | undefined,
 	streamFn: StreamFn,
 ): EventStream<AgentEvent, AgentMessage[]> {
-	const effectiveMessages = stripTrailingHarnessNotifications(context.messages);
+	const effectiveMessages = stripTrailingHarnessMessages(context.messages);
 	if (effectiveMessages.length === 0) {
 		throw new Error("Cannot continue: no messages in context");
 	}
@@ -159,7 +159,7 @@ export async function runAgentLoopContinue(
 	signal: AbortSignal | undefined,
 	streamFn: StreamFn,
 ): Promise<AgentMessage[]> {
-	const effectiveMessages = stripTrailingHarnessNotifications(context.messages);
+	const effectiveMessages = stripTrailingHarnessMessages(context.messages);
 	if (effectiveMessages.length === 0) {
 		throw new Error("Cannot continue: no messages in context");
 	}

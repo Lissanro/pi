@@ -11,8 +11,8 @@ import { describe, expect, it } from "vitest";
 import {
 	agentLoop,
 	agentLoopContinue,
-	isHarnessNotification,
-	stripTrailingHarnessNotifications,
+	isHarnessMessage,
+	stripTrailingHarnessMessages,
 } from "../src/agent-loop.ts";
 import { setDefaultStreamFn } from "../src/index.ts";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.ts";
@@ -1611,56 +1611,56 @@ describe("agentLoopContinue with AgentMessage", () => {
 	});
 });
 
-describe("harness notification handling", () => {
-	it("isHarnessNotification detects empty assistant messages", () => {
-		expect(isHarnessNotification(createAssistantMessage([]))).toBe(true);
-		expect(isHarnessNotification(createAssistantMessage([{ type: "text", text: "" }]))).toBe(true);
-		expect(isHarnessNotification({ ...createAssistantMessage([]), stopReason: "aborted" })).toBe(true);
+describe("harness message handling", () => {
+	it("isHarnessMessage detects empty assistant messages", () => {
+		expect(isHarnessMessage(createAssistantMessage([]))).toBe(true);
+		expect(isHarnessMessage(createAssistantMessage([{ type: "text", text: "" }]))).toBe(true);
+		expect(isHarnessMessage({ ...createAssistantMessage([]), stopReason: "aborted" })).toBe(true);
 	});
 
-	it("isHarnessNotification returns false for real assistant messages", () => {
-		expect(isHarnessNotification(createAssistantMessage([{ type: "text", text: "Hello" }]))).toBe(false);
-		expect(isHarnessNotification(createAssistantMessage([{ type: "thinking", thinking: "reasoning" }]))).toBe(false);
+	it("isHarnessMessage returns false for real assistant messages", () => {
+		expect(isHarnessMessage(createAssistantMessage([{ type: "text", text: "Hello" }]))).toBe(false);
+		expect(isHarnessMessage(createAssistantMessage([{ type: "thinking", thinking: "reasoning" }]))).toBe(false);
 		expect(
-			isHarnessNotification(
+			isHarnessMessage(
 				createAssistantMessage([{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } }]),
 			),
 		).toBe(false);
 	});
 
-	it("isHarnessNotification returns false for non-assistant messages", () => {
-		expect(isHarnessNotification(createUserMessage("Hello") as AgentMessage)).toBe(false);
+	it("isHarnessMessage returns false for non-assistant messages", () => {
+		expect(isHarnessMessage(createUserMessage("Hello") as AgentMessage)).toBe(false);
 	});
 
-	it("stripTrailingHarnessNotifications removes trailing empty assistant messages", () => {
+	it("stripTrailingHarnessMessages removes trailing empty assistant messages", () => {
 		const user = createUserMessage("Hello");
 		const aborted = createAssistantMessage([]);
 		const messages: AgentMessage[] = [user, aborted];
-		expect(stripTrailingHarnessNotifications(messages)).toEqual([user]);
+		expect(stripTrailingHarnessMessages(messages)).toEqual([user]);
 	});
 
-	it("stripTrailingHarnessNotifications removes multiple trailing notifications", () => {
+	it("stripTrailingHarnessMessages removes multiple trailing notifications", () => {
 		const user = createUserMessage("Hello");
 		const aborted1 = createAssistantMessage([]);
 		const aborted2 = { ...createAssistantMessage([]), stopReason: "error" as const };
 		const messages: AgentMessage[] = [user, aborted1, aborted2];
-		expect(stripTrailingHarnessNotifications(messages)).toEqual([user]);
+		expect(stripTrailingHarnessMessages(messages)).toEqual([user]);
 	});
 
-	it("stripTrailingHarnessNotifications keeps real assistant messages", () => {
+	it("stripTrailingHarnessMessages keeps real assistant messages", () => {
 		const user = createUserMessage("Hello");
 		const assistant = createAssistantMessage([{ type: "text", text: "Hi" }]);
 		const messages: AgentMessage[] = [user, assistant];
-		expect(stripTrailingHarnessNotifications(messages)).toEqual([user, assistant]);
+		expect(stripTrailingHarnessMessages(messages)).toEqual([user, assistant]);
 	});
 
-	it("stripTrailingHarnessNotifications returns the same array when nothing to strip", () => {
+	it("stripTrailingHarnessMessages returns the same array when nothing to strip", () => {
 		const user = createUserMessage("Hello");
 		const messages: AgentMessage[] = [user];
-		expect(stripTrailingHarnessNotifications(messages)).toBe(messages);
+		expect(stripTrailingHarnessMessages(messages)).toBe(messages);
 	});
 
-	it("agentLoopContinue skips trailing harness notifications and continues from the last real message", async () => {
+	it("agentLoopContinue skips trailing harness messages and continues from the last real message", async () => {
 		const user = createUserMessage("Hello");
 		const aborted = createAssistantMessage([]);
 		const context: AgentContext = {
@@ -1711,7 +1711,7 @@ describe("harness notification handling", () => {
 		expect(() => agentLoopContinue(context, config)).toThrow("Cannot continue from message role: assistant");
 	});
 
-	it("agentLoopContinue throws when only harness notifications remain after stripping", () => {
+	it("agentLoopContinue throws when only harness messages remain after stripping", () => {
 		const aborted = createAssistantMessage([]);
 		const context: AgentContext = {
 			systemPrompt: "You are helpful.",

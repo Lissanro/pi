@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { type AgentMessage, isHarnessMessage, uuidv7 } from "@earendil-works/pi-agent-core";
 import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
 import {
@@ -1296,10 +1296,85 @@ export class SessionManager {
 	/**
 	 * Get all session entries (excludes header). Returns a shallow copy.
 	 * The session is append-only: use appendXXX() to add entries, branch() to
-	 * change the leaf pointer. Entries cannot be modified or deleted.
+	 * change the leaf pointer. Entries cannot be modified or deleted except
+	 * via removeLastMessages(), which removes recent messages from the leaf path.
 	 */
 	getEntries(): SessionEntry[] {
 		return this.fileEntries.filter((e): e is SessionEntry => e.type !== "session");
+	}
+
+	/**
+	 * Remove the last `count` non-harness messages from the active leaf path,
+	 * along with any entries after the earliest removed message (including
+	 * trailing harness messages) and any branched descendants of removed
+	 * entries. Harness messages (aborts/errors with no real content) are
+	 * skipped when counting. The session file is rewritten. Returns the number
+	 * of non-harness messages removed.
+	 */
+	removeLastMessages(count: number): number {
+		if (count < 1) return 0;
+		const path = this.getBranch();
+		if (path.length === 0) return 0;
+
+		// Indices of deletable messages (non-harness message entries) on the leaf path.
+		const messageIndices: number[] = [];
+		for (let i = 0; i < path.length; i++) {
+			const entry = path[i];
+			if (entry.type !== "message") continue;
+			const msg = entry.message;
+			// Harness messages (aborts/errors with no real content) are not counted.
+			if (msg.role === "assistant") {
+				if (!msg.content || isHarnessMessage(msg)) continue;
+			}
+			messageIndices.push(i);
+		}
+		if (messageIndices.length === 0) return 0;
+
+		const removeCount = Math.min(count, messageIndices.length);
+		const firstDeleteIdx = messageIndices[messageIndices.length - removeCount];
+
+		// Remove everything from firstDeleteIdx to the end of the path, plus any
+		// descendants of those entries (branched-off children).
+		const removedIds = new Set(path.slice(firstDeleteIdx).map((e) => e.id));
+		let changed = true;
+		while (changed) {
+			changed = false;
+			for (const entry of this.fileEntries) {
+				if (
+					entry.type !== "session" &&
+					entry.parentId &&
+					removedIds.has(entry.parentId) &&
+					!removedIds.has(entry.id)
+				) {
+					removedIds.add(entry.id);
+					changed = true;
+				}
+			}
+		}
+
+		this.fileEntries = this.fileEntries.filter((e) => !removedIds.has(e.id));
+		for (const id of removedIds) {
+			this.byId.delete(id);
+		}
+		this.leafId = firstDeleteIdx > 0 ? path[firstDeleteIdx - 1].id : null;
+
+		// Rebuild label maps from remaining label entries (latest wins; skip orphaned targets).
+		this.labelsById.clear();
+		this.labelTimestampsById.clear();
+		for (const entry of this.fileEntries) {
+			if (entry.type === "label" && this.byId.has(entry.targetId)) {
+				if (entry.label) {
+					this.labelsById.set(entry.targetId, entry.label);
+					this.labelTimestampsById.set(entry.targetId, entry.timestamp);
+				} else {
+					this.labelsById.delete(entry.targetId);
+					this.labelTimestampsById.delete(entry.targetId);
+				}
+			}
+		}
+
+		this._rewriteFile();
+		return removeCount;
 	}
 
 	/**

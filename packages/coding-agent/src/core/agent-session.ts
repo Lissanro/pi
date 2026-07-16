@@ -987,6 +987,22 @@ export class AgentSession {
 		return this.sessionManager.getSessionId();
 	}
 
+	/**
+	 * Delete the last `count` non-harness messages from the session. Harness
+	 * messages (aborts/errors with no real content) are skipped when counting
+	 * and removed if they trail the deletion point. Rebuilds the agent's message
+	 * state from the session log. Returns the number of non-harness messages
+	 * removed.
+	 */
+	deleteLastMessages(count: number): number {
+		const removed = this.sessionManager.removeLastMessages(count);
+		if (removed > 0) {
+			const sessionContext = this.sessionManager.buildSessionContext();
+			this.agent.state.messages = sessionContext.messages;
+		}
+		return removed;
+	}
+
 	/** Current session display name, if set */
 	get sessionName(): string | undefined {
 		return this.sessionManager.getSessionName();
