@@ -1313,16 +1313,18 @@ export function convertMessages(
 			) {
 				assistantMsg.reasoning_content = "";
 			}
-			// Skip assistant messages that have no content and no tool calls.
-			// Some providers require "either content or tool_calls, but not none".
-			// Other providers also don't accept empty assistant messages.
-			// This handles aborted assistant responses that got no content.
+			// Skip assistant messages that have no content, no tool calls, and no
+			// reasoning. Some providers require "either content or tool_calls, but
+			// not none". Other providers also don't accept empty assistant messages.
+			// This handles aborted assistant responses that got no content, but keeps
+			// mid-reasoning messages (thinking only, no text yet) which send
+			// reasoning_content and must not be skipped.
 			const content = assistantMsg.content;
 			const hasContent =
 				content !== null &&
 				content !== undefined &&
 				(typeof content === "string" ? content.length > 0 : content.length > 0);
-			if (!hasContent && !assistantMsg.tool_calls) {
+			if (!hasContent && !assistantMsg.tool_calls && nonEmptyThinkingBlocks.length === 0) {
 				continue;
 			}
 			params.push(assistantMsg);
