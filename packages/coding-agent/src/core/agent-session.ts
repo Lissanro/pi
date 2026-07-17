@@ -1101,6 +1101,36 @@ export class AgentSession {
 		}
 	}
 
+	/**
+	 * Continue the agent from the current transcript with full lifecycle management.
+	 *
+	 * Unlike calling {@link Agent.continue} directly, this sets the streaming
+	 * flag so the UI correctly reports activity, enables steering/abort during
+	 * continuation, and runs post-run handling (retry, compaction, queued
+	 * messages) just like a regular prompt.
+	 *
+	 * @param prefill Optional assistant message to continue via prefill
+	 * (openai-completions providers only).
+	 */
+	async continue(prefill?: AgentMessage): Promise<void> {
+		if (this._isAgentRunActive) {
+			throw new Error(
+				"Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
+			);
+		}
+		this._isAgentRunActive = true;
+		try {
+			await this.agent.continue(prefill);
+			while (await this._handlePostAgentRun()) {
+				await this.agent.continue();
+			}
+		} finally {
+			this._systemPromptOverride = undefined;
+			this._flushPendingBashMessages();
+			await this._emitAgentSettled();
+		}
+	}
+
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
@@ -2838,7 +2868,7 @@ export class AgentSession {
 			return false;
 		}
 
-		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+		const delayMs = Math.min(settings.baseDelayMs * 2 ** (this._retryAttempt - 1), settings.maxBackoffMs);
 
 		this._emit({
 			type: "auto_retry_start",

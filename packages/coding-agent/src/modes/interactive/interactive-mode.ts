@@ -4373,7 +4373,7 @@ export class InteractiveMode {
 		if (allQueued.length === 0) {
 			this.updatePendingMessagesDisplay();
 			if (options?.abort) {
-				this.agent.abort();
+				void this.session.abort();
 			}
 			return 0;
 		}
@@ -4383,7 +4383,7 @@ export class InteractiveMode {
 		this.editor.setText(combinedText);
 		this.updatePendingMessagesDisplay();
 		if (options?.abort) {
-			this.agent.abort();
+			void this.session.abort();
 		}
 		return allQueued.length;
 	}
@@ -5218,7 +5218,7 @@ export class InteractiveMode {
 				this.session.deleteLastMessages(1);
 				this.chatContainer.clear();
 				this.renderInitialMessages();
-				await agent.continue(last);
+				await this.session.continue(last);
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : String(error);
 				if (errorMessage.includes("No messages to continue from")) {
@@ -5231,7 +5231,7 @@ export class InteractiveMode {
 		}
 
 		try {
-			await agent.continue();
+			await this.session.continue();
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			if (errorMessage.includes("No messages to continue from")) {

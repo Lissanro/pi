@@ -551,6 +551,12 @@
 ### Added
 
 - `/continue` now continues an assistant message via prefill continuation for openai-completions providers (e.g., llama-server). The last assistant message is removed from the transcript and re-sent with `return_prefill` so the model echoes it back with newly generated tokens, replacing the original.
+- Added `retry.maxBackoffMs` setting (default 300000 = 5 minutes) to cap the exponential backoff delay between retry attempts. Combined with the new unlimited default, the agent now retries indefinitely with backoff capped at 5 minutes, so transient backend outages recover automatically.
+
+### Changed
+
+- Changed auto-retry to default to unlimited attempts (`retry.maxRetries` defaults to `Infinity`). Previously the default was 3 attempts, which gave up too quickly on transient backend outages. Set `retry.maxRetries` to a finite number to restore the old behavior.
+- Changed `/continue` to run through the full agent session lifecycle (streaming flag, post-run retry/compaction, `agent_settled`) instead of calling `Agent.continue` directly. This fixes steering and abort (Escape) not working during continuation because `isStreaming` was false while the agent was actively generating.
 - Added `ModelRuntime` as the canonical async SDK and internal model/auth facade while preserving the synchronous extension-facing `ModelRegistry` API. `ModelRuntime.create()` accepts any pi-ai `CredentialStore` through its `credentials` option.
 - Added provider-owned `/login` discovery directly from registered pi-ai providers, including ambient auth status and informational links.
 - Added file-backed dynamic catalogs in `models-store.json`, per-provider pi.dev catalog overlays, and Radius gateway support including offline migration from legacy credential-cached catalogs.
