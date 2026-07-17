@@ -220,6 +220,25 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 * For example, Anthropic uses `user_id` for abuse tracking and rate limiting.
 	 */
 	metadata?: Record<string, unknown>;
+	/**
+	 * Provider-scoped environment values. These take precedence over process.env for
+	 * provider configuration such as regional settings, endpoint placeholders, and
+	 * proxy variables.
+	 */
+	env?: ProviderEnv;
+	/**
+	 * When true, requests the provider to echo the assistant prefill (the last
+	 * assistant message in the context) back as part of the streamed response, so
+	 * the stream output contains the prefill followed by newly generated tokens
+	 * as a single coherent message.
+	 *
+	 * Currently supported by llama-server (openai-completions) via the
+	 * `return_prefill` request parameter. Other providers may ignore or reject it.
+	 * The caller is responsible for ensuring the last message is an assistant
+	 * message to continue from and for removing it from the visible transcript
+	 * before streaming, since the echoed prefill replaces it.
+	 */
+	returnPrefill?: boolean;
 }
 
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;

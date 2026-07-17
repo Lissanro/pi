@@ -1857,3 +1857,78 @@ describe("openai-completions tool_choice", () => {
 		expect((payload ?? mockState.lastParams) as { reasoning?: unknown }).not.toHaveProperty("reasoning");
 	});
 });
+
+describe("openai-completions return_prefill", () => {
+	beforeEach(() => {
+		mockState.lastParams = undefined;
+		mockState.chunks = undefined;
+	});
+
+	it("sends return_prefill when returnPrefill option is set", async () => {
+		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
+		const model = { ...baseModel, api: "openai-completions" } as const;
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test",
+				returnPrefill: true,
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as { return_prefill?: boolean };
+		expect(params.return_prefill).toBe(true);
+	});
+
+	it("omits return_prefill when returnPrefill option is not set", async () => {
+		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
+		const model = { ...baseModel, api: "openai-completions" } as const;
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as { return_prefill?: boolean };
+		expect(params.return_prefill).toBeUndefined();
+	});
+
+	it("sends return_prefill via stream() with OpenAICompletionsOptions", async () => {
+		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
+		const model = { ...baseModel, api: "openai-completions" } as const;
+		let payload: unknown;
+
+		await stream(
+			model,
+			{
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test",
+				returnPrefill: true,
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as { return_prefill?: boolean };
+		expect(params.return_prefill).toBe(true);
+	});
+});

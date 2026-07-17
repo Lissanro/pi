@@ -1,9 +1,18 @@
-import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
+import {
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	type Context,
+	EventStream,
+	getModel,
+	type Model,
+	type SimpleStreamOptions,
+} from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
 	Agent,
 	type AgentEvent,
+	type AgentMessage,
 	type AgentTool,
 	type AgentToolUpdateCallback,
 	type StreamFn,
@@ -806,5 +815,132 @@ describe("Agent", () => {
 
 		await agent.prompt("hello again");
 		expect(receivedSessionId).toBe("session-def");
+	});
+
+	describe("continue(prefill) - assistant prefill continuation", () => {
+		function createCompletionsModel(): Model<"openai-completions"> {
+			return {
+				id: "llama-server",
+				name: "llama-server",
+				api: "openai-completions",
+				provider: "llama-server",
+				baseUrl: "http://127.0.0.1:8080/v1",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 8192,
+				maxTokens: 2048,
+			};
+		}
+
+		it("continues an assistant message via prefill and replaces it in state", async () => {
+			let capturedContext: Context | undefined;
+			let capturedOptions: SimpleStreamOptions | undefined;
+			const agent = new Agent({
+				initialState: { model: createCompletionsModel() },
+				streamFn: (_model, context, options) => {
+					capturedContext = context;
+					capturedOptions = options;
+					const stream = new MockAssistantStream();
+					queueMicrotask(() => {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Continued response") });
+					});
+					return stream;
+				},
+			});
+
+			const userMessage: AgentMessage = { role: "user", content: "Hello", timestamp: Date.now() };
+			const prefill: AgentMessage = createAssistantMessage("Partial response");
+			agent.state.messages = [userMessage];
+
+			await agent.continue(prefill);
+
+			// The prefill was sent as the last message in the LLM context.
+			expect(capturedContext?.messages.length).toBe(2);
+			expect(capturedContext?.messages[1]).toBe(prefill);
+			// returnPrefill was forwarded to the stream function.
+			expect(capturedOptions?.returnPrefill).toBe(true);
+			// The prefill is NOT in state; the continued response replaced it.
+			expect(agent.state.messages.length).toBe(2);
+			expect(agent.state.messages[0]).toBe(userMessage);
+			expect(agent.state.messages[1].role).toBe("assistant");
+			expect((agent.state.messages[1] as AssistantMessage).content).toEqual([
+				{ type: "text", text: "Continued response" },
+			]);
+		});
+
+		it("throws when prefill has a tool call", async () => {
+			const agent = new Agent({
+				initialState: { model: createCompletionsModel() },
+				streamFn: () => new MockAssistantStream(),
+			});
+
+			const prefill: AgentMessage = createAssistantToolUseMessage([
+				{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } },
+			]);
+			agent.state.messages = [{ role: "user", content: "Hello", timestamp: Date.now() }];
+
+			await expect(agent.continue(prefill)).rejects.toThrow("Cannot continue a message with a tool call");
+		});
+
+		it("throws when model is not openai-completions", async () => {
+			const agent = new Agent({
+				streamFn: () => new MockAssistantStream(),
+			});
+
+			const prefill: AgentMessage = createAssistantMessage("Partial response");
+			agent.state.messages = [{ role: "user", content: "Hello", timestamp: Date.now() }];
+
+			await expect(agent.continue(prefill)).rejects.toThrow(
+				"Continuation is only supported for openai-completions providers",
+			);
+		});
+
+		it("throws when prefill is not an assistant message", async () => {
+			const agent = new Agent({
+				initialState: { model: createCompletionsModel() },
+				streamFn: () => new MockAssistantStream(),
+			});
+
+			const userPrefill: AgentMessage = { role: "user", content: "Not an assistant", timestamp: Date.now() };
+			agent.state.messages = [];
+
+			await expect(agent.continue(userPrefill)).rejects.toThrow("Prefill must be an assistant message");
+		});
+
+		it("throws when continue(prefill) is called while streaming", async () => {
+			let abortSignal: AbortSignal | undefined;
+			const agent = new Agent({
+				initialState: { model: createCompletionsModel() },
+				streamFn: (_model, _context, options) => {
+					abortSignal = options?.signal;
+					const stream = new MockAssistantStream();
+					queueMicrotask(() => {
+						stream.push({ type: "start", partial: createAssistantMessage("") });
+						const checkAbort = () => {
+							if (abortSignal?.aborted) {
+								stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
+							} else {
+								setTimeout(checkAbort, 5);
+							}
+						};
+						checkAbort();
+					});
+					return stream;
+				},
+			});
+
+			const firstPrompt = agent.prompt("First message");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(agent.state.isStreaming).toBe(true);
+
+			const prefill: AgentMessage = createAssistantMessage("Partial response");
+			await expect(agent.continue(prefill)).rejects.toThrow(
+				"Agent is already processing. Wait for completion before continuing.",
+			);
+
+			agent.abort();
+			await firstPrompt.catch(() => {});
+		});
 	});
 });

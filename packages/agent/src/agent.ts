@@ -357,8 +357,17 @@ export class Agent {
 		await this.runPromptMessages(messages);
 	}
 
-	/** Continue from the current transcript. The last message must be a user or tool-result message. */
-	async continue(): Promise<void> {
+	/**
+	 * Continue from the current transcript. The last message must be a user or
+	 * tool-result message.
+	 *
+	 * When `prefill` is provided, it is appended to the context as the last
+	 * assistant message and the request is sent with `returnPrefill` so the
+	 * provider echoes it back with newly generated tokens. The caller is
+	 * responsible for removing the prefill from the transcript beforehand
+	 * (e.g. via session deletion) since the continued response replaces it.
+	 */
+	async continue(prefill?: AgentMessage): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
 		}
@@ -369,6 +378,24 @@ export class Agent {
 		const stripped = stripTrailingHarnessMessages(this._state.messages);
 		if (stripped.length !== this._state.messages.length) {
 			this._state.messages = stripped;
+		}
+
+		if (prefill) {
+			// Prefill continuation: re-send an assistant message so the provider
+			// continues it. The caller has already removed the prefill from the
+			// transcript; it is passed here so the LLM receives it as the last
+			// assistant message with return_prefill enabled.
+			if (prefill.role !== "assistant") {
+				throw new Error("Prefill must be an assistant message");
+			}
+			if (prefill.content.some((block) => block.type === "toolCall")) {
+				throw new Error("Cannot continue a message with a tool call");
+			}
+			if (this._state.model.api !== "openai-completions") {
+				throw new Error("Continuation is only supported for openai-completions providers (e.g., llama-server)");
+			}
+			await this.runContinuation(prefill);
+			return;
 		}
 
 		const lastMessage = this._state.messages[this._state.messages.length - 1];
@@ -430,15 +457,14 @@ export class Agent {
 		});
 	}
 
-	private async runContinuation(): Promise<void> {
+	private async runContinuation(prefill?: AgentMessage): Promise<void> {
 		await this.runWithLifecycle(async (signal) => {
-			await runAgentLoopContinue(
-				this.createContextSnapshot(),
-				this.createLoopConfig(),
-				(event) => this.processEvents(event),
-				signal,
-				this.streamFunction,
-			);
+			const context = this.createContextSnapshot();
+			const config = prefill ? { ...this.createLoopConfig(), returnPrefill: true } : this.createLoopConfig();
+			if (prefill) {
+				context.messages.push(prefill);
+			}
+			await runAgentLoopContinue(context, config, (event) => this.processEvents(event), signal, this.streamFunction);
 		});
 	}
 

@@ -939,6 +939,13 @@ function buildParams(
 		}
 	}
 
+	// llama-server prefill continuation: echo the last assistant message
+	// (prefill) back as part of the streamed response so the output contains
+	// the prefill followed by newly generated tokens.
+	if (options?.returnPrefill) {
+		(params as any).return_prefill = true;
+	}
+
 	// Last so custom keys override the named request fields.
 	if (options?.samplingParams) {
 		Object.assign(params, options.samplingParams);

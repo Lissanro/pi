@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `Agent.continue(prefill)` for prefill continuation of an assistant message. The caller removes the prefill from the transcript and passes it to `continue()`, which sends it as the last assistant message with `returnPrefill` enabled so the provider echoes it back with newly generated tokens.
+- `agentLoopContinue` and `runAgentLoopContinue` now allow an assistant last message when `returnPrefill` is set, with tool-call and provider validation.
+
 ## [0.84.2] - 2026-08-14
 
 ### Fixed

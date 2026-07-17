@@ -550,6 +550,7 @@
 
 ### Added
 
+- `/continue` now continues an assistant message via prefill continuation for openai-completions providers (e.g., llama-server). The last assistant message is removed from the transcript and re-sent with `return_prefill` so the model echoes it back with newly generated tokens, replacing the original.
 - Added `ModelRuntime` as the canonical async SDK and internal model/auth facade while preserving the synchronous extension-facing `ModelRegistry` API. `ModelRuntime.create()` accepts any pi-ai `CredentialStore` through its `credentials` option.
 - Added provider-owned `/login` discovery directly from registered pi-ai providers, including ambient auth status and informational links.
 - Added file-backed dynamic catalogs in `models-store.json`, per-provider pi.dev catalog overlays, and Radius gateway support including offline migration from legacy credential-cached catalogs.

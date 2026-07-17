@@ -103,9 +103,7 @@ export function agentLoopContinue(
 		throw new Error("Cannot continue: no messages in context");
 	}
 
-	if (effectiveMessages[effectiveMessages.length - 1].role === "assistant") {
-		throw new Error("Cannot continue from message role: assistant");
-	}
+	assertContinuableLastMessage(effectiveMessages[effectiveMessages.length - 1], config);
 
 	const effectiveContext =
 		effectiveMessages.length !== context.messages.length ? { ...context, messages: effectiveMessages } : context;
@@ -164,9 +162,7 @@ export async function runAgentLoopContinue(
 		throw new Error("Cannot continue: no messages in context");
 	}
 
-	if (effectiveMessages[effectiveMessages.length - 1].role === "assistant") {
-		throw new Error("Cannot continue from message role: assistant");
-	}
+	assertContinuableLastMessage(effectiveMessages[effectiveMessages.length - 1], config);
 
 	const newMessages: AgentMessage[] = [];
 	const currentContext: AgentContext =
@@ -177,6 +173,30 @@ export async function runAgentLoopContinue(
 
 	await runLoop(currentContext, newMessages, config, signal, emit, streamFn ?? getDefaultStreamFn());
 	return newMessages;
+}
+
+/**
+ * Validate that the last effective message can be continued from.
+ *
+ * A user or tool-result message is always continuable. An assistant message is
+ * only continuable via prefill continuation (`config.returnPrefill`): the last
+ * assistant message is re-sent as a prefill so the provider echoes it back with
+ * newly generated tokens. Tool-call messages and non-openai-completions providers
+ * are not supported for prefill continuation.
+ */
+function assertContinuableLastMessage(lastMessage: AgentMessage, config: AgentLoopConfig): void {
+	if (lastMessage.role !== "assistant") {
+		return;
+	}
+	if (!config.returnPrefill) {
+		throw new Error("Cannot continue from message role: assistant");
+	}
+	if (lastMessage.content.some((block) => block.type === "toolCall")) {
+		throw new Error("Cannot continue a message with a tool call");
+	}
+	if (config.model.api !== "openai-completions") {
+		throw new Error("Continuation is only supported for openai-completions providers (e.g., llama-server)");
+	}
 }
 
 function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {

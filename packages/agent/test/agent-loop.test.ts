@@ -1,9 +1,11 @@
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
+	type Context,
 	EventStream,
 	type Message,
 	type Model,
+	type SimpleStreamOptions,
 	type UserMessage,
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -15,7 +17,7 @@ import {
 	stripTrailingHarnessMessages,
 } from "../src/agent-loop.ts";
 import { setDefaultStreamFn } from "../src/index.ts";
-import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.ts";
+import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, StreamFn } from "../src/types.ts";
 
 // Mock stream for testing - mimics MockAssistantStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -1723,5 +1725,123 @@ describe("harness message handling", () => {
 			convertToLlm: identityConverter,
 		};
 		expect(() => agentLoopContinue(context, config)).toThrow("Cannot continue: no messages in context");
+	});
+});
+
+describe("agentLoopContinue prefill continuation", () => {
+	function createCompletionsModel(): Model<"openai-completions"> {
+		return {
+			id: "llama-server",
+			name: "llama-server",
+			api: "openai-completions",
+			provider: "llama-server",
+			baseUrl: "http://127.0.0.1:8080/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 8192,
+			maxTokens: 2048,
+		};
+	}
+
+	it("continues from an assistant message when returnPrefill is set", async () => {
+		const user = createUserMessage("Hello");
+		const prefill = createAssistantMessage([{ type: "text", text: "Partial response" }]);
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [user, prefill],
+			tools: [],
+		};
+		const config: AgentLoopConfig = {
+			model: createCompletionsModel(),
+			convertToLlm: identityConverter,
+			returnPrefill: true,
+		};
+
+		let capturedContext: Context | undefined;
+		let capturedOptions: SimpleStreamOptions | undefined;
+		const streamFn: StreamFn = (_model, llmContext, options) => {
+			capturedContext = llmContext;
+			capturedOptions = options;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: createAssistantMessage([{ type: "text", text: "Partial response continued!" }]),
+				});
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoopContinue(context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+		const messages = await stream.result();
+
+		// The prefill is the last message in the LLM context.
+		expect(capturedContext?.messages.length).toBe(2);
+		expect(capturedContext?.messages[1]).toBe(prefill);
+		// returnPrefill is forwarded to the stream function.
+		expect(capturedOptions?.returnPrefill).toBe(true);
+		// The loop returns the new assistant message.
+		expect(messages.length).toBe(1);
+		expect(messages[0].role).toBe("assistant");
+		expect((messages[0] as AssistantMessage).content).toEqual([
+			{ type: "text", text: "Partial response continued!" },
+		]);
+	});
+
+	it("throws when continuing an assistant message without returnPrefill", () => {
+		const user = createUserMessage("Hello");
+		const prefill = createAssistantMessage([{ type: "text", text: "Partial response" }]);
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [user, prefill],
+			tools: [],
+		};
+		const config: AgentLoopConfig = {
+			model: createCompletionsModel(),
+			convertToLlm: identityConverter,
+		};
+		expect(() => agentLoopContinue(context, config)).toThrow("Cannot continue from message role: assistant");
+	});
+
+	it("throws when continuing an assistant message with a tool call", () => {
+		const user = createUserMessage("Hello");
+		const prefill = createAssistantMessage([
+			{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } },
+		]);
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [user, prefill],
+			tools: [],
+		};
+		const config: AgentLoopConfig = {
+			model: createCompletionsModel(),
+			convertToLlm: identityConverter,
+			returnPrefill: true,
+		};
+		expect(() => agentLoopContinue(context, config)).toThrow("Cannot continue a message with a tool call");
+	});
+
+	it("throws when continuing an assistant message with a non-openai-completions model", () => {
+		const user = createUserMessage("Hello");
+		const prefill = createAssistantMessage([{ type: "text", text: "Partial response" }]);
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [user, prefill],
+			tools: [],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(), // openai-responses
+			convertToLlm: identityConverter,
+			returnPrefill: true,
+		};
+		expect(() => agentLoopContinue(context, config)).toThrow(
+			"Continuation is only supported for openai-completions providers",
+		);
 	});
 });

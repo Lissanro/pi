@@ -300,6 +300,7 @@
 
 ### Added
 
+- Added `returnPrefill` to `StreamOptions`. When set, openai-completions providers send `return_prefill: true` so llama-server echoes the last assistant message (prefill) back as part of the streamed response, enabling prefill continuation.
 - Added provider-owned authentication and availability resolution to `Models`, including stored OAuth refresh and interactive login support through `CredentialStore`.
 - Added async non-secret credential enumeration through `CredentialStore.list()` and credential-aware `Provider.filterModels()` availability policy.
 - Added neutral auth-flow information/link events and provider-owned Amazon Bedrock and Google Vertex AI credential selection flows.
