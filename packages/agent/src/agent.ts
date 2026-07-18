@@ -388,13 +388,22 @@ export class Agent {
 			if (prefill.role !== "assistant") {
 				throw new Error("Prefill must be an assistant message");
 			}
-			if (prefill.content.some((block) => block.type === "toolCall")) {
+			const assistantPrefill = prefill;
+			if (assistantPrefill.content.some((block) => block.type === "toolCall")) {
 				throw new Error("Cannot continue a message with a tool call");
 			}
 			if (this._state.model.api !== "openai-completions") {
 				throw new Error("Continuation is only supported for openai-completions providers (e.g., llama-server)");
 			}
-			await this.runContinuation(prefill);
+			await this.runContinuation(assistantPrefill);
+
+			// Verify that the LLM echoed the prefill before generating new tokens.
+			const newMessage = this._state.messages[this._state.messages.length - 1];
+			if (!this.verifyPrefillEcho(assistantPrefill, newMessage)) {
+				throw new Error(
+					"Prefill echo mismatch: the model did not return the prefill content. The original message has been restored.",
+				);
+			}
 			return;
 		}
 
@@ -420,6 +429,35 @@ export class Agent {
 		}
 
 		await this.runContinuation();
+	}
+
+	private verifyPrefillEcho(prefill: AgentMessage, newMessage: AgentMessage | undefined): boolean {
+		if (prefill.role !== "assistant" || newMessage?.role !== "assistant") {
+			return false;
+		}
+
+		const prefillThinking = prefill.content
+			.filter((block) => (block as { type?: string }).type === "thinking")
+			.map((block) => (block as { thinking: string }).thinking)
+			.join("");
+		const newThinking = newMessage.content
+			.filter((block) => (block as { type?: string }).type === "thinking")
+			.map((block) => (block as { thinking: string }).thinking)
+			.join("");
+		if (prefillThinking !== newThinking) {
+			return false;
+		}
+
+		const prefillText = prefill.content
+			.filter((block) => (block as { type?: string }).type === "text")
+			.map((block) => (block as { text: string }).text)
+			.join("");
+		const newText = newMessage.content
+			.filter((block) => (block as { type?: string }).type === "text")
+			.map((block) => (block as { text: string }).text)
+			.join("");
+
+		return newText.startsWith(prefillText);
 	}
 
 	private normalizePromptInput(

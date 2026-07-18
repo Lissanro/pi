@@ -92,32 +92,18 @@ export function transformMessages<TApi extends Api>(
 		// Assistant messages need transformation check
 		if (msg.role === "assistant") {
 			const assistantMsg = msg as AssistantMessage;
-			const isSameModel =
-				assistantMsg.provider === model.provider &&
-				assistantMsg.api === model.api &&
-				assistantMsg.model === model.id;
 
 			const transformedContent = assistantMsg.content.flatMap((block) => {
 				if (block.type === "thinking") {
-					// Redacted thinking is opaque encrypted content, only valid for the same model.
-					// Drop it for cross-model to avoid API errors.
-					if (block.redacted) {
-						return isSameModel ? block : [];
-					}
-					// For same model: keep thinking blocks with signatures (needed for replay)
-					// even if the thinking text is empty (OpenAI encrypted reasoning)
-					if (isSameModel && block.thinkingSignature) return block;
-					// Skip empty thinking blocks, convert others to plain text
+					// Keep thinking blocks with signatures (needed for replay) even if the
+					// thinking text is empty (OpenAI encrypted reasoning).
+					if (block.thinkingSignature) return block;
+					// Skip empty thinking blocks, keep others as thinking.
 					if (!block.thinking || block.thinking.trim() === "") return [];
-					if (isSameModel) return block;
-					return {
-						type: "text" as const,
-						text: block.thinking,
-					};
+					return block;
 				}
 
 				if (block.type === "text") {
-					if (isSameModel) return block;
 					return {
 						type: "text" as const,
 						text: block.text,
@@ -128,12 +114,7 @@ export function transformMessages<TApi extends Api>(
 					const toolCall = block as ToolCall;
 					let normalizedToolCall: ToolCall = toolCall;
 
-					if (!isSameModel && toolCall.thoughtSignature) {
-						normalizedToolCall = { ...toolCall };
-						delete (normalizedToolCall as { thoughtSignature?: string }).thoughtSignature;
-					}
-
-					if (!isSameModel && normalizeToolCallId) {
+					if (normalizeToolCallId) {
 						const normalizedId = normalizeToolCallId(toolCall.id, model, assistantMsg);
 						if (normalizedId !== toolCall.id) {
 							toolCallIdMap.set(toolCall.id, normalizedId);
@@ -186,15 +167,7 @@ export function transformMessages<TApi extends Api>(
 			// If we have pending orphaned tool calls from a previous assistant, insert synthetic results now
 			insertSyntheticToolResults();
 
-			// Skip errored/aborted assistant messages entirely.
-			// These are incomplete turns that shouldn't be replayed:
-			// - May have partial content (reasoning without message, incomplete tool calls)
-			// - Replaying them can cause API errors (e.g., OpenAI "reasoning without following item")
-			// - The model should retry from the last valid state
 			const assistantMsg = msg as AssistantMessage;
-			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
-				continue;
-			}
 
 			// Track tool calls from this assistant message
 			const toolCalls = assistantMsg.content.filter((b) => b.type === "toolCall") as ToolCall[];

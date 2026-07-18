@@ -35,6 +35,7 @@ describe("AgentSession continue with prefill", () => {
 		// returnPrefill and the LLM context messages.
 		let capturedReturnPrefill: boolean | undefined;
 		let capturedContextMessages: Message[] | undefined;
+		const prefillText = getMessageText(prefill!);
 		harness.session.agent.streamFn = ((_model, context, options) => {
 			capturedReturnPrefill = options?.returnPrefill;
 			capturedContextMessages = context.messages;
@@ -47,7 +48,12 @@ describe("AgentSession continue with prefill", () => {
 				},
 			);
 			queueMicrotask(() => {
-				stream.push({ type: "done", reason: "stop", message: fauxAssistantMessage("Continued response") });
+				// With return_prefill the provider echoes the prefill before new tokens.
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: fauxAssistantMessage(`${prefillText} continued`),
+				});
 			});
 			return stream;
 		}) as StreamFn;
@@ -68,9 +74,9 @@ describe("AgentSession continue with prefill", () => {
 		const contextLast = capturedContextMessages?.[1];
 		expect(contextLast?.role).toBe("assistant");
 		expect(getMessageText(contextLast)).toBe("Partial response");
-		// The session has the continued response (the prefill was replaced).
+		// The session has the echoed prefill plus newly generated tokens.
 		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
-		expect(getMessageText(harness.session.messages[1]!)).toBe("Continued response");
+		expect(getMessageText(harness.session.messages[1]!)).toBe("Partial response continued");
 	});
 
 	it("falls back to normal continue when the last message is a user message", async () => {

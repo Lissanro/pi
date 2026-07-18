@@ -5207,6 +5207,7 @@ export class InteractiveMode {
 		// Prefill continuation: continue an assistant message by re-sending it as
 		// a prefill with return_prefill. The prefill is removed from the transcript
 		// first (session log + agent state); the continued response replaces it.
+
 		if (
 			last !== undefined &&
 			last.role === "assistant" &&
@@ -5214,12 +5215,19 @@ export class InteractiveMode {
 			agent.state.model.api === "openai-completions" &&
 			!agent.hasQueuedMessages()
 		) {
+			const prefill = last;
+			this.session.deleteLastMessages(1);
+			const parentEntryId = this.session.sessionManager.getBranch().slice(-1)[0]?.id ?? null;
+			let restored = false;
 			try {
-				this.session.deleteLastMessages(1);
 				this.chatContainer.clear();
 				this.renderInitialMessages();
-				await this.session.continue(last);
+				await this.session.continue(prefill);
 			} catch (error: unknown) {
+				if (!restored) {
+					this.restorePrefill(parentEntryId, prefill);
+					restored = true;
+				}
 				const errorMessage = error instanceof Error ? error.message : String(error);
 				if (errorMessage.includes("No messages to continue from")) {
 					this.showStatus("No messages to continue from");
@@ -5256,6 +5264,24 @@ export class InteractiveMode {
 				this.showError(errorMessage);
 			}
 		}
+	}
+
+	/**
+	 * Restore a prefill assistant message after a failed continuation.
+	 * Branches the session back to the parent entry and re-appends the original
+	 * partial message, then rebuilds the agent state and UI.
+	 */
+	private restorePrefill(parentEntryId: string | null, prefill: AgentMessage): void {
+		if (parentEntryId) {
+			this.session.sessionManager.branch(parentEntryId);
+		} else {
+			this.session.sessionManager.resetLeaf();
+		}
+		this.session.sessionManager.appendMessage(prefill as Message);
+		const sessionContext = this.session.sessionManager.buildSessionContext();
+		this.session.agent.state.messages = sessionContext.messages;
+		this.chatContainer.clear();
+		this.renderInitialMessages();
 	}
 
 	/**
