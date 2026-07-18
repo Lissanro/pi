@@ -202,6 +202,8 @@ export class Agent {
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
 	private activeRun?: ActiveRun;
+	private _pendingPrefill?: AgentMessage;
+	private _prefillVerified = false;
 	/** Session identifier forwarded to providers for cache-aware backends. */
 	public sessionId?: string;
 	/** Optional per-level thinking token budgets forwarded to the stream function. */
@@ -395,14 +397,21 @@ export class Agent {
 			if (this._state.model.api !== "openai-completions") {
 				throw new Error("Continuation is only supported for openai-completions providers (e.g., llama-server)");
 			}
-			await this.runContinuation(assistantPrefill);
 
-			// Verify that the LLM echoed the prefill before generating new tokens.
-			const newMessage = this._state.messages[this._state.messages.length - 1];
-			if (!this.verifyPrefillEcho(assistantPrefill, newMessage)) {
-				throw new Error(
-					"Prefill echo mismatch: the model did not return the prefill content. The original message has been restored.",
-				);
+			// Verify the prefill echo during streaming: the model must return at
+			// least the prefill reasoning_content and content before generating
+			// new tokens. The check runs once as soon as both fields are long
+			// enough, then normal generation continues.
+			this._pendingPrefill = assistantPrefill;
+			this._prefillVerified = false;
+			try {
+				await this.runContinuation(assistantPrefill);
+				if (this._pendingPrefill && !this._prefillVerified) {
+					throw new Error("Prefill echo mismatch: the model response did not contain the full prefill.");
+				}
+			} finally {
+				this._pendingPrefill = undefined;
+				this._prefillVerified = false;
 			}
 			return;
 		}
@@ -431,33 +440,61 @@ export class Agent {
 		await this.runContinuation();
 	}
 
-	private verifyPrefillEcho(prefill: AgentMessage, newMessage: AgentMessage | undefined): boolean {
-		if (prefill.role !== "assistant" || newMessage?.role !== "assistant") {
-			return false;
+	private extractThinkingText(message: Extract<AgentMessage, { role: "assistant" }>): string {
+		return message.content
+			.filter((block) => block.type === "thinking")
+			.map((block) => block.thinking)
+			.join("");
+	}
+
+	private extractText(message: Extract<AgentMessage, { role: "assistant" }>): string {
+		return message.content
+			.filter((block) => block.type === "text")
+			.map((block) => block.text)
+			.join("");
+	}
+
+	/**
+	 * Gatekept prefill echo verification.
+	 *
+	 * Runs on every streamed partial message. Once both the reasoning_content
+	 * (thinking) and content (text) are at least as long as the prefill, it
+	 * performs a one-time prefix comparison. If the prefixes match, verification
+	 * is marked complete and generation continues normally. If they do not
+	 * match, it throws so the caller can restore the original message.
+	 */
+	private checkPrefillEcho(partialMessage: AgentMessage): void {
+		if (!this._pendingPrefill || this._prefillVerified) {
+			return;
+		}
+		if (partialMessage.role !== "assistant" || this._pendingPrefill.role !== "assistant") {
+			return;
+		}
+		const prefill = this._pendingPrefill as Extract<AgentMessage, { role: "assistant" }>;
+		const partial = partialMessage as Extract<AgentMessage, { role: "assistant" }>;
+		if (partial.errorMessage || partial.stopReason === "error" || partial.stopReason === "aborted") {
+			return;
 		}
 
-		const prefillThinking = prefill.content
-			.filter((block) => (block as { type?: string }).type === "thinking")
-			.map((block) => (block as { thinking: string }).thinking)
-			.join("");
-		const newThinking = newMessage.content
-			.filter((block) => (block as { type?: string }).type === "thinking")
-			.map((block) => (block as { thinking: string }).thinking)
-			.join("");
-		if (prefillThinking !== newThinking) {
-			return false;
+		const prefillThinking = this.extractThinkingText(prefill);
+		const partialThinking = this.extractThinkingText(partial);
+		const prefillText = this.extractText(prefill);
+		const partialText = this.extractText(partial);
+
+		// Wait until the streamed response is at least as long as the prefill
+		// in both fields before comparing.
+		if (partialThinking.length < prefillThinking.length || partialText.length < prefillText.length) {
+			return;
 		}
 
-		const prefillText = prefill.content
-			.filter((block) => (block as { type?: string }).type === "text")
-			.map((block) => (block as { text: string }).text)
-			.join("");
-		const newText = newMessage.content
-			.filter((block) => (block as { type?: string }).type === "text")
-			.map((block) => (block as { text: string }).text)
-			.join("");
+		if (!partialThinking.startsWith(prefillThinking)) {
+			throw new Error("Prefill echo mismatch: reasoning_content does not match the prefill.");
+		}
+		if (!partialText.startsWith(prefillText)) {
+			throw new Error("Prefill echo mismatch: content does not match the prefill.");
+		}
 
-		return newText.startsWith(prefillText);
+		this._prefillVerified = true;
 	}
 
 	private normalizePromptInput(
@@ -621,10 +658,12 @@ export class Agent {
 
 			case "message_update":
 				this._state.streamingMessage = event.message;
+				this.checkPrefillEcho(event.message);
 				break;
 
 			case "message_end":
 				this._state.streamingMessage = undefined;
+				this.checkPrefillEcho(event.message);
 				this._state.messages.push(event.message);
 				break;
 
