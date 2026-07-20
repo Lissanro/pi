@@ -62,6 +62,8 @@ export function getAssistantTexts(harness: Harness): string[] {
 
 export interface HarnessOptions {
 	models?: FauxModelDefinition[];
+	/** Override the faux provider API (e.g. "openai-completions" for prefill tests). */
+	fauxApi?: string;
 	settings?: Partial<Settings>;
 	systemPrompt?: string;
 	tools?: AgentTool[];
@@ -102,6 +104,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const tempDir = createTempDir();
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
 		models: options.models,
+		api: options.fauxApi,
 	});
 	fauxProvider.setResponses([]);
 	const model = fauxProvider.getModel();

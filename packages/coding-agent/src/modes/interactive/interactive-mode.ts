@@ -5188,11 +5188,10 @@ export class InteractiveMode {
 	/**
 	 * Continue the session by sending the LLM the existing messages.
 	 *
-	 * When the last real message is an assistant message (no tool calls) on an
-	 * openai-completions provider, it is continued via prefill continuation:
-	 * the message is removed from the transcript and re-sent with
-	 * `return_prefill` so the provider echoes it back with newly generated
-	 * tokens. Otherwise the LLM continues from the last user/tool-result message.
+	 * Prefill continuation (for openai-completions providers) is handled inside
+	 * AgentSession.continue(): the last assistant message is removed from the
+	 * transcript and re-sent with return_prefill, and restored if the
+	 * continuation fails.
 	 */
 	private async handleContinueCommand(): Promise<void> {
 		if (this.session.isStreaming) {
@@ -5204,41 +5203,9 @@ export class InteractiveMode {
 		const stripped = stripTrailingHarnessMessages(agent.state.messages);
 		const last = stripped[stripped.length - 1];
 
-		// Prefill continuation: continue an assistant message by re-sending it as
-		// a prefill with return_prefill. The prefill is removed from the transcript
-		// first (session log + agent state); the continued response replaces it.
-
-		if (
-			last !== undefined &&
-			last.role === "assistant" &&
-			!last.content.some((block) => block.type === "toolCall") &&
-			agent.state.model.api === "openai-completions" &&
-			!agent.hasQueuedMessages()
-		) {
-			const prefill = last;
-			this.session.deleteLastMessages(1);
-			const parentEntryId = this.session.sessionManager.getBranch().slice(-1)[0]?.id ?? null;
-			let restored = false;
-			try {
-				this.chatContainer.clear();
-				this.renderInitialMessages();
-				await this.session.continue(prefill);
-			} catch (error: unknown) {
-				if (!restored) {
-					this.restorePrefill(parentEntryId, prefill);
-					restored = true;
-				}
-				const errorMessage = error instanceof Error ? error.message : String(error);
-				if (errorMessage.includes("No messages to continue from")) {
-					this.showStatus("No messages to continue from");
-				} else {
-					this.showError(errorMessage);
-				}
-			}
-			return;
-		}
-
 		try {
+			this.chatContainer.clear();
+			this.renderInitialMessages();
 			await this.session.continue();
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
@@ -5264,24 +5231,6 @@ export class InteractiveMode {
 				this.showError(errorMessage);
 			}
 		}
-	}
-
-	/**
-	 * Restore a prefill assistant message after a failed continuation.
-	 * Branches the session back to the parent entry and re-appends the original
-	 * partial message, then rebuilds the agent state and UI.
-	 */
-	private restorePrefill(parentEntryId: string | null, prefill: AgentMessage): void {
-		if (parentEntryId) {
-			this.session.sessionManager.branch(parentEntryId);
-		} else {
-			this.session.sessionManager.resetLeaf();
-		}
-		this.session.sessionManager.appendMessage(prefill as Message);
-		const sessionContext = this.session.sessionManager.buildSessionContext();
-		this.session.agent.state.messages = sessionContext.messages;
-		this.chatContainer.clear();
-		this.renderInitialMessages();
 	}
 
 	/**

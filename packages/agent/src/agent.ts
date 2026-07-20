@@ -1,4 +1,5 @@
 import type {
+	AssistantMessage,
 	ImageContent,
 	Message,
 	Model,
@@ -406,7 +407,14 @@ export class Agent {
 			this._prefillVerified = false;
 			try {
 				await this.runContinuation(assistantPrefill);
-				if (this._pendingPrefill && !this._prefillVerified) {
+				const lastMessage = this._state.messages[this._state.messages.length - 1] as AssistantMessage | undefined;
+				if (
+					this._pendingPrefill &&
+					!this._prefillVerified &&
+					lastMessage?.role === "assistant" &&
+					lastMessage.stopReason !== "error" &&
+					lastMessage.stopReason !== "aborted"
+				) {
 					throw new Error("Prefill echo mismatch: the model response did not contain the full prefill.");
 				}
 			} finally {

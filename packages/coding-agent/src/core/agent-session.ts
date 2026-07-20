@@ -15,14 +15,16 @@
 
 import { readFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import type {
-	Agent,
-	AgentEvent,
-	AgentMessage,
-	AgentState,
-	AgentTool,
-	PrepareNextTurnContext,
-	ThinkingLevel,
+import {
+	type Agent,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentState,
+	type AgentTool,
+	isHarnessMessage,
+	type PrepareNextTurnContext,
+	stripTrailingHarnessMessages,
+	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { contentText } from "@earendil-works/pi-ai";
 import type {
@@ -339,6 +341,17 @@ export class AgentSession {
 	// Retry state
 	private _retryAbortController: AbortController | undefined = undefined;
 	private _retryAttempt = 0;
+	/**
+	 * Assistant message captured as a prefill for continuing an interrupted
+	 * assistant response. Kept until the continuation succeeds so it can be
+	 * restored if the retry fails.
+	 */
+	private _pendingPrefill: AgentMessage | undefined = undefined;
+	/**
+	 * Parent entry ID to branch back to when restoring a pending prefill after
+	 * a failed continuation. `null` means the session had no entries yet.
+	 */
+	private _prefillRestorePoint: string | null | undefined = undefined;
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -1092,11 +1105,13 @@ export class AgentSession {
 		try {
 			await this.agent.prompt(messages);
 			while (await this._handlePostAgentRun()) {
-				await this.agent.continue();
+				await this._continueOnce();
 			}
 		} finally {
 			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
+			this._pendingPrefill = undefined;
+			this._prefillRestorePoint = undefined;
 			await this._emitAgentSettled();
 		}
 	}
@@ -1109,8 +1124,14 @@ export class AgentSession {
 	 * continuation, and runs post-run handling (retry, compaction, queued
 	 * messages) just like a regular prompt.
 	 *
+	 * When the last effective message is a continuable assistant message on an
+	 * openai-completions provider, it is captured as a prefill and removed from
+	 * the transcript (agent state + session log) before continuing. If the
+	 * continuation fails, the original partial message is restored.
+	 *
 	 * @param prefill Optional assistant message to continue via prefill
-	 * (openai-completions providers only).
+	 * (openai-completions providers only). When provided, the caller is
+	 * responsible for having already removed the prefill from the transcript.
 	 */
 	async continue(prefill?: AgentMessage): Promise<void> {
 		if (this._isAgentRunActive) {
@@ -1120,22 +1141,104 @@ export class AgentSession {
 		}
 		this._isAgentRunActive = true;
 		try {
-			await this.agent.continue(prefill);
+			await this._continueOnce(prefill);
 			while (await this._handlePostAgentRun()) {
-				await this.agent.continue();
+				await this._continueOnce();
 			}
 		} finally {
 			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
+			this._pendingPrefill = undefined;
+			this._prefillRestorePoint = undefined;
 			await this._emitAgentSettled();
 		}
+	}
+
+	/**
+	 * Run one continue attempt. This mirrors the /continue slash command:
+	 * trailing harness messages are stripped, a continuable assistant message is
+	 * captured as a prefill and removed from the transcript, and on failure the
+	 * original partial is restored.
+	 */
+	private async _continueOnce(prefill?: AgentMessage): Promise<void> {
+		// Strip trailing harness messages so they do not block continuation or
+		// get duplicated in the LLM context.
+		const stripped = stripTrailingHarnessMessages(this.agent.state.messages);
+		if (stripped.length !== this.agent.state.messages.length) {
+			this.agent.state.messages = stripped;
+		}
+
+		let effectivePrefill = prefill;
+		if (effectivePrefill) {
+			// Caller provided a prefill they already removed from the transcript.
+			// Track it for restoration if the continuation fails.
+			this._pendingPrefill = effectivePrefill;
+			this._prefillRestorePoint = this._getPrefillRestorePoint();
+		} else {
+			// Auto-detect prefill continuation for openai-completions providers.
+			effectivePrefill = this._detectPrefillCandidate();
+			if (effectivePrefill) {
+				this._capturePrefill(effectivePrefill);
+			} else {
+				this._pendingPrefill = undefined;
+				this._prefillRestorePoint = undefined;
+				// A non-continuable assistant message (e.g., a partial error on a
+				// chat provider) would make Agent.continue() throw. Remove it from
+				// the transcript and continue from the last user/tool-result
+				// message instead.
+				const last = this.agent.state.messages[this.agent.state.messages.length - 1];
+				if (last?.role === "assistant" && !isHarnessMessage(last)) {
+					this.deleteLastMessages(1);
+				}
+			}
+		}
+
+		try {
+			await this.agent.continue(effectivePrefill);
+		} catch (error) {
+			// Prefill echo mismatch (or similar) aborts the run. Restore the
+			// original partial message so the transcript is not left without it.
+			if (this._pendingPrefill) {
+				this._restorePrefill(this._prefillRestorePoint ?? null, this._pendingPrefill);
+				this._pendingPrefill = undefined;
+				this._prefillRestorePoint = undefined;
+			}
+			throw error;
+		}
+	}
+
+	/**
+	 * Return the parent entry ID of the message about to be captured as a
+	 * prefill, so a failed continuation can branch back to it.
+	 */
+	private _getPrefillRestorePoint(): string | null {
+		const branch = this.sessionManager.getBranch();
+		return branch.length > 1 ? (branch[branch.length - 2]?.id ?? null) : null;
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
 		if (!msg) {
+			this._pendingPrefill = undefined;
+			this._prefillRestorePoint = undefined;
 			return false;
+		}
+
+		if (msg.stopReason !== "error") {
+			// Continuation succeeded; the prefill has been replaced by the
+			// completed response, so clear the restore state.
+			this._pendingPrefill = undefined;
+			this._prefillRestorePoint = undefined;
+		}
+
+		if (msg.stopReason === "error" && this._pendingPrefill) {
+			// A prefill continuation failed (e.g., connection dropped during the
+			// retry continue). Restore the original partial message so the next
+			// retry can capture it again.
+			this._restorePrefill(this._prefillRestorePoint ?? null, this._pendingPrefill);
+			this._pendingPrefill = undefined;
+			this._prefillRestorePoint = undefined;
 		}
 
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
@@ -2852,6 +2955,12 @@ export class AgentSession {
 
 	/**
 	 * Prepare a retryable error for continuation with exponential backoff.
+	 *
+	 * The caller (_continueOnce) is responsible for stripping harness messages,
+	 * capturing a continuable partial as a prefill, and removing non-continuable
+	 * assistant errors before continuing. This method only handles the retry
+	 * counter, event emission, and backoff sleep.
+	 *
 	 * @returns true if the caller should continue the agent, false otherwise
 	 */
 	private async _prepareRetry(message: AssistantMessage): Promise<boolean> {
@@ -2878,12 +2987,6 @@ export class AgentSession {
 			errorMessage: message.errorMessage || "Unknown error",
 		});
 
-		// Remove error message from agent state (keep in session for history)
-		const messages = this.agent.state.messages;
-		if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-			this.agent.state.messages = messages.slice(0, -1);
-		}
-
 		// Wait with exponential backoff (abortable)
 		this._retryAbortController = new AbortController();
 		try {
@@ -2892,6 +2995,8 @@ export class AgentSession {
 			// Aborted during sleep - emit end event so UI can clean up
 			const attempt = this._retryAttempt;
 			this._retryAttempt = 0;
+			this._pendingPrefill = undefined;
+			this._prefillRestorePoint = undefined;
 			this._emit({
 				type: "auto_retry_end",
 				success: false,
@@ -2904,6 +3009,70 @@ export class AgentSession {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Check whether an assistant message can be continued via prefill
+	 * continuation on the current provider.
+	 */
+	private _canPrefillContinue(message: AgentMessage): boolean {
+		if (message.role !== "assistant") {
+			return false;
+		}
+		if (isHarnessMessage(message)) {
+			return false;
+		}
+		if (message.content.some((block) => block.type === "toolCall")) {
+			return false;
+		}
+		if (this.agent.state.model.api !== "openai-completions") {
+			return false;
+		}
+		return !this.agent.hasQueuedMessages();
+	}
+
+	/**
+	 * Detect the last effective assistant message that can be used as a prefill.
+	 * Returns undefined if no suitable message exists.
+	 */
+	private _detectPrefillCandidate(): AgentMessage | undefined {
+		const stripped = stripTrailingHarnessMessages(this.agent.state.messages);
+		const last = stripped[stripped.length - 1];
+		if (!last || !this._canPrefillContinue(last)) {
+			return undefined;
+		}
+		return last;
+	}
+
+	/**
+	 * Capture an assistant message as a prefill and remove it from the transcript
+	 * (agent state + session log) so it can be sent with return_prefill. The
+	 * original message is kept in `_pendingPrefill` for restoration on failure.
+	 */
+	private _capturePrefill(message: AgentMessage): void {
+		this._pendingPrefill = message;
+		const branch = this.sessionManager.getBranch();
+		// The restore point is the parent of the message being removed, so a
+		// later branch() can cut off the failed continuation and re-append the
+		// original partial.
+		this._prefillRestorePoint = branch.length > 1 ? (branch[branch.length - 2]?.id ?? null) : null;
+		this.deleteLastMessages(1);
+	}
+
+	/**
+	 * Restore a prefill assistant message after a failed continuation. Branches
+	 * the session back to the parent entry and re-appends the original partial
+	 * message, then rebuilds the agent state.
+	 */
+	private _restorePrefill(parentEntryId: string | null, prefill: AgentMessage): void {
+		if (parentEntryId) {
+			this.sessionManager.branch(parentEntryId);
+		} else {
+			this.sessionManager.resetLeaf();
+		}
+		this.sessionManager.appendMessage(prefill as Message);
+		const sessionContext = this.sessionManager.buildSessionContext();
+		this.agent.state.messages = sessionContext.messages;
 	}
 
 	/**

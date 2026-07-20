@@ -843,7 +843,11 @@ describe("Agent", () => {
 					capturedOptions = options;
 					const stream = new MockAssistantStream();
 					queueMicrotask(() => {
-						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Continued response") });
+						// Stream a response that echoes the prefill prefix so the echo
+						// verification check passes.
+						const message = createAssistantMessage("Partial response continued!");
+						stream.push({ type: "start", partial: message });
+						stream.push({ type: "done", reason: "stop", message });
 					});
 					return stream;
 				},
@@ -865,7 +869,7 @@ describe("Agent", () => {
 			expect(agent.state.messages[0]).toBe(userMessage);
 			expect(agent.state.messages[1].role).toBe("assistant");
 			expect((agent.state.messages[1] as AssistantMessage).content).toEqual([
-				{ type: "text", text: "Continued response" },
+				{ type: "text", text: "Partial response continued!" },
 			]);
 		});
 

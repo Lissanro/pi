@@ -36,6 +36,7 @@
 - Fixed branch summary entries recording the navigation destination in `fromId` instead of the pre-navigation source leaf.
 - Fixed threshold auto-compaction being skipped when providers omit streaming usage data ([#8328](https://github.com/earendil-works/pi/issues/8328)).
 - Fixed dash-prefixed prompts being parsed as options by supporting `--` as an end-of-options delimiter ([#7269](https://github.com/earendil-works/pi/issues/7269)).
+- Fixed auto-retry after connection errors to use the same prefill continuation path as `/continue` for openai-completions providers (e.g., llama-server). Trailing harness messages and the partial assistant message are now cleared before each retry continue, and the partial is restored on failure, keeping the UI and session log in sync.
 
 ## [0.84.2] - 2026-08-14
 
