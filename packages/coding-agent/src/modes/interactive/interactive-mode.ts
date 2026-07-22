@@ -3217,6 +3217,14 @@ export class InteractiveMode {
 				}
 				break;
 
+			case "transcript_changed":
+				// The transcript was modified outside normal message events (e.g.,
+				// prefill capture/restore during retry). Re-render from the session
+				// log so the UI reflects deletions and restorations.
+				this.rebuildChatFromMessages();
+				this.ui.requestRender();
+				break;
+
 			case "session_info_changed":
 				this.updateTerminalTitle();
 				this.footer.invalidate();

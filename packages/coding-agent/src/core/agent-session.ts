@@ -184,7 +184,8 @@ export type AgentSessionEvent =
 	  }
 	| { type: "summarization_retry_finished" }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "bash_execution_update"; id?: string; delta: string };
+	| { type: "bash_execution_update"; id?: string; delta: string }
+	| { type: "transcript_changed" };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -3057,6 +3058,7 @@ export class AgentSession {
 		// original partial.
 		this._prefillRestorePoint = branch.length > 1 ? (branch[branch.length - 2]?.id ?? null) : null;
 		this.deleteLastMessages(1);
+		this._emit({ type: "transcript_changed" });
 	}
 
 	/**
@@ -3073,6 +3075,7 @@ export class AgentSession {
 		this.sessionManager.appendMessage(prefill as Message);
 		const sessionContext = this.sessionManager.buildSessionContext();
 		this.agent.state.messages = sessionContext.messages;
+		this._emit({ type: "transcript_changed" });
 	}
 
 	/**

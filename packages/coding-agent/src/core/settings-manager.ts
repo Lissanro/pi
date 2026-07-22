@@ -31,7 +31,7 @@ export interface RetrySettings {
 	enabled?: boolean; // default: true
 	maxRetries?: number; // default: Infinity (unlimited attempts)
 	baseDelayMs?: number; // default: 2000 (exponential backoff base: 2s, 4s, 8s, ...)
-	maxBackoffMs?: number; // default: 300000 (cap exponential backoff at 5 minutes)
+	maxBackoffMs?: number; // default: 30000 (cap exponential backoff at 30 seconds)
 	provider?: ProviderRetrySettings;
 }
 
@@ -881,7 +881,7 @@ export class SettingsManager {
 			enabled: this.getRetryEnabled(),
 			maxRetries: this.settings.retry?.maxRetries ?? Number.POSITIVE_INFINITY,
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
-			maxBackoffMs: this.settings.retry?.maxBackoffMs ?? 300000,
+			maxBackoffMs: this.settings.retry?.maxBackoffMs ?? 30000,
 		};
 	}
 

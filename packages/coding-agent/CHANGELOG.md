@@ -552,7 +552,7 @@
 ### Added
 
 - `/continue` now continues an assistant message via prefill continuation for openai-completions providers (e.g., llama-server). The last assistant message is removed from the transcript and re-sent with `return_prefill` so the model echoes it back with newly generated tokens, replacing the original.
-- Added `retry.maxBackoffMs` setting (default 300000 = 5 minutes) to cap the exponential backoff delay between retry attempts. Combined with the new unlimited default, the agent now retries indefinitely with backoff capped at 5 minutes, so transient backend outages recover automatically.
+- Added `retry.maxBackoffMs` setting (default 30000 = 30 seconds) to cap the exponential backoff delay between retry attempts. Combined with the new unlimited default, the agent now retries indefinitely with backoff capped at 30 seconds, so transient backend outages recover automatically.
 
 ### Changed
 
