@@ -82,6 +82,7 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
+import { formatMessageForEdit, isMessageEdit } from "../../core/message-edit.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
@@ -3106,9 +3107,31 @@ export class InteractiveMode {
 				await this.handleDeleteCommand(count);
 				return;
 			}
+			if (text === "/edit" || text.startsWith("/edit ")) {
+				const arg = text.startsWith("/edit ") ? text.slice(6).trim() : "";
+				const index = arg === "" ? 0 : Number.parseInt(arg, 10);
+				this.editor.setText("");
+				await this.handleEditCommand(index);
+				return;
+			}
 			if (text === "/quit") {
 				this.editor.setText("");
 				await this.shutdown();
+				return;
+			}
+
+			// Handle message edit commands (<pi_edit>...). These rewrite history and
+			// are not sent to the agent. Reject while streaming or compacting.
+			if (isMessageEdit(text)) {
+				if (this.session.isStreaming) {
+					this.showStatus("Cannot edit messages while streaming is in progress");
+					return;
+				}
+				if (this.session.isCompacting) {
+					this.showStatus("Cannot edit messages while compaction is in progress");
+					return;
+				}
+				await this.handleApplyMessageEdits(text);
 				return;
 			}
 
@@ -5264,6 +5287,57 @@ export class InteractiveMode {
 		this.renderInitialMessages();
 		this.showStatus(`Deleted ${removed} message${removed === 1 ? "" : "s"}`);
 		void this.flushCompactionQueue({ willRetry: false });
+	}
+
+	/**
+	 * Populate the editor with an XML edit block for the target message.
+	 * Index 0 is the latest editable message, 1 is the message before it, etc.
+	 * Harness messages are skipped and do not count.
+	 */
+	private async handleEditCommand(index: number): Promise<void> {
+		if (this.session.isStreaming) {
+			this.showStatus("Cannot edit while streaming is in progress");
+			return;
+		}
+		if (!Number.isInteger(index) || index < 0) {
+			this.showStatus("Usage: /edit [index]");
+			return;
+		}
+		const target = this.session.getEditableMessage(index);
+		if (!target) {
+			this.showStatus("No message to edit");
+			return;
+		}
+		const xml = formatMessageForEdit(index, target.message);
+		if (xml === null) {
+			this.showStatus("Selected message cannot be edited");
+			return;
+		}
+		this.editor.setText(xml);
+	}
+
+	/**
+	 * Apply `<pi_edit>` XML blocks from the editor and refresh the chat. The
+	 * editor text is cleared only when edits are actually applied; on failure
+	 * the text is left so the user can fix it.
+	 */
+	private async handleApplyMessageEdits(text: string): Promise<void> {
+		try {
+			const result = this.session.applyMessageEdits(text);
+			if (result.edited === 0 && result.added === 0) {
+				this.showStatus("No edits to apply");
+				return;
+			}
+			this.editor.setText("");
+			this.chatContainer.clear();
+			this.renderInitialMessages();
+			const parts: string[] = [];
+			if (result.edited > 0) parts.push(`edited ${result.edited} message${result.edited === 1 ? "" : "s"}`);
+			if (result.added > 0) parts.push(`added ${result.added} message${result.added === 1 ? "" : "s"}`);
+			this.showStatus(parts.join(", "));
+		} catch (error: unknown) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
 	}
 
 	private showTreeSelector(initialSelectedId?: string): void {

@@ -97,6 +97,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { editBlockToMessage, parseMessageEdits } from "./message-edit.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -1015,6 +1016,131 @@ export class AgentSession {
 			this.agent.state.messages = sessionContext.messages;
 		}
 		return removed;
+	}
+
+	/**
+	 * Get editable message entries from the active context, counting backwards
+	 * from the latest message. Harness messages and non-message entries are
+	 * skipped. Returns the entry and message at the given 0-based index.
+	 */
+	getEditableMessage(index: number): { entryId: string; message: AgentMessage } | undefined {
+		const entries = this.sessionManager.buildContextEntries();
+		const editable: { entryId: string; message: AgentMessage }[] = [];
+		for (const entry of entries) {
+			if (entry.type !== "message") continue;
+			const message = entry.message;
+			if (message.role !== "user" && message.role !== "assistant") continue;
+			if (message.role === "assistant" && isHarnessMessage(message)) continue;
+			editable.push({ entryId: entry.id, message });
+		}
+		const target = editable[editable.length - 1 - index];
+		return target;
+	}
+
+	/**
+	 * Apply message edits encoded in `<pi_edit>` XML blocks. Positive ids replace
+	 * existing messages counting from the latest message (0 = latest). Negative
+	 * ids append new messages in descending id order. Does not run the agent.
+	 * Returns the number of messages edited and added.
+	 *
+	 * @throws Error if the session is streaming/compacting or if a positive id
+	 * refers to a message that does not exist.
+	 */
+	applyMessageEdits(text: string): { edited: number; added: number } {
+		if (this.isStreaming) {
+			throw new Error("Cannot edit messages while the agent is running.");
+		}
+		if (this.isCompacting) {
+			throw new Error("Cannot edit messages while compaction is in progress.");
+		}
+
+		const blocks = parseMessageEdits(text);
+		if (blocks.length === 0) {
+			return { edited: 0, added: 0 };
+		}
+
+		// Sort by id descending so higher ids are applied first.
+		blocks.sort((a, b) => b.id - a.id);
+
+		const editableEntries = this.getEditableMessageEntries();
+		const replacements: Array<{ entryId: string; message: Message }> = [];
+		const newMessages: Message[] = [];
+
+		for (const block of blocks) {
+			if (block.id >= 0) {
+				const target = editableEntries[editableEntries.length - 1 - block.id];
+				if (!target) {
+					throw new Error(`No message to edit at id=${block.id}`);
+				}
+				const baseAssistant =
+					target.message.role === "assistant" ? (target.message as AssistantMessage) : undefined;
+				replacements.push({ entryId: target.entryId, message: editBlockToMessage(block, baseAssistant) });
+			} else {
+				const baseAssistant = this._createBaseAssistantMessage();
+				newMessages.push(editBlockToMessage(block, baseAssistant));
+			}
+		}
+
+		if (replacements.length > 0) {
+			this.sessionManager.replaceMessages(replacements);
+		}
+
+		for (const message of newMessages) {
+			this.sessionManager.appendMessage(message);
+		}
+
+		const sessionContext = this.sessionManager.buildSessionContext();
+		this.agent.state.messages = sessionContext.messages;
+
+		return { edited: replacements.length, added: newMessages.length };
+	}
+
+	private getEditableMessageEntries(): Array<{ entryId: string; message: AgentMessage }> {
+		const entries = this.sessionManager.buildContextEntries();
+		const editable: Array<{ entryId: string; message: AgentMessage }> = [];
+		for (const entry of entries) {
+			if (entry.type !== "message") continue;
+			const message = entry.message;
+			if (message.role !== "user" && message.role !== "assistant") continue;
+			if (message.role === "assistant" && isHarnessMessage(message)) continue;
+			editable.push({ entryId: entry.id, message });
+		}
+		return editable;
+	}
+
+	private _createBaseAssistantMessage(): Pick<AssistantMessage, "api" | "provider" | "model" | "usage" | "timestamp"> {
+		const model = this.model;
+		const timestamp = Date.now();
+		if (!model) {
+			return {
+				api: "openai-responses",
+				provider: "openai",
+				model: "unknown",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp,
+			};
+		}
+		return {
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp,
+		};
 	}
 
 	/** Current session display name, if set */

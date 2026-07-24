@@ -1378,6 +1378,89 @@ export class SessionManager {
 	}
 
 	/**
+	 * Replace one or more messages on the active leaf path while preserving all
+	 * surrounding entries (model changes, compaction, labels, etc.). Each
+	 * replacement is identified by its entry id. The session is branched at the
+	 * parent of the earliest target entry, the tail is cloned with new ids, and
+	 * target messages are substituted with the provided replacements. References
+	 * to cloned entries (compaction firstKeptEntryId, branch summary fromId, and
+	 * label targetId) are updated to point to the new ids.
+	 *
+	 * @param replacements Map of entry id to replacement message for entries on the active leaf path.
+	 */
+	replaceMessages(replacements: Array<{ entryId: string; message: Message }>): void {
+		if (replacements.length === 0) return;
+		const replacementMap = new Map(replacements.map((r) => [r.entryId, r.message]));
+
+		const path = this.getBranch();
+		let firstReplaceIdx = -1;
+		for (let i = 0; i < path.length; i++) {
+			if (replacementMap.has(path[i].id)) {
+				firstReplaceIdx = i;
+				break;
+			}
+		}
+		if (firstReplaceIdx < 0) return;
+
+		const branchPoint = path[firstReplaceIdx].parentId;
+		if (branchPoint) {
+			this.branch(branchPoint);
+		} else {
+			this.resetLeaf();
+		}
+
+		const idMap = new Map<string, string>();
+
+		// Clone the tail, replacing target messages and updating branch summary fromId.
+		for (let i = firstReplaceIdx; i < path.length; i++) {
+			const entry = path[i];
+			const newId = generateId(this.byId);
+			idMap.set(entry.id, newId);
+
+			const newEntry: SessionEntry = { ...entry, id: newId, parentId: this.leafId };
+			if (replacementMap.has(entry.id) && newEntry.type === "message") {
+				newEntry.message = replacementMap.get(entry.id)!;
+			}
+			if (newEntry.type === "branch_summary") {
+				const oldFromId = (entry as BranchSummaryEntry).fromId;
+				(newEntry as BranchSummaryEntry).fromId = idMap.get(oldFromId) ?? oldFromId;
+			}
+
+			this.fileEntries.push(newEntry);
+			this.byId.set(newId, newEntry);
+			this.leafId = newId;
+		}
+
+		// Update references in all entries that point into the cloned tail.
+		for (const entry of this.fileEntries) {
+			if (entry.type === "compaction" && entry.firstKeptEntryId && idMap.has(entry.firstKeptEntryId)) {
+				entry.firstKeptEntryId = idMap.get(entry.firstKeptEntryId)!;
+			} else if (entry.type === "branch_summary" && idMap.has(entry.fromId)) {
+				entry.fromId = idMap.get(entry.fromId)!;
+			} else if (entry.type === "label" && idMap.has(entry.targetId)) {
+				entry.targetId = idMap.get(entry.targetId)!;
+			}
+		}
+
+		// Rebuild label maps from remaining label entries (latest wins; skip orphaned targets).
+		this.labelsById.clear();
+		this.labelTimestampsById.clear();
+		for (const entry of this.fileEntries) {
+			if (entry.type === "label" && this.byId.has(entry.targetId)) {
+				if (entry.label) {
+					this.labelsById.set(entry.targetId, entry.label);
+					this.labelTimestampsById.set(entry.targetId, entry.timestamp);
+				} else {
+					this.labelsById.delete(entry.targetId);
+					this.labelTimestampsById.delete(entry.targetId);
+				}
+			}
+		}
+
+		this._rewriteFile();
+	}
+
+	/**
 	 * Get the session as a tree structure. Returns a shallow defensive copy of all entries.
 	 * A well-formed session has exactly one root (first entry with parentId === null).
 	 * Orphaned entries (broken parent chain) are also returned as roots.
