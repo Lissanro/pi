@@ -2892,7 +2892,7 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
 		this.defaultEditor.onAction("app.editor.external", () => void this.handleOpenExternalEditor());
-		this.defaultEditor.onAction("app.message.copy", () => void this.handleCopyCommand({ flashConfirmation: true }));
+		this.defaultEditor.onAction("app.message.copy", () => void this.handleCopyCommand("", { flashConfirmation: true }));
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
 		this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
@@ -3002,9 +3002,10 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/copy") {
-				await this.handleCopyCommand();
+			if (text === "/copy" || (text.startsWith("/copy") && /^\s/.test(text.slice(5)))) {
+				const arg = text === "/copy" ? "" : text.slice(5).trim();
 				this.editor.setText("");
+				await this.handleCopyCommand(arg);
 				return;
 			}
 			if (text === "/name" || text.startsWith("/name ")) {
@@ -6267,11 +6268,33 @@ export class InteractiveMode {
 		});
 	}
 
-	private async handleCopyCommand(options: { flashConfirmation?: boolean } = {}): Promise<void> {
-		const text = this.session.getLastAssistantText();
-		if (!text) {
-			this.showError("No agent messages to copy yet.");
-			return;
+	private async handleCopyCommand(arg: string, options: { flashConfirmation?: boolean } = {}): Promise<void> {
+		let text: string | undefined;
+		let statusMessage: string;
+
+		if (arg === "") {
+			// No argument: copy the last assistant message (backward compatible).
+			text = this.session.getLastAssistantText();
+			if (!text) {
+				this.showError("No agent messages to copy yet.");
+				return;
+			}
+			statusMessage = "Copied last agent message to clipboard";
+		} else {
+			const index = Number.parseInt(arg, 10);
+			if (Number.isInteger(index) && index >= 0 && arg === String(index)) {
+				// Numeric argument: copy the N-th editable message (skipping harness).
+				text = this.session.getEditableMessageText(index);
+				if (!text) {
+					this.showError("No message to copy at that index");
+					return;
+				}
+				statusMessage = `Copied message ${index} to clipboard`;
+			} else {
+				// Non-numeric argument: copy the text itself.
+				text = arg;
+				statusMessage = "Copied text to clipboard";
+			}
 		}
 
 		try {
@@ -6279,7 +6302,7 @@ export class InteractiveMode {
 			if (options.flashConfirmation && this.ui instanceof TuiAltScreen) {
 				this.ui.flash("Copied!");
 			} else {
-				this.showStatus("Copied last agent message to clipboard");
+				this.showStatus(statusMessage);
 			}
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));

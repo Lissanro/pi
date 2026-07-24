@@ -179,21 +179,32 @@ function parseEditContent(
 }
 
 /**
- * Format an existing message as an edit XML block with the given id.
+ * Format the inner content of a message as XML (without the `<pi_edit>` wrapper).
  * Returns `null` for roles that are not directly editable (e.g. toolResult).
  */
-export function formatMessageForEdit(id: number, message: AgentMessage): string | null {
+export function formatMessageContent(message: AgentMessage): string | null {
 	switch (message.role) {
 		case "user":
-			return formatUserMessageForEdit(id, message as UserMessage);
+			return formatUserMessageContent(message as UserMessage);
 		case "assistant":
-			return formatAssistantMessageForEdit(id, message as AssistantMessage);
+			return formatAssistantMessageContent(message as AssistantMessage);
 		default:
 			return null;
 	}
 }
 
-function formatUserMessageForEdit(id: number, message: UserMessage): string {
+/**
+ * Format an existing message as an edit XML block with the given id.
+ * Returns `null` for roles that are not directly editable (e.g. toolResult).
+ */
+export function formatMessageForEdit(id: number, message: AgentMessage): string | null {
+	const content = formatMessageContent(message);
+	if (content === null) return null;
+	const role = message.role === "user" ? "user" : "assistant";
+	return `<pi_edit id="${id}" role="${role}">${content}</pi_edit>`;
+}
+
+function formatUserMessageContent(message: UserMessage): string {
 	const content =
 		typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
 	let inner = "";
@@ -204,10 +215,10 @@ function formatUserMessageForEdit(id: number, message: UserMessage): string {
 			inner += `<image mimeType="${escapeXmlAttr(block.mimeType)}">${block.data}</image>`;
 		}
 	}
-	return `<pi_edit id="${id}" role="user">${inner}</pi_edit>`;
+	return inner;
 }
 
-function formatAssistantMessageForEdit(id: number, message: AssistantMessage): string {
+function formatAssistantMessageContent(message: AssistantMessage): string {
 	let inner = "";
 	for (const block of message.content) {
 		if (block.type === "thinking") {
@@ -223,7 +234,7 @@ function formatAssistantMessageForEdit(id: number, message: AssistantMessage): s
 			inner += `<tool_call${attrs}>${escapeXmlText(JSON.stringify(block.arguments))}</tool_call>`;
 		}
 	}
-	return `<pi_edit id="${id}" role="assistant">${inner}</pi_edit>`;
+	return inner;
 }
 
 /**

@@ -1,7 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall, type Message } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
-import { formatMessageForEdit, isMessageEdit, parseMessageEdits } from "../../src/core/message-edit.ts";
+import {
+	formatMessageContent,
+	formatMessageForEdit,
+	isMessageEdit,
+	parseMessageEdits,
+} from "../../src/core/message-edit.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
 function getAssistantTexts(harness: Harness): string[] {
@@ -63,6 +68,14 @@ describe("message edit XML format", () => {
 			timestamp: 1,
 		};
 		expect(formatMessageForEdit(0, toolResult)).toBeNull();
+	});
+
+	it("formatMessageContent returns inner content without pi_edit wrapper", () => {
+		const message = fauxAssistantMessage([fauxText("hello"), fauxToolCall("bash", { command: "ls" }, { id: "c1" })]);
+		const content = formatMessageContent(message);
+		expect(content).toContain("hello");
+		expect(content).toContain('<tool_call id="c1" name="bash">');
+		expect(content).not.toContain("<pi_edit");
 	});
 });
 
@@ -316,6 +329,33 @@ describe("AgentSession.applyMessageEdits", () => {
 		const previous = harness.session.getEditableMessage(1);
 		expect(previous?.message.role).toBe("user");
 		expect(getMessageText(previous!.message)).toBe("user");
+	});
+
+	it("getEditableMessageText returns text for the indexed message", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("ok")]);
+		await harness.session.prompt("hello");
+
+		expect(harness.session.getEditableMessageText(0)).toBe("ok");
+		expect(harness.session.getEditableMessageText(1)).toBe("hello");
+		expect(harness.session.getEditableMessageText(5)).toBeUndefined();
+	});
+
+	it("getEditableMessageText includes tool calls for assistant messages", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage([fauxText("Let me check."), fauxToolCall("bash", { command: "ls" }, { id: "call_1" })]),
+		]);
+		await harness.session.prompt("check");
+
+		const text = harness.session.getEditableMessageText(0);
+		expect(text).toContain("Let me check.");
+		expect(text).toContain('<tool_call id="call_1" name="bash">');
+		expect(text).toContain('"command":"ls"');
 	});
 
 	it("throws while streaming", async () => {

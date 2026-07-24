@@ -551,6 +551,7 @@
 
 ### Added
 
+- Extended `/copy` to copy any message by index (`/copy N`, skipping harness messages) or copy arbitrary text to the clipboard (`/copy <text>`). Without arguments, `/copy` still copies the last assistant message.
 - Added `/edit` command and `<pi_edit>` XML message editing. `/edit [index]` copies an existing user or assistant message (harness messages skipped) into the editor as `<pi_edit id="index" role="...">...</pi_edit>`. Sending `<pi_edit>` blocks rewrites history without running the agent: positive ids replace existing messages counting from the latest, negative ids append new messages, and multiple blocks are applied in descending id order. Assistant reasoning, tool calls, and user images are preserved in the XML format.
 - `/continue` now continues an assistant message via prefill continuation for openai-completions providers (e.g., llama-server). The last assistant message is removed from the transcript and re-sent with `return_prefill` so the model echoes it back with newly generated tokens, replacing the original.
 - Added `retry.maxBackoffMs` setting (default 30000 = 30 seconds) to cap the exponential backoff delay between retry attempts. Combined with the new unlimited default, the agent now retries indefinitely with backoff capped at 30 seconds, so transient backend outages recover automatically.
