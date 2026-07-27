@@ -21,9 +21,13 @@ describe("message edit XML format", () => {
 		expect(formatMessageForEdit(0, message)).toBe('<pi_edit id="0" role="user">hello</pi_edit>');
 	});
 
-	it("escapes XML special characters in user text", () => {
-		const message: AgentMessage = { role: "user", content: [{ type: "text", text: "a < b & c > d" }], timestamp: 1 };
-		expect(formatMessageForEdit(0, message)).toBe('<pi_edit id="0" role="user">a &lt; b &amp; c &gt; d</pi_edit>');
+	it("preserves raw text including angle brackets and ampersands", () => {
+		const message: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "a < b & c > d" }],
+			timestamp: 1,
+		};
+		expect(formatMessageForEdit(0, message)).toBe('<pi_edit id="0" role="user">a < b & c > d</pi_edit>');
 	});
 
 	it("formats a user message with an image", () => {
@@ -36,14 +40,14 @@ describe("message edit XML format", () => {
 			timestamp: 1,
 		};
 		expect(formatMessageForEdit(2, message)).toBe(
-			'<pi_edit id="2" role="user">look:<image mimeType="image/png">base64abc</image></pi_edit>',
+			'<pi_edit id="2" role="user">look:<pi_image mimeType="image/png">base64abc</pi_image></pi_edit>',
 		);
 	});
 
 	it("formats an assistant message with reasoning and text", () => {
 		const message = fauxAssistantMessage([fauxThinking("think"), fauxText("answer")], { timestamp: 1 });
 		expect(formatMessageForEdit(0, message)).toBe(
-			'<pi_edit id="0" role="assistant"><reasoning_content>think</reasoning_content>answer</pi_edit>',
+			'<pi_edit id="0" role="assistant"><pi_reasoning_content>think</pi_reasoning_content>answer</pi_edit>',
 		);
 	});
 
@@ -54,7 +58,7 @@ describe("message edit XML format", () => {
 		const xml = formatMessageForEdit(0, message);
 		expect(xml).toContain('<pi_edit id="0" role="assistant">');
 		expect(xml).toContain("ok");
-		expect(xml).toContain('<tool_call id="call_1" name="read">');
+		expect(xml).toContain('<pi_tool_call id="call_1" name="read">');
 		expect(xml).toContain('"path":"/foo"');
 	});
 
@@ -74,7 +78,7 @@ describe("message edit XML format", () => {
 		const message = fauxAssistantMessage([fauxText("hello"), fauxToolCall("bash", { command: "ls" }, { id: "c1" })]);
 		const content = formatMessageContent(message);
 		expect(content).toContain("hello");
-		expect(content).toContain('<tool_call id="c1" name="bash">');
+		expect(content).toContain('<pi_tool_call id="c1" name="bash">');
 		expect(content).not.toContain("<pi_edit");
 	});
 });
@@ -90,14 +94,25 @@ describe("message edit XML parsing", () => {
 		});
 	});
 
-	it("decodes XML entities in user text", () => {
-		const blocks = parseMessageEdits('<pi_edit id="0" role="user">a &lt; b</pi_edit>');
-		expect(blocks[0]?.content).toEqual([{ type: "text", text: "a < b" }]);
+	it("preserves raw text including XML entities and angle brackets", () => {
+		const blocks = parseMessageEdits(
+			'<pi_edit id="0" role="user">See <https://example.com> and a < b & c > d &lt; &amp;gt;</pi_edit>',
+		);
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0]?.content).toEqual([
+			{ type: "text", text: "See <https://example.com> and a < b & c > d &lt; &amp;gt;" },
+		]);
+	});
+
+	it("treats nested pi_edit tags as raw text", () => {
+		const blocks = parseMessageEdits('<pi_edit id="0" role="user">discuss <pi_edit>inner</pi_edit> text</pi_edit>');
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0]?.content).toEqual([{ type: "text", text: "discuss <pi_edit>inner</pi_edit> text" }]);
 	});
 
 	it("parses an assistant edit block with reasoning and text", () => {
 		const blocks = parseMessageEdits(
-			'<pi_edit id="0" role="assistant"><reasoning_content>think</reasoning_content>answer</pi_edit>',
+			'<pi_edit id="0" role="assistant"><pi_reasoning_content>think</pi_reasoning_content>answer</pi_edit>',
 		);
 		expect(blocks[0]?.content).toEqual([
 			{ type: "thinking", thinking: "think" },
@@ -121,6 +136,39 @@ describe("message edit XML parsing", () => {
 
 	it("returns empty when pi_edit appears after other text", () => {
 		expect(parseMessageEdits('discuss <pi_edit id="0" role="user">x</pi_edit>')).toHaveLength(0);
+	});
+
+	it("ignores pi_tool_call in the middle of text", () => {
+		const blocks = parseMessageEdits(
+			'<pi_edit id="0" role="assistant">discuss <pi_tool_call id="c1" name="read">{"path":"/foo"}</pi_tool_call> topic</pi_edit>',
+		);
+		expect(blocks[0]?.content).toEqual([
+			{
+				type: "text",
+				text: 'discuss <pi_tool_call id="c1" name="read">{"path":"/foo"}</pi_tool_call> topic',
+			},
+		]);
+	});
+
+	it("parses trailing tool calls after text", () => {
+		const blocks = parseMessageEdits(
+			'<pi_edit id="0" role="assistant">ok<pi_tool_call id="call_1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>',
+		);
+		expect(blocks[0]?.content).toEqual([
+			{ type: "text", text: "ok" },
+			{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "/foo" } },
+		]);
+	});
+
+	it("parses multiple trailing tool calls", () => {
+		const blocks = parseMessageEdits(
+			'<pi_edit id="0" role="assistant">ok<pi_tool_call id="c1" name="read">{"path":"/a"}</pi_tool_call><pi_tool_call id="c2" name="bash">{"command":"ls"}</pi_tool_call></pi_edit>',
+		);
+		expect(blocks[0]?.content).toEqual([
+			{ type: "text", text: "ok" },
+			{ type: "toolCall", id: "c1", name: "read", arguments: { path: "/a" } },
+			{ type: "toolCall", id: "c2", name: "bash", arguments: { command: "ls" } },
+		]);
 	});
 });
 
@@ -250,7 +298,7 @@ describe("AgentSession.applyMessageEdits", () => {
 
 		await harness.session.prompt("user", { expandPromptTemplates: false });
 
-		const xml = '<pi_edit id="0" role="user">look:<image mimeType="image/png">base64abc</image></pi_edit>';
+		const xml = '<pi_edit id="0" role="user">look:<pi_image mimeType="image/png">base64abc</pi_image></pi_edit>';
 		harness.session.applyMessageEdits(xml);
 
 		const userMessage = harness.session.messages.find((m) => m.role === "user");
@@ -268,7 +316,7 @@ describe("AgentSession.applyMessageEdits", () => {
 		await harness.session.prompt("user");
 
 		const xml =
-			'<pi_edit id="0" role="assistant">ok<tool_call id="call_1" name="read">{"path":"/foo"}</tool_call></pi_edit>';
+			'<pi_edit id="0" role="assistant">ok<pi_tool_call id="call_1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>';
 		harness.session.applyMessageEdits(xml);
 
 		const assistantMessage = harness.session.messages.find((m) => m.role === "assistant");

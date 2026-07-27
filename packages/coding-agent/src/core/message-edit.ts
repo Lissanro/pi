@@ -18,7 +18,6 @@ import type {
 	ToolCall,
 	UserMessage,
 } from "@earendil-works/pi-ai/compat";
-import { XMLParser } from "fast-xml-parser";
 
 export interface ParsedEditBlock {
 	id: number;
@@ -26,40 +25,89 @@ export interface ParsedEditBlock {
 	content: (TextContent | ThinkingContent | ToolCall | ImageContent)[];
 }
 
-interface OrderedNode {
-	":@"?: Record<string, unknown>;
-	[key: string]: unknown;
-}
-
-function escapeXmlText(text: string): string {
-	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+interface TagMatch {
+	name: string;
+	attributes: Record<string, string>;
+	start: number;
+	end: number;
+	isClosing: boolean;
 }
 
 function escapeXmlAttr(text: string): string {
-	return escapeXmlText(text).replace(/"/g, "&quot;");
+	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function getNodeText(node: OrderedNode | unknown): string {
-	if (typeof node === "string") return node;
-	if (node && typeof node === "object" && "#text" in node) {
-		return String((node as Record<string, unknown>)["#text"]);
+function parseTag(tagText: string): { name: string; attributes: Record<string, string>; isClosing: boolean } {
+	const isClosing = tagText.startsWith("</");
+	const inner = tagText.slice(isClosing ? 2 : 1, -1).trim();
+	const nameMatch = inner.match(/^[\w:-]+/);
+	const name = nameMatch?.[0] ?? "";
+	const attrString = inner.slice(name.length).trim();
+	const attributes: Record<string, string> = {};
+	const attrRegex = /([\w:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/g;
+	let match: RegExpExecArray | null = attrRegex.exec(attrString);
+	while (match !== null) {
+		const attrName = match[1];
+		const attrValue = match[2] ?? match[3] ?? "";
+		attributes[attrName] = attrValue;
+		match = attrRegex.exec(attrString);
 	}
-	return "";
+	return { name, attributes, isClosing };
 }
 
-function getChildText(children: OrderedNode[] | unknown): string {
-	if (!Array.isArray(children)) return "";
-	return children.map(getNodeText).join("");
-}
+function findNextTag(text: string, pos: number): TagMatch | undefined {
+	const start = text.indexOf("<", pos);
+	if (start === -1) return undefined;
 
-function getAttributes(node: OrderedNode | undefined): Record<string, string> {
-	if (!node || typeof node !== "object" || !node[":@"]) return {};
-	const attrs = node[":@"] as Record<string, unknown>;
-	const result: Record<string, string> = {};
-	for (const key of Object.keys(attrs)) {
-		result[key] = String(attrs[key] ?? "");
+	let i = start + 1;
+	let inQuote: string | undefined;
+	while (i < text.length) {
+		const ch = text[i];
+		if (inQuote) {
+			if (ch === inQuote) inQuote = undefined;
+		} else if (ch === '"' || ch === "'") {
+			inQuote = ch;
+		} else if (ch === ">") {
+			break;
+		}
+		i++;
 	}
-	return result;
+	if (i >= text.length) return undefined;
+
+	const tagText = text.slice(start, i + 1);
+	const parsed = parseTag(tagText);
+	return { ...parsed, start, end: i + 1 };
+}
+
+function findBlockClose(text: string, startPos: number): { start: number; end: number } | undefined {
+	let pos = startPos;
+	while (pos < text.length) {
+		const tag = findNextTag(text, pos);
+		if (!tag) return undefined;
+		if (tag.name === "pi_edit" && tag.isClosing) {
+			let after = tag.end;
+			while (after < text.length && /\s/.test(text[after])) after++;
+			if (after >= text.length || text.slice(after, after + 8) === "<pi_edit") {
+				return { start: tag.start, end: tag.end };
+			}
+		}
+		pos = tag.end;
+	}
+	return undefined;
+}
+
+function findLastTagClose(text: string, tagName: string): { start: number; end: number } | undefined {
+	let last: { start: number; end: number } | undefined;
+	let pos = 0;
+	while (pos < text.length) {
+		const tag = findNextTag(text, pos);
+		if (!tag) break;
+		if (tag.name === tagName && tag.isClosing) {
+			last = { start: tag.start, end: tag.end };
+		}
+		pos = tag.end;
+	}
+	return last;
 }
 
 /**
@@ -79,103 +127,127 @@ export function parseMessageEdits(text: string): ParsedEditBlock[] {
 	const trimmed = text.trimStart();
 	if (!trimmed.startsWith("<pi_edit")) return [];
 
-	const parser = new XMLParser({
-		preserveOrder: true,
-		ignoreAttributes: false,
-		attributeNamePrefix: "@_",
-		isArray: () => true,
-		parseTagValue: false,
-	});
-
-	let parsed: unknown;
-	try {
-		parsed = parser.parse(`<root>${trimmed}</root>`);
-	} catch {
-		return [];
-	}
-
-	if (!Array.isArray(parsed)) return [];
-
 	const blocks: ParsedEditBlock[] = [];
-	const root = parsed[0];
-	if (!root || typeof root !== "object") return [];
-	const rootChildren = root.root as OrderedNode[] | undefined;
-	if (!Array.isArray(rootChildren)) return [];
+	let pos = 0;
 
-	for (const node of rootChildren) {
-		if (!node || typeof node !== "object" || !("pi_edit" in node)) continue;
+	while (pos < trimmed.length) {
+		const openTag = findNextTag(trimmed, pos);
+		if (!openTag || openTag.name !== "pi_edit" || openTag.isClosing) return [];
 
-		const attrs = getAttributes(node);
-		const id = Number.parseInt(attrs["@_id"] ?? "", 10);
-		const role = attrs["@_role"];
-		if (Number.isNaN(id) || (role !== "user" && role !== "assistant")) continue;
+		const id = Number.parseInt(openTag.attributes.id ?? "", 10);
+		const role = openTag.attributes.role;
+		if (Number.isNaN(id) || (role !== "user" && role !== "assistant")) return [];
 
-		const children = node.pi_edit as OrderedNode[] | undefined;
-		const content = parseEditContent(children ?? [], role);
-		blocks.push({ id, role, content });
+		const close = findBlockClose(trimmed, openTag.end);
+		if (!close) return [];
+
+		const content = trimmed.slice(openTag.end, close.start);
+		const parsedContent = parseInnerContent(content, role);
+		blocks.push({ id, role, content: parsedContent });
+
+		pos = close.end;
+		while (pos < trimmed.length && /\s/.test(trimmed[pos])) pos++;
 	}
 
 	return blocks;
 }
 
-function parseEditContent(
-	children: OrderedNode[],
+function parseInnerContent(
+	content: string,
 	role: "user" | "assistant",
 ): (TextContent | ThinkingContent | ToolCall | ImageContent)[] {
 	const blocks: (TextContent | ThinkingContent | ToolCall | ImageContent)[] = [];
 
-	for (const child of children) {
-		if (!child || typeof child !== "object") continue;
-
-		if ("#text" in child) {
-			const text = getNodeText(child);
-			if (text.trim().length > 0) {
-				blocks.push({ type: "text", text });
+	if (role === "assistant") {
+		const leadingWhitespace = content.match(/^\s*/)?.[0] ?? "";
+		const afterWhitespace = content.slice(leadingWhitespace.length);
+		if (afterWhitespace.startsWith("<pi_reasoning_content>")) {
+			const reasoningClose = findLastTagClose(content, "pi_reasoning_content");
+			if (reasoningClose) {
+				const openEnd = leadingWhitespace.length + "<pi_reasoning_content>".length;
+				const thinking = content.slice(openEnd, reasoningClose.start);
+				const reasoningOpen = findNextTag(content, leadingWhitespace.length);
+				const reasoningAttrs = reasoningOpen?.attributes ?? {};
+				const block: ThinkingContent = { type: "thinking", thinking };
+				if (reasoningAttrs.signature) block.thinkingSignature = reasoningAttrs.signature;
+				if (reasoningAttrs.redacted === "true") block.redacted = true;
+				blocks.push(block);
+				content = content.slice(reasoningClose.end);
 			}
-			continue;
 		}
+	}
 
-		if ("reasoning_content" in child) {
-			if (role !== "assistant") continue;
-			const attrs = getAttributes(child);
-			const thinking = getChildText(child.reasoning_content);
-			const block: ThinkingContent = { type: "thinking", thinking };
-			const signature = attrs["@_signature"];
-			if (signature) block.thinkingSignature = signature;
-			if (attrs["@_redacted"] === "true") block.redacted = true;
-			blocks.push(block);
-			continue;
-		}
+	const specialTagName = role === "assistant" ? "pi_tool_call" : "pi_image";
+	const { specialBlocks, textEnd } = parseTrailingSpecialBlocks(content, specialTagName, role);
 
-		if ("tool_call" in child) {
-			if (role !== "assistant") continue;
-			const attrs = getAttributes(child);
-			const id = attrs["@_id"] ?? "";
-			const name = attrs["@_name"] ?? "";
-			const thoughtSignature = attrs["@_thoughtSignature"];
-			const argsText = getChildText(child.tool_call);
+	const text = content.slice(0, textEnd);
+	if (text.trim().length > 0) {
+		blocks.push({ type: "text", text });
+	}
+	blocks.push(...specialBlocks);
+	return blocks;
+}
+
+function parseTrailingSpecialBlocks(
+	content: string,
+	tagName: string,
+	role: "user" | "assistant",
+): { specialBlocks: (ToolCall | ImageContent)[]; textEnd: number } {
+	const specialBlocks: (ToolCall | ImageContent)[] = [];
+	let end = content.length;
+
+	while (true) {
+		while (end > 0 && /\s/.test(content[end - 1])) end--;
+		const closeText = `</${tagName}>`;
+		if (end < closeText.length || content.slice(end - closeText.length, end) !== closeText) break;
+		const closeStart = end - closeText.length;
+		const open = findPreviousOpeningTag(content, closeStart, tagName);
+		if (!open) break;
+
+		if (role === "assistant") {
+			const argsText = content.slice(open.end, closeStart);
 			let args: Record<string, unknown> = {};
 			try {
 				args = JSON.parse(argsText) as Record<string, unknown>;
 			} catch {
 				args = {};
 			}
-			const block: ToolCall = { type: "toolCall", id, name, arguments: args };
-			if (thoughtSignature) block.thoughtSignature = thoughtSignature;
-			blocks.push(block);
-			continue;
+			const toolCall: ToolCall = {
+				type: "toolCall",
+				id: open.attributes.id ?? "",
+				name: open.attributes.name ?? "",
+				arguments: args,
+			};
+			if (open.attributes.thoughtSignature) toolCall.thoughtSignature = open.attributes.thoughtSignature;
+			specialBlocks.unshift(toolCall);
+		} else {
+			const data = content.slice(open.end, closeStart);
+			const mimeType = open.attributes.mimeType || open.attributes.mime_type || "image/png";
+			specialBlocks.unshift({ type: "image", data, mimeType });
 		}
 
-		if ("image" in child) {
-			if (role !== "user") continue;
-			const attrs = getAttributes(child);
-			const data = getChildText(child.image);
-			const mimeType = attrs["@_mimeType"] || attrs["@_mime_type"] || "image/png";
-			blocks.push({ type: "image", data, mimeType });
-		}
+		end = open.start;
 	}
 
-	return blocks;
+	return { specialBlocks, textEnd: end };
+}
+
+function findPreviousOpeningTag(
+	text: string,
+	beforePos: number,
+	tagName: string,
+): { start: number; end: number; attributes: Record<string, string> } | undefined {
+	let lastOpening: { start: number; end: number; attributes: Record<string, string> } | undefined;
+	let pos = 0;
+	while (pos < beforePos) {
+		const tag = findNextTag(text, pos);
+		if (!tag || tag.start >= beforePos) break;
+		if (tag.name === tagName && !tag.isClosing) {
+			lastOpening = { start: tag.start, end: tag.end, attributes: tag.attributes };
+		}
+		pos = tag.end;
+	}
+	return lastOpening;
 }
 
 /**
@@ -210,9 +282,9 @@ function formatUserMessageContent(message: UserMessage): string {
 	let inner = "";
 	for (const block of content) {
 		if (block.type === "text") {
-			inner += escapeXmlText(block.text);
+			inner += block.text;
 		} else if (block.type === "image") {
-			inner += `<image mimeType="${escapeXmlAttr(block.mimeType)}">${block.data}</image>`;
+			inner += `<pi_image mimeType="${escapeXmlAttr(block.mimeType)}">${block.data}</pi_image>`;
 		}
 	}
 	return inner;
@@ -225,13 +297,13 @@ function formatAssistantMessageContent(message: AssistantMessage): string {
 			let attrs = "";
 			if (block.thinkingSignature) attrs += ` signature="${escapeXmlAttr(block.thinkingSignature)}"`;
 			if (block.redacted) attrs += ` redacted="true"`;
-			inner += `<reasoning_content${attrs}>${escapeXmlText(block.thinking)}</reasoning_content>`;
+			inner += `<pi_reasoning_content${attrs}>${block.thinking}</pi_reasoning_content>`;
 		} else if (block.type === "text") {
-			inner += escapeXmlText(block.text);
+			inner += block.text;
 		} else if (block.type === "toolCall") {
 			let attrs = ` id="${escapeXmlAttr(block.id)}" name="${escapeXmlAttr(block.name)}"`;
 			if (block.thoughtSignature) attrs += ` thoughtSignature="${escapeXmlAttr(block.thoughtSignature)}"`;
-			inner += `<tool_call${attrs}>${escapeXmlText(JSON.stringify(block.arguments))}</tool_call>`;
+			inner += `<pi_tool_call${attrs}>${JSON.stringify(block.arguments)}</pi_tool_call>`;
 		}
 	}
 	return inner;
