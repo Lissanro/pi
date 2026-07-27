@@ -97,7 +97,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { editBlockToMessage, formatMessageContent, parseMessageEdits } from "./message-edit.ts";
+import { editBlockToMessage, parseMessageEdits } from "./message-edit.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -199,6 +199,27 @@ function withoutDeletedHeaders(headers: ProviderHeaders | undefined): Record<str
 	return headers
 		? Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== null))
 		: undefined;
+}
+
+/**
+ * Extract the raw text content of an editable message (user or assistant).
+ * Non-text blocks (images, tool calls, reasoning) are ignored. Returns
+ * undefined if there is no non-empty text.
+ */
+function getMessageTextContent(message: AgentMessage): string | undefined {
+	if (message.role !== "user" && message.role !== "assistant") return undefined;
+	const content = message.content;
+	let text = "";
+	if (typeof content === "string") {
+		text = content;
+	} else if (Array.isArray(content)) {
+		for (const block of content) {
+			if (block.type === "text") {
+				text += block.text;
+			}
+		}
+	}
+	return text.trim() || undefined;
 }
 
 export interface AgentSessionConfig {
@@ -1038,17 +1059,15 @@ export class AgentSession {
 	}
 
 	/**
-	 * Get the text content of the editable message at the given 0-based index
-	 * (0 = latest, counting backwards, skipping harness messages). Returns
-	 * undefined if no message exists at that index. For assistant messages, the
-	 * full content is formatted as XML (matching `/edit`) so tool calls and
-	 * reasoning are included, not just text blocks.
+	 * Get the raw text content of the editable message at the given 0-based
+	 * index (0 = latest, counting backwards, skipping harness messages).
+	 * Returns undefined if no message exists at that index or the message has
+	 * no text. Tool calls and reasoning blocks are not included.
 	 */
 	getEditableMessageText(index: number): string | undefined {
 		const target = this.getEditableMessage(index);
 		if (!target) return undefined;
-		const content = formatMessageContent(target.message);
-		return content ?? undefined;
+		return getMessageTextContent(target.message);
 	}
 
 	/**
@@ -3744,7 +3763,7 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
-	 * Get text content of last assistant message.
+	 * Get raw text content of the last non-harness assistant message.
 	 * Useful for /copy command.
 	 * @returns Text content, or undefined if no assistant message exists
 	 */
@@ -3752,24 +3771,9 @@ export class AgentSession {
 		const lastAssistant = this.messages
 			.slice()
 			.reverse()
-			.find((m) => {
-				if (m.role !== "assistant") return false;
-				const msg = m as AssistantMessage;
-				// Skip aborted messages with no content
-				if (msg.stopReason === "aborted" && msg.content.length === 0) return false;
-				return true;
-			});
+			.find((m) => m.role === "assistant" && !isHarnessMessage(m));
 
-		if (!lastAssistant) return undefined;
-
-		let text = "";
-		for (const content of (lastAssistant as AssistantMessage).content) {
-			if (content.type === "text") {
-				text += content.text;
-			}
-		}
-
-		return text.trim() || undefined;
+		return lastAssistant ? getMessageTextContent(lastAssistant) : undefined;
 	}
 
 	// =========================================================================

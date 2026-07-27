@@ -379,7 +379,7 @@ describe("AgentSession.applyMessageEdits", () => {
 		expect(getMessageText(previous!.message)).toBe("user");
 	});
 
-	it("getEditableMessageText returns text for the indexed message", async () => {
+	it("getEditableMessageText returns raw text for the indexed message", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
@@ -391,7 +391,17 @@ describe("AgentSession.applyMessageEdits", () => {
 		expect(harness.session.getEditableMessageText(5)).toBeUndefined();
 	});
 
-	it("getEditableMessageText includes tool calls for assistant messages", async () => {
+	it("getEditableMessageText does not double-escape XML entities", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage([fauxText("&gt; &amp;gt;")])]);
+		await harness.session.prompt("check");
+
+		expect(harness.session.getEditableMessageText(0)).toBe("&gt; &amp;gt;");
+	});
+
+	it("getEditableMessageText ignores tool calls and reasoning blocks", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
@@ -400,10 +410,38 @@ describe("AgentSession.applyMessageEdits", () => {
 		]);
 		await harness.session.prompt("check");
 
-		const text = harness.session.getEditableMessageText(0);
-		expect(text).toContain("Let me check.");
-		expect(text).toContain('<tool_call id="call_1" name="bash">');
-		expect(text).toContain('"command":"ls"');
+		expect(harness.session.getEditableMessageText(0)).toBe("Let me check.");
+	});
+
+	it("getLastAssistantText skips harness messages", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("real")]);
+		await harness.session.prompt("user");
+
+		// Append a harness message (empty assistant) after the real assistant message.
+		const harnessMessage: AgentMessage = {
+			role: "assistant",
+			content: [],
+			api: "openai-responses",
+			provider: "openai",
+			model: "unknown",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "aborted",
+			timestamp: Date.now(),
+		};
+		harness.session.sessionManager.appendMessage(harnessMessage as Message);
+		harness.session.agent.state.messages = harness.session.sessionManager.buildSessionContext().messages;
+
+		expect(harness.session.getLastAssistantText()).toBe("real");
 	});
 
 	it("throws while streaming", async () => {
