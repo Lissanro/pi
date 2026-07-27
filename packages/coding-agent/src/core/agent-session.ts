@@ -2133,6 +2133,8 @@ export class AgentSession {
 			this.settingsManager.getRetrySettings(),
 			this._summarizationRetryCallbacks({ source: "compaction", reason }),
 			undefined, // sessionId
+			this.agent.state.systemPrompt,
+			this.agent,
 		);
 	}
 
@@ -3489,6 +3491,8 @@ export class AgentSession {
 					streamFn: this.agent.streamFunction,
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
+					systemPrompt: this.agent.state.systemPrompt,
+					agent: this.agent,
 				});
 				if (result.aborted) {
 					return { cancelled: true, aborted: true };

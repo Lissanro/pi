@@ -5,10 +5,10 @@
  * a summary of the branch being left so context isn't lost.
  */
 
-import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import type { Agent, AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import type { RetryCallbacks, RetryPolicy } from "@earendil-works/pi-ai";
 import { contentText } from "@earendil-works/pi-ai";
-import type { Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
+import type { Message, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,
@@ -24,7 +24,6 @@ import {
 	type FileOperations,
 	formatFileOperations,
 	SUMMARIZATION_SYSTEM_PROMPT,
-	serializeConversation,
 } from "./utils.ts";
 
 // ============================================================================
@@ -87,6 +86,17 @@ export interface GenerateBranchSummaryOptions {
 	retry?: RetryPolicy;
 	/** Optional callbacks for retry reporting (e.g. TUI retry indicators). */
 	callbacks?: RetryCallbacks;
+	/**
+	 * Original system prompt from the active session. When provided, the summarization
+	 * request reuses it so provider prompt caches stay valid; otherwise a generic
+	 * summarization system prompt is used.
+	 */
+	systemPrompt?: string;
+	/**
+	 * Agent whose context pipeline (transformContext, convertToLlm, tools,
+	 * sessionId, transport, etc.) should be mirrored for cache reuse.
+	 */
+	agent?: Agent;
 }
 
 // ============================================================================
@@ -306,6 +316,8 @@ export async function generateBranchSummary(
 		streamFn,
 		retry,
 		callbacks,
+		systemPrompt,
+		agent,
 	} = options;
 
 	// Token budget = context window minus reserved space for prompt + response
@@ -318,10 +330,14 @@ export async function generateBranchSummary(
 		return { summary: "No content to summarize" };
 	}
 
-	// Transform to LLM-compatible messages, then serialize to text
-	// Serialization prevents the model from treating it as a conversation to continue
-	const llmMessages = convertToLlm(messages);
-	const conversationText = serializeConversation(llmMessages);
+	// Reuse the same context pipeline as a normal turn so provider prompt caches
+	// stay valid. The summarization instruction is appended as a final user
+	// message so nothing is inserted before the existing prefix.
+	const effectiveSystemPrompt = agent ? agent.state.systemPrompt : (systemPrompt ?? SUMMARIZATION_SYSTEM_PROMPT);
+	const llmMessages = agent
+		? await agent.convertToLlm(agent.transformContext ? await agent.transformContext(messages, signal) : messages)
+		: convertToLlm(messages);
+	const tools = agent ? agent.state.tools.slice() : undefined;
 
 	// Build prompt
 	let instructions: string;
@@ -332,12 +348,13 @@ export async function generateBranchSummary(
 	} else {
 		instructions = BRANCH_SUMMARY_PROMPT;
 	}
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${instructions}`;
+	const instructionText = `Do not continue the conversation above. Output only the structured summary requested below.\n\n${instructions}`;
 
-	const summarizationMessages = [
+	const summarizationMessages: Message[] = [
+		...llmMessages,
 		{
 			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
+			content: [{ type: "text" as const, text: instructionText }],
 			timestamp: Date.now(),
 		},
 	];
@@ -346,8 +363,16 @@ export async function generateBranchSummary(
 	// request behavior (timeouts, retries, attribution headers) stays consistent
 	// without running through agent state/events. Retried via completeSummarization
 	// so transient stream drops reuse the configured retry policy.
-	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
+	const context = { systemPrompt: effectiveSystemPrompt, messages: summarizationMessages, tools };
 	const requestOptions: SimpleStreamOptions = { apiKey, headers, env, signal, maxTokens: 2048 };
+	if (agent) {
+		requestOptions.sessionId = agent.sessionId;
+		requestOptions.transport = agent.transport;
+		requestOptions.thinkingBudgets = agent.thinkingBudgets;
+		requestOptions.maxRetryDelayMs = agent.maxRetryDelayMs;
+		requestOptions.onPayload = agent.onPayload;
+		requestOptions.onResponse = agent.onResponse;
+	}
 	const response = await completeSummarization(model, context, requestOptions, streamFn, retry, callbacks);
 
 	// Check if aborted or errored

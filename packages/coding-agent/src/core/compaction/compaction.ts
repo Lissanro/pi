@@ -5,9 +5,17 @@
  * and after compaction the session is reloaded.
  */
 
-import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Agent, AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@earendil-works/pi-ai";
-import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
+import type {
+	AssistantMessage,
+	Context,
+	Message,
+	Model,
+	SimpleStreamOptions,
+	Tool,
+	Usage,
+} from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { convertToLlm } from "../messages.ts";
 import {
@@ -23,7 +31,6 @@ import {
 	type FileOperations,
 	formatFileOperations,
 	SUMMARIZATION_SYSTEM_PROMPT,
-	serializeConversation,
 } from "./utils.ts";
 
 // ============================================================================
@@ -538,6 +545,34 @@ const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation mes
 
 ${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
 
+/**
+ * Build a summarization context that mirrors a normal agent turn as closely as
+ * possible. When an agent is supplied, use its transformContext/convertToLlm
+ * pipeline, system prompt, and tools so provider KV caches can be reused.
+ */
+async function buildAgentSummarizationContext(
+	agent: Agent | undefined,
+	messages: AgentMessage[],
+	signal: AbortSignal | undefined,
+	fallbackSystemPrompt: string | undefined,
+): Promise<{ systemPrompt: string; messages: Message[]; tools: Tool[] | undefined }> {
+	if (!agent) {
+		return {
+			systemPrompt: fallbackSystemPrompt ?? SUMMARIZATION_SYSTEM_PROMPT,
+			messages: convertToLlm(messages),
+			tools: undefined,
+		};
+	}
+
+	const transformed = agent.transformContext ? await agent.transformContext(messages, signal) : messages;
+	const llmMessages = await agent.convertToLlm(transformed);
+	return {
+		systemPrompt: agent.state.systemPrompt,
+		messages: llmMessages,
+		tools: agent.state.tools.slice(),
+	};
+}
+
 function createSummarizationOptions(
 	model: Model<any>,
 	maxTokens: number,
@@ -547,8 +582,16 @@ function createSummarizationOptions(
 	signal: AbortSignal | undefined,
 	thinkingLevel: ThinkingLevel | undefined,
 	sessionId: string | undefined,
+	agent?: Agent,
 ): SimpleStreamOptions {
 	const options: SimpleStreamOptions = { maxTokens, signal, apiKey, headers, env, sessionId };
+	if (agent) {
+		options.transport = agent.transport;
+		options.thinkingBudgets = agent.thinkingBudgets;
+		options.maxRetryDelayMs = agent.maxRetryDelayMs;
+		options.onPayload = agent.onPayload;
+		options.onResponse = agent.onResponse;
+	}
 	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
 		options.reasoning = thinkingLevel;
 	}
@@ -604,6 +647,8 @@ export async function generateSummary(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
+	systemPrompt?: string,
+	agent?: Agent,
 ): Promise<string> {
 	return (
 		await generateSummaryWithUsage(
@@ -621,22 +666,10 @@ export async function generateSummary(
 			retry,
 			callbacks,
 			sessionId,
+			systemPrompt,
+			agent,
 		)
 	).text;
-}
-
-/** Build the provider context for a standalone summary request. */
-function buildSummarizationContext(promptText: string): Context {
-	return {
-		systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
-		messages: [
-			{
-				role: "user",
-				content: [{ type: "text", text: promptText }],
-				timestamp: Date.now(),
-			},
-		],
-	};
 }
 
 /** Generate or update a conversation summary and return its provider usage. */
@@ -655,6 +688,8 @@ export async function generateSummaryWithUsage(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
+	systemPrompt?: string,
+	agent?: Agent,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
@@ -667,17 +702,32 @@ export async function generateSummaryWithUsage(
 		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
 	}
 
-	// Serialize conversation to text so model doesn't try to continue it
-	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	const llmMessages = convertToLlm(currentMessages);
-	const conversationText = serializeConversation(llmMessages);
+	// Reuse the same context pipeline as a normal turn so provider prompt caches
+	// stay valid. When an agent is provided, apply its transformContext and
+	// convertToLlm exactly as a normal request would. The summarization
+	// instruction is appended as a final user message so nothing is inserted
+	// before the existing prefix.
+	const {
+		systemPrompt: effectiveSystemPrompt,
+		messages: llmMessages,
+		tools,
+	} = await buildAgentSummarizationContext(agent, currentMessages, signal, systemPrompt);
 
-	// Build the prompt with conversation wrapped in tags
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
+	let instructionText =
+		"Do not continue the conversation above. Output only the structured summary requested below.\n\n";
 	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
+		instructionText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
 	}
-	promptText += basePrompt;
+	instructionText += basePrompt;
+
+	const summarizationMessages: Message[] = [
+		...llmMessages,
+		{
+			role: "user" as const,
+			content: [{ type: "text" as const, text: instructionText }],
+			timestamp: Date.now(),
+		},
+	];
 
 	const completionOptions = createSummarizationOptions(
 		model,
@@ -688,11 +738,12 @@ export async function generateSummaryWithUsage(
 		signal,
 		thinkingLevel,
 		sessionId,
+		agent,
 	);
 
 	const response = await completeSummarization(
 		model,
-		buildSummarizationContext(promptText),
+		{ systemPrompt: effectiveSystemPrompt, messages: summarizationMessages, tools },
 		completionOptions,
 		streamFn,
 		retry,
@@ -854,6 +905,8 @@ export async function compact(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
+	systemPrompt?: string,
+	agent?: Agent,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -889,6 +942,8 @@ export async function compact(
 				retry,
 				callbacks,
 				sessionId,
+				systemPrompt,
+				agent,
 			);
 			historyText = historyResult.text;
 			historyUsage = historyResult.usage;
@@ -906,6 +961,8 @@ export async function compact(
 			retry,
 			callbacks,
 			sessionId,
+			systemPrompt,
+			agent,
 		);
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
@@ -927,6 +984,8 @@ export async function compact(
 			retry,
 			callbacks,
 			sessionId,
+			systemPrompt,
+			agent,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;
@@ -965,19 +1024,35 @@ async function generateTurnPrefixSummary(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
+	systemPrompt?: string,
+	agent?: Agent,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 	); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages);
-	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	// Reuse the same context pipeline as a normal turn so provider prompt caches
+	// stay valid. The summarization instruction is appended as a final user
+	// message so nothing is inserted before the existing prefix.
+	const {
+		systemPrompt: effectiveSystemPrompt,
+		messages: llmMessages,
+		tools,
+	} = await buildAgentSummarizationContext(agent, messages, signal, systemPrompt);
+	const instructionText = `Do not continue the conversation above. Output only the structured summary requested below.\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	const summarizationMessages: Message[] = [
+		...llmMessages,
+		{
+			role: "user" as const,
+			content: [{ type: "text" as const, text: instructionText }],
+			timestamp: Date.now(),
+		},
+	];
 
 	const response = await completeSummarization(
 		model,
-		buildSummarizationContext(promptText),
-		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId),
+		{ systemPrompt: effectiveSystemPrompt, messages: summarizationMessages, tools },
+		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId, agent),
 		streamFn,
 		retry,
 		callbacks,
