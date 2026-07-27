@@ -869,21 +869,6 @@ export function prepareCompaction(
 // Main compaction function
 // ============================================================================
 
-const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
-
-Summarize the prefix to provide context for the retained suffix:
-
-## Original Request
-[What did the user ask for in this turn?]
-
-## Early Progress
-- [Key decisions and work done in the prefix]
-
-## Context for Suffix
-- [Information needed to understand the retained recent work]
-
-Be concise. Focus on what's needed to understand the kept suffix.`;
-
 /**
  * Generate summaries for compaction using prepared data.
  * Returns CompactionResult - SessionManager adds uuid/parentUuid when saving.
@@ -919,77 +904,32 @@ export async function compact(
 		settings,
 	} = preparation;
 
-	// Generate summaries and merge into one
+	// Send the entire prefix up to the cut point unchanged so provider KV caches
+	// stay valid. The summarization instruction is appended as a final user
+	// message. Only after receiving the summary do we remove the summarized
+	// messages and insert the compaction entry.
+	const allMessagesToSummarize = isSplitTurn ? [...messagesToSummarize, ...turnPrefixMessages] : messagesToSummarize;
 	let summary: string;
-	let summaryUsage: Usage;
-
-	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		let historyText = "No prior history.";
-		let historyUsage: Usage | undefined;
-		if (messagesToSummarize.length > 0) {
-			const historyResult = await generateSummaryWithUsage(
-				messagesToSummarize,
-				model,
-				settings.reserveTokens,
-				apiKey,
-				headers,
-				signal,
-				customInstructions,
-				previousSummary,
-				thinkingLevel,
-				streamFn,
-				env,
-				retry,
-				callbacks,
-				sessionId,
-				systemPrompt,
-				agent,
-			);
-			historyText = historyResult.text;
-			historyUsage = historyResult.usage;
-		}
-		const turnPrefixResult = await generateTurnPrefixSummary(
-			turnPrefixMessages,
-			model,
-			settings.reserveTokens,
-			apiKey,
-			headers,
-			env,
-			signal,
-			thinkingLevel,
-			streamFn,
-			retry,
-			callbacks,
-			sessionId,
-			systemPrompt,
-			agent,
-		);
-		// Merge into single summary
-		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
-		summaryUsage = historyUsage ? combineUsage(historyUsage, turnPrefixResult.usage) : turnPrefixResult.usage;
-	} else {
-		// Just generate history summary
-		const result = await generateSummaryWithUsage(
-			messagesToSummarize,
-			model,
-			settings.reserveTokens,
-			apiKey,
-			headers,
-			signal,
-			customInstructions,
-			previousSummary,
-			thinkingLevel,
-			streamFn,
-			env,
-			retry,
-			callbacks,
-			sessionId,
-			systemPrompt,
-			agent,
-		);
-		summary = result.text;
-		summaryUsage = result.usage;
-	}
+	const result = await generateSummaryWithUsage(
+		allMessagesToSummarize,
+		model,
+		settings.reserveTokens,
+		apiKey,
+		headers,
+		signal,
+		customInstructions,
+		previousSummary,
+		thinkingLevel,
+		streamFn,
+		env,
+		retry,
+		callbacks,
+		sessionId,
+		systemPrompt,
+		agent,
+	);
+	summary = result.text;
+	const summaryUsage: Usage = result.usage;
 
 	// Compute file lists and append to summary
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
@@ -1008,65 +948,3 @@ export async function compact(
 	};
 }
 
-/**
- * Generate a summary for a turn prefix (when splitting a turn).
- */
-async function generateTurnPrefixSummary(
-	messages: AgentMessage[],
-	model: Model<any>,
-	reserveTokens: number,
-	apiKey: string | undefined,
-	headers?: Record<string, string>,
-	env?: Record<string, string>,
-	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-	streamFn?: StreamFn,
-	retry?: RetryPolicy,
-	callbacks?: RetryCallbacks,
-	sessionId?: string,
-	systemPrompt?: string,
-	agent?: Agent,
-): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = Math.min(
-		Math.floor(0.5 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	); // Smaller budget for turn prefix
-	// Reuse the same context pipeline as a normal turn so provider prompt caches
-	// stay valid. The summarization instruction is appended as a final user
-	// message so nothing is inserted before the existing prefix.
-	const {
-		systemPrompt: effectiveSystemPrompt,
-		messages: llmMessages,
-		tools,
-	} = await buildAgentSummarizationContext(agent, messages, signal, systemPrompt);
-	const instructionText = `Do not continue the conversation above. Output only the structured summary requested below.\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-	const summarizationMessages: Message[] = [
-		...llmMessages,
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: instructionText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const response = await completeSummarization(
-		model,
-		{ systemPrompt: effectiveSystemPrompt, messages: summarizationMessages, tools },
-		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId, agent),
-		streamFn,
-		retry,
-		callbacks,
-	);
-
-	if (response.stopReason === "error") {
-		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
-	}
-	if (response.content.some((block) => block.type === "toolCall")) {
-		throw new Error("Turn prefix summarization attempted to call a tool");
-	}
-
-	return {
-		text: contentText(response.content),
-		usage: response.usage,
-	};
-}
