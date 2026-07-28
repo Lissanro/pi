@@ -373,6 +373,20 @@ describe("findCutPoint", () => {
 		expect(customFitsBudget.isSplitTurn).toBe(false);
 		expect(customFitsBudget.turnStartIndex).toBe(-1);
 	});
+
+	it("should keep the last N messages when keepRecentMessages is set", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("1")),
+			createMessageEntry(createAssistantMessage("a")),
+			createMessageEntry(createUserMessage("2")),
+			createMessageEntry(createAssistantMessage("b")),
+			createMessageEntry(createUserMessage("3")),
+			createMessageEntry(createAssistantMessage("c")),
+		];
+
+		const result = findCutPoint(entries, 0, entries.length, 20000, 3);
+		expect(result.firstKeptEntryIndex).toBe(3);
+	});
 });
 
 describe("buildSessionContext", () => {

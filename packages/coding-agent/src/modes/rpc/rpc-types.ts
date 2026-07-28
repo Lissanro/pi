@@ -43,7 +43,13 @@ export type RpcCommand =
 	| { id?: string; type: "set_follow_up_mode"; mode: "all" | "one-at-a-time" }
 
 	// Compaction
-	| { id?: string; type: "compact"; customInstructions?: string }
+	| {
+			id?: string;
+			type: "compact";
+			customInstructions?: string;
+			keepRecentTokens?: number;
+			keepRecentMessages?: number;
+	  }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
 
 	// Retry

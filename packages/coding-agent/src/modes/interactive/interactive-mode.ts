@@ -173,6 +173,30 @@ import {
 } from "./theme/theme.ts";
 import { InteractiveThemeController } from "./theme/theme-controller.ts";
 
+function parseCompactArgs(args: string): {
+	options: { keepRecentTokens?: number; keepRecentMessages?: number };
+	instructions: string;
+} {
+	const options: { keepRecentTokens?: number; keepRecentMessages?: number } = {};
+	const tokens = args.match(/(?:--\S+|"[^"]*"|\S+)/g) ?? [];
+	const remaining: string[] = [];
+
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i] ?? "";
+		if (token === "--keep-tokens" || token === "--keep-tok") {
+			const value = tokens[++i];
+			if (value) options.keepRecentTokens = Number(value);
+		} else if (token === "--keep-messages" || token === "--keep-msg") {
+			const value = tokens[++i];
+			if (value) options.keepRecentMessages = Number(value);
+		} else {
+			remaining.push(token.replace(/^"|"$/g, ""));
+		}
+	}
+
+	return { options, instructions: remaining.join(" ").trim() };
+}
+
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
 	setExpanded(expanded: boolean): void;
@@ -2095,7 +2119,7 @@ export class InteractiveMode {
 			compact: (options) => {
 				void (async () => {
 					try {
-						const result = await this.session.compact(options?.customInstructions);
+						const result = await this.session.compact(options);
 						options?.onComplete?.(result);
 					} catch (error) {
 						const err = error instanceof Error ? error : new Error(String(error));
@@ -3065,9 +3089,10 @@ export class InteractiveMode {
 				return;
 			}
 			if (text === "/compact" || text.startsWith("/compact ")) {
-				const customInstructions = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
+				const args = text.startsWith("/compact ") ? text.slice(9).trim() : "";
+				const { options, instructions } = parseCompactArgs(args);
 				this.editor.setText("");
-				await this.handleCompactCommand(customInstructions);
+				await this.handleCompactCommand(instructions || undefined, options);
 				return;
 			}
 			if (text === "/reload") {
@@ -3650,7 +3675,11 @@ export class InteractiveMode {
 			}
 			case "compactionSummary": {
 				this.chatContainer.addChild(new Spacer(1));
-				const component = new CompactionSummaryMessageComponent(message, this.getMarkdownThemeWithSettings());
+				const component = new CompactionSummaryMessageComponent(
+					message,
+					this.getMarkdownThemeWithSettings(),
+					this.session.messages,
+				);
 				component.setExpanded(this.toolOutputExpanded);
 				this.chatContainer.addChild(component);
 				break;
@@ -6707,11 +6736,14 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private async handleCompactCommand(customInstructions?: string): Promise<void> {
+	private async handleCompactCommand(
+		customInstructions?: string,
+		options?: { keepRecentTokens?: number; keepRecentMessages?: number },
+	): Promise<void> {
 		this.clearStatusIndicator();
 
 		try {
-			await this.session.compact(customInstructions);
+			await this.session.compact(customInstructions || options ? { customInstructions, ...options } : undefined);
 		} catch {
 			// Ignore, will be emitted as an event
 		}

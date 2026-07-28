@@ -529,7 +529,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "compact": {
-				const result = await session.compact(command.customInstructions);
+				const result = await session.compact({
+					customInstructions: command.customInstructions,
+					keepRecentTokens: command.keepRecentTokens,
+					keepRecentMessages: command.keepRecentMessages,
+				});
 				return success(id, "compact", result);
 			}
 

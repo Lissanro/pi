@@ -412,6 +412,7 @@ export function findCutPoint(
 	startIndex: number,
 	endIndex: number,
 	keepRecentTokens: number,
+	keepRecentMessages?: number,
 ): CutPointResult {
 	const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
 
@@ -419,29 +420,53 @@ export function findCutPoint(
 		return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
 	}
 
-	// Walk backwards from newest, accumulating estimated message sizes
-	let accumulatedTokens = 0;
 	let cutIndex = cutPoints[0]; // Default: keep from first message (not header)
 
-	for (let i = endIndex - 1; i >= startIndex; i--) {
-		const entry = entries[i];
-		const messageTokens = sessionEntryToContextMessages(entry).reduce(
-			(sum, message) => sum + estimateTokens(message),
-			0,
-		);
-		if (messageTokens === 0) continue;
-		accumulatedTokens += messageTokens;
-
-		// Check if we've exceeded the budget
-		if (accumulatedTokens >= keepRecentTokens) {
-			// Find the closest valid cut point at or after this entry
-			for (let c = 0; c < cutPoints.length; c++) {
-				if (cutPoints[c] >= i) {
-					cutIndex = cutPoints[c];
-					break;
+	if (keepRecentMessages !== undefined && keepRecentMessages > 0) {
+		// Keep the last N entries that contribute context-visible messages.
+		let keptCount = 0;
+		for (let i = endIndex - 1; i >= startIndex; i--) {
+			const entry = entries[i];
+			const messageTokens = sessionEntryToContextMessages(entry).reduce(
+				(sum, message) => sum + estimateTokens(message),
+				0,
+			);
+			if (messageTokens === 0) continue;
+			keptCount++;
+			if (keptCount >= keepRecentMessages) {
+				// Find the closest valid cut point at or before this entry.
+				for (let c = cutPoints.length - 1; c >= 0; c--) {
+					if (cutPoints[c] <= i) {
+						cutIndex = cutPoints[c];
+						break;
+					}
 				}
+				break;
 			}
-			break;
+		}
+	} else {
+		// Walk backwards from newest, accumulating estimated message sizes.
+		let accumulatedTokens = 0;
+		for (let i = endIndex - 1; i >= startIndex; i--) {
+			const entry = entries[i];
+			const messageTokens = sessionEntryToContextMessages(entry).reduce(
+				(sum, message) => sum + estimateTokens(message),
+				0,
+			);
+			if (messageTokens === 0) continue;
+			accumulatedTokens += messageTokens;
+
+			// Check if we've exceeded the budget.
+			if (accumulatedTokens >= keepRecentTokens) {
+				// Find the closest valid cut point at or after this entry.
+				for (let c = 0; c < cutPoints.length; c++) {
+					if (cutPoints[c] >= i) {
+						cutIndex = cutPoints[c];
+						break;
+					}
+				}
+				break;
+			}
 		}
 	}
 
@@ -784,9 +809,15 @@ export interface CompactionPreparation {
 	settings: CompactionSettings;
 }
 
+export interface CompactionOverrides {
+	keepRecentTokens?: number;
+	keepRecentMessages?: number;
+}
+
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
+	overrides?: CompactionOverrides,
 ): CompactionPreparation | undefined {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
@@ -812,7 +843,9 @@ export function prepareCompaction(
 
 	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
-	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
+	const keepRecentMessages = overrides?.keepRecentMessages;
+	const keepRecentTokens = overrides?.keepRecentTokens ?? settings.keepRecentTokens;
+	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, keepRecentTokens, keepRecentMessages);
 
 	// Get UUID of first kept entry
 	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];

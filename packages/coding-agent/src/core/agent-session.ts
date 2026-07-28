@@ -311,6 +311,16 @@ export interface SessionStats {
 	contextUsage?: ContextUsage;
 }
 
+/** Options for compact() */
+export interface CompactOptions {
+	/** Custom focus for the generated summary. */
+	customInstructions?: string;
+	/** Override the default token budget for messages to preserve. */
+	keepRecentTokens?: number;
+	/** Preserve the last N messages instead of using a token budget. */
+	keepRecentMessages?: number;
+}
+
 interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
@@ -2170,9 +2180,9 @@ export class AgentSession {
 	 * Aborts the current agent operation first. Manual compaction never retries or
 	 * continues the interrupted agent turn.
 	 *
-	 * @param customInstructions Optional instructions for the compaction summary
+	 * @param options Optional instructions or overrides for the compaction.
 	 */
-	async compact(customInstructions?: string): Promise<CompactionResult> {
+	async compact(options?: CompactOptions | string): Promise<CompactionResult> {
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
@@ -2183,12 +2193,16 @@ export class AgentSession {
 				throw new Error(formatNoModelSelectedMessage());
 			}
 
+			const opts: CompactOptions = typeof options === "string" ? { customInstructions: options } : (options ?? {});
 			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
 
 			const pathEntries = this.sessionManager.getBranch();
 			const settings = this.settingsManager.getCompactionSettings();
 
-			const preparation = prepareCompaction(pathEntries, settings);
+			const preparation = prepareCompaction(pathEntries, settings, {
+				keepRecentTokens: opts.keepRecentTokens,
+				keepRecentMessages: opts.keepRecentMessages,
+			});
 			if (!preparation) {
 				// Check why we can't compact
 				const lastEntry = pathEntries[pathEntries.length - 1];
@@ -2205,7 +2219,7 @@ export class AgentSession {
 					type: "session_before_compact",
 					preparation,
 					branchEntries: pathEntries,
-					customInstructions,
+					customInstructions: opts.customInstructions,
 					reason: "manual",
 					willRetry: false,
 					signal: this._compactionAbortController.signal,
@@ -2241,7 +2255,7 @@ export class AgentSession {
 					requestModel,
 					apiKey,
 					headers,
-					customInstructions,
+					opts.customInstructions,
 					this._compactionAbortController.signal,
 					env,
 					"manual",
@@ -2868,7 +2882,7 @@ export class AgentSession {
 				compact: (options) => {
 					void (async () => {
 						try {
-							const result = await this.compact(options?.customInstructions);
+							const result = await this.compact(options);
 							options?.onComplete?.(result);
 						} catch (error) {
 							const err = error instanceof Error ? error : new Error(String(error));
