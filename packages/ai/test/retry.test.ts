@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
-import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall } from "../src/utils/retry.ts";
+import {
+	isRetryableAssistantError,
+	isRetryableErrorMessage,
+	type RetryPolicy,
+	retryAssistantCall,
+} from "../src/utils/retry.ts";
 
 const openAIExplicitRetryMessage =
 	"An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID req_******** in your message.";
@@ -219,5 +224,41 @@ describe("retryAssistantCall", () => {
 		expect(res.errorMessage).toBeUndefined();
 		expect(produce).toHaveBeenCalledTimes(1);
 		expect(onRetryFinished).toHaveBeenCalledWith(false, 1, "terminated");
+	});
+});
+
+describe("isRetryableErrorMessage", () => {
+	it("matches transient network and provider errors", () => {
+		expect(isRetryableErrorMessage("connection refused")).toBe(true);
+		expect(isRetryableErrorMessage("fetch failed")).toBe(true);
+		expect(isRetryableErrorMessage("ECONNRESET")).toBe(false); // not in pattern list
+		expect(isRetryableErrorMessage("502 bad gateway")).toBe(true);
+		expect(isRetryableErrorMessage("429 too many requests")).toBe(true);
+		expect(isRetryableErrorMessage("overloaded")).toBe(true);
+		expect(isRetryableErrorMessage("websocket closed")).toBe(true);
+		expect(isRetryableErrorMessage("timed out waiting for response")).toBe(true);
+	});
+
+	it("rejects non-retryable quota/billing errors", () => {
+		expect(isRetryableErrorMessage("insufficient_quota")).toBe(false);
+		expect(isRetryableErrorMessage("quota exceeded")).toBe(false);
+		expect(isRetryableErrorMessage("out of budget")).toBe(false);
+		expect(isRetryableErrorMessage("billing error")).toBe(false);
+		expect(isRetryableErrorMessage("FreeUsageLimitError")).toBe(false);
+	});
+
+	it("returns false for empty string", () => {
+		expect(isRetryableErrorMessage("")).toBe(false);
+	});
+
+	it("is used by isRetryableAssistantError", () => {
+		// Verify both produce the same result for the same error text
+		const msg = "connection reset by peer";
+		const assistant = fauxAssistantMessage("", { stopReason: "error", errorMessage: msg });
+		expect(isRetryableAssistantError(assistant)).toBe(isRetryableErrorMessage(msg));
+
+		const msg2 = "insufficient_quota";
+		const assistant2 = fauxAssistantMessage("", { stopReason: "error", errorMessage: msg2 });
+		expect(isRetryableAssistantError(assistant2)).toBe(isRetryableErrorMessage(msg2));
 	});
 });

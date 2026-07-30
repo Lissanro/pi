@@ -2250,6 +2250,7 @@ export class AgentSession {
 				details = extensionCompaction.details;
 			} else {
 				// Shared default summary generator, also used by automatic compaction.
+				// Retries on transient provider errors via the configured retry policy.
 				const result = await this._runDefaultCompaction(
 					preparation,
 					requestModel,
@@ -2337,7 +2338,7 @@ export class AgentSession {
 	}
 
 	/**
-	 * Cancel in-progress compaction (manual or auto).
+	 * Cancel in-progress compaction (manual or auto), including any retry backoff.
 	 */
 	abortCompaction(): void {
 		this._compactionAbortController?.abort();
@@ -2562,6 +2563,7 @@ export class AgentSession {
 				details = extensionCompaction.details;
 			} else {
 				// Shared default summary generator, also used by manual compaction.
+				// Retries on transient provider errors via the configured retry policy.
 				const compactResult = await this._runDefaultCompaction(
 					preparation,
 					requestModel,
@@ -3196,9 +3198,6 @@ export class AgentSession {
 			return false;
 		}
 		if (isHarnessMessage(message)) {
-			return false;
-		}
-		if (message.content.some((block) => block.type === "toolCall")) {
 			return false;
 		}
 		if (this.agent.state.model.api !== "openai-completions") {

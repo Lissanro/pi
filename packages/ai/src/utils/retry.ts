@@ -212,6 +212,18 @@ export async function retryAssistantCall(
 }
 
 /**
+ * Check whether an error message string matches known transient (retryable)
+ * provider or transport failure patterns.
+ *
+ * This does not implement retry policy — only classifies the error text.
+ * Callers are responsible for budget, backoff, and overflow handling.
+ */
+export function isRetryableErrorMessage(errorMessage: string): boolean {
+	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
+	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
+}
+
+/**
  * Classifies whether a failed assistant message looks like a transient provider
  * or transport error, so callers can decide if the last assistant turn should be
  * restarted.
@@ -222,7 +234,5 @@ export async function retryAssistantCall(
  */
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
-	const errorMessage = message.errorMessage;
-	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
-	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
+	return isRetryableErrorMessage(message.errorMessage);
 }
