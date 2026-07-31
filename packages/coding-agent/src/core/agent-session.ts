@@ -1344,6 +1344,15 @@ export class AgentSession {
 			// Track it for restoration if the continuation fails.
 			this._pendingPrefill = effectivePrefill;
 			this._prefillRestorePoint = this._getPrefillRestorePoint();
+		} else if (this._pendingPrefill && this._prefillRestorePoint !== undefined) {
+			// Retry from _handlePostAgentRun: prefill was already restored to the
+			// transcript and _pendingPrefill / _prefillRestorePoint are set.
+			// Re-capture it so agent.continue() uses the prefill path (which
+			// skips the steering queue and continues the original partial).
+			effectivePrefill = this._pendingPrefill;
+			this._pendingPrefill = undefined;
+			this._prefillRestorePoint = undefined;
+			this._capturePrefill(effectivePrefill);
 		} else {
 			// Auto-detect prefill continuation for openai-completions providers.
 			effectivePrefill = this._detectPrefillCandidate();
@@ -1402,16 +1411,23 @@ export class AgentSession {
 			this._prefillRestorePoint = undefined;
 		}
 
+		let retryPrefill: AgentMessage | undefined;
 		if (msg.stopReason === "error" && this._pendingPrefill) {
 			// A prefill continuation failed (e.g., connection dropped during the
 			// retry continue). Restore the original partial message so the next
-			// retry can capture it again.
+			// retry can capture it again, and keep it as the retry prefill so
+			// it takes priority over queued steering messages.
 			this._restorePrefill(this._prefillRestorePoint ?? null, this._pendingPrefill);
+			retryPrefill = this._pendingPrefill;
 			this._pendingPrefill = undefined;
 			this._prefillRestorePoint = undefined;
 		}
 
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
+			if (retryPrefill) {
+				this._pendingPrefill = retryPrefill;
+				this._prefillRestorePoint = this._getPrefillRestorePoint();
+			}
 			return true;
 		}
 
@@ -3203,7 +3219,17 @@ export class AgentSession {
 		if (this.agent.state.model.api !== "openai-completions") {
 			return false;
 		}
-		return !this.agent.hasQueuedMessages();
+		// When there are queued steering/follow-up messages, normally skip
+		// prefill continuation so the user's input takes priority. But if the
+		// assistant message ended with an error (server crash, connection drop),
+		// the queued messages were added during the interrupted turn and the
+		// user didn't intentionally abort it. Continue the partial response
+		// first; queued messages are preserved and processed after.
+		const hasQueuedMessages = this.agent.hasQueuedMessages();
+		if (hasQueuedMessages && (message as AssistantMessage).stopReason !== "error") {
+			return false;
+		}
+		return true;
 	}
 
 	/**

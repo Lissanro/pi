@@ -1,7 +1,8 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai/compat";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
-import { createHarness, type Harness } from "../harness.ts";
+import { createHarness, getMessageText, type Harness } from "../harness.ts";
 
 describe("retry with unlimited attempts and backoff cap", () => {
 	const harnesses: Harness[] = [];
@@ -223,18 +224,6 @@ describe("retry prefill continuation", () => {
 			.join("");
 	}
 
-	function getMessageText(message: {
-		role: string;
-		content: string | Array<{ type: string; text?: string }>;
-	}): string {
-		if (message.role !== "assistant") return "";
-		if (typeof message.content === "string") return message.content;
-		return message.content
-			.filter((block): block is { type: "text"; text: string } => block.type === "text")
-			.map((block) => block.text)
-			.join("");
-	}
-
 	function getMessageThinking(message: {
 		role: string;
 		content: string | Array<{ type: string; thinking?: string }>;
@@ -423,27 +412,178 @@ describe("retry prefill continuation", () => {
 		expect(getAssistantText(lastMessage)).toBe("fresh start");
 	});
 
-	it("does not use prefill continuation when the partial message contains a tool call", async () => {
+	it("uses prefill continuation when the partial message contains a tool call", async () => {
+		const echoSchema = Type.Object({ text: Type.String() });
+		const echoTool: AgentTool<typeof echoSchema> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: echoSchema,
+			async execute(_id, params) {
+				return {
+					content: [{ type: "text", text: `echoed: ${params.text}` }],
+					details: {},
+					terminate: true,
+				};
+			},
+		};
 		const harness = await createHarness({
 			fauxApi: "openai-completions",
 			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
+			tools: [echoTool],
 		});
 		harnesses.push(harness);
 
+		let capturedReturnPrefill: boolean | undefined;
+		let capturedLastIsToolCall = false;
 		harness.setResponses([
 			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], {
 				stopReason: "error",
 				errorMessage: "Connection error.",
 			}),
-			fauxAssistantMessage("fresh start"),
+			(context, options) => {
+				capturedReturnPrefill = options?.returnPrefill;
+				const last = context.messages[context.messages.length - 1];
+				capturedLastIsToolCall =
+					last?.role === "assistant" &&
+					Array.isArray(last.content) &&
+					last.content.some((b: { type: string }) => b.type === "toolCall");
+				// Echo the prefill tool call (same name) so the prefill echo verification passes.
+				return fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], {
+					stopReason: "toolUse",
+				});
+			},
 		]);
 
 		await harness.session.prompt("test");
 
 		expect(harness.faux.state.callCount).toBe(2);
+		// The retry used prefill continuation: returnPrefill was forwarded and the
+		// prefill (tool call) was the last context message.
+		expect(capturedReturnPrefill).toBe(true);
+		expect(capturedLastIsToolCall).toBe(true);
 
-		const lastMessage = harness.session.messages[harness.session.messages.length - 1];
-		expect(lastMessage?.role).toBe("assistant");
-		expect(getAssistantText(lastMessage)).toBe("fresh start");
+		// The echoed tool call was executed (terminate), so the transcript ends
+		// with the tool result.
+		const messages = harness.session.messages;
+		const lastMessage = messages[messages.length - 1];
+		expect(lastMessage?.role).toBe("toolResult");
+		const assistant = messages.find((m) => m.role === "assistant");
+		expect(assistant).toBeDefined();
+		expect(
+			assistant && "content" in assistant
+				? assistant.content.some((b: { type: string }) => b.type === "toolCall")
+				: false,
+		).toBe(true);
+	});
+
+	it("prefers prefill continuation over queued steering when the partial has an error", async () => {
+		// Regression: when the LLM server terminates mid-stream and the user has
+		// queued a steering message, the prefill continuation of the original
+		// partial should take priority over delivering the steering message.
+		const harness = await createHarness({
+			fauxApi: "openai-completions",
+			settings: { retry: { enabled: true, maxRetries: 5, baseDelayMs: 1 } },
+		});
+		harnesses.push(harness);
+
+		const partialText = "partial response content";
+		const continuedText = " continued after server recovery";
+		const seenPrefills: string[] = [];
+
+		harness.setResponses([
+			// First call: partial response with terminated error
+			fauxAssistantMessage(partialText, {
+				stopReason: "error",
+				errorMessage: "terminated",
+			}),
+			// Second call (retry): 503 still loading
+			fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: '503: {"message":"Loading model","type":"unavailable_error","code":503}',
+			}),
+			// Third call (retry): succeeds with prefill continuation
+			(context) => {
+				const last = context.messages[context.messages.length - 1];
+				const lastText = getMessageText(last) as string;
+				seenPrefills.push(lastText);
+				return fauxAssistantMessage(`${lastText}${continuedText}`, {
+					stopReason: "stop",
+				});
+			},
+		]);
+
+		// Queue a steering message after the first error (simulates user typing
+		// during streaming, before the server terminates)
+		// In the real flow this happens via session.prompt() with streamingBehavior
+		// during an active stream. Here we queue it after the first LLM call fails.
+		let steerQueued = false;
+		// We intercept via the harness's prompt flow: the first response is the
+		// terminated error. After the session processes it (but before retry),
+		// we queue a steering message via the agent's steer() method.
+		// The harness doesn't support mid-stream interception, so we use a
+		// callback response that queues steering before returning.
+		harness.setResponses([
+			() => {
+				// During the first LLM call, queue a steering message.
+				// In the real flow this happens when the user types while streaming.
+				if (!steerQueued) {
+					steerQueued = true;
+					harness.session.agent.steer({
+						role: "user",
+						content: [{ type: "text", text: "steering message" }],
+						timestamp: Date.now(),
+					});
+				}
+				return fauxAssistantMessage(partialText, {
+					stopReason: "error",
+					errorMessage: "terminated",
+				});
+			},
+			// Retry calls (503 then success)
+			fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: '503: {"message":"Loading model","type":"unavailable_error","code":503}',
+			}),
+			(context) => {
+				const last = context.messages[context.messages.length - 1];
+				const lastText = getMessageText(last) as string;
+				seenPrefills.push(lastText);
+				return fauxAssistantMessage(`${lastText}${continuedText}`, {
+					stopReason: "stop",
+				});
+			},
+		]);
+
+		await harness.session.prompt("test");
+
+		// Three calls: terminated, 503, success (prefill continuation)
+		expect(harness.faux.state.callCount).toBe(3);
+		// The prefill must be the original partial text, NOT the steering message.
+		expect(seenPrefills).toEqual([partialText]);
+
+		// Final transcript: user prompt → successful assistant response
+		const messages = harness.session.messages;
+		const userMessages = messages.filter((m) => m.role === "user");
+		const assistantMessages = messages.filter((m) => m.role === "assistant");
+		expect(userMessages.length).toBe(1);
+		expect(assistantMessages.length).toBe(1);
+		expect(getMessageText(assistantMessages[0]) as string).toBe(`${partialText}${continuedText}`);
+		// Steering message must NOT have been sent to the LLM.
+		expect(userMessages[0]).toBeDefined();
+		expect(getMessageText(userMessages[0]) as string).toBe("test");
+
+		// Verify session log integrity: /delete should remove exactly one message
+		// (the assistant response), not extra orphaned entries.
+		const entriesBeforeDelete = harness.sessionManager
+			.buildContextEntries()
+			.filter((e) => e.type === "message").length;
+		expect(entriesBeforeDelete).toBe(2); // 1 user + 1 assistant
+		const removed = harness.session.deleteLastMessages(1);
+		expect(removed).toBe(1);
+		const entriesAfterDelete = harness.sessionManager
+			.buildContextEntries()
+			.filter((e) => e.type === "message").length;
+		expect(entriesAfterDelete).toBe(1); // only user prompt remains
 	});
 });
