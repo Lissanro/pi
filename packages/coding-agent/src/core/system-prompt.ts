@@ -102,7 +102,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	// File exploration guidelines
 	if (hasBash && !hasGrep && !hasFind && !hasLs) {
-		addGuideline("Use bash for file operations like ls, rg, find");
+		addGuideline("bash provides access to ls, rg, find, and other shell commands");
 	}
 
 	for (const guideline of promptGuidelines ?? []) {
@@ -112,30 +112,22 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		}
 	}
 
-	// Always include these
-	addGuideline("Be concise in your responses");
-	addGuideline("Show file paths clearly when working with files");
+	const guidelinesSection =
+		guidelinesList.length > 0 ? `\n\nGuidelines:\n${guidelinesList.map((g) => `- ${g}`).join("\n")}` : "";
 
-	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
-
-	let prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+	let prompt = `Pi agent harness runtime environment.
 
 Available tools:
 ${toolsList}
 
-In addition to the tools above, you may have access to other custom tools depending on the project.
+Custom tools may also be registered by extensions.${guidelinesSection}`;
 
-Guidelines:
-${guidelines}
+	// Pi documentation paths (always included; used when pi internals are referenced)
+	prompt += `\n\nPi documentation:\n- README: ${readmePath}\n- Docs directory: ${docsPath}\n- Examples directory: ${examplesPath}`;
 
-Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
-- Main documentation: ${readmePath}
-- Additional docs: ${docsPath}
-- Examples: ${examplesPath} (extensions, custom tools, SDK)
-- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
-- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)
-- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
-- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
+	prompt += `\n\nPi doc file locations:\n- Extensions: docs/extensions.md\n- Themes: docs/themes.md\n- Skills: docs/skills.md\n- Prompt templates: docs/prompt-templates.md\n- TUI components: docs/tui.md\n- Keybindings: docs/keybindings.md\n- SDK integrations: docs/sdk.md\n- Custom providers: docs/custom-provider.md\n- Adding models: docs/models.md\n- Pi packages: docs/packages.md`;
+
+	prompt += `\n\nWhen resolving relative doc paths, use ${docsPath} as the docs root and ${examplesPath} as the examples root.`;
 
 	if (appendSection) {
 		prompt += appendSection;
