@@ -3815,6 +3815,57 @@ export class AgentSession {
 		return lastAssistant ? getMessageTextContent(lastAssistant) : undefined;
 	}
 
+	/**
+	 * Join the text content of every transcript message whose text contains the
+	 * given substring (case-sensitive plain match). Includes user messages,
+	 * assistant messages, tool results, bash executions, and custom messages;
+	 * harness messages are ignored. Returns undefined if nothing matches.
+	 */
+	getMessagesTextContaining(substring: string): string | undefined {
+		const matches: string[] = [];
+		const entries = this.sessionManager.buildContextEntries();
+		for (const entry of entries) {
+			if (entry.type !== "message") continue;
+			const message = entry.message as AgentMessage;
+			if (message.role === "assistant" && isHarnessMessage(message)) continue;
+			const text = this._messageToCopyText(message);
+			if (text?.includes(substring)) {
+				matches.push(text);
+			}
+		}
+		return matches.length > 0 ? matches.join("\n\n") : undefined;
+	}
+
+	/**
+	 * Extract copyable text from any transcript message. Returns undefined for
+	 * messages without text (e.g. image-only tool results).
+	 */
+	private _messageToCopyText(message: AgentMessage): string | undefined {
+		if (message.role === "user" || message.role === "assistant") {
+			return getMessageTextContent(message);
+		}
+		if (message.role === "toolResult") {
+			let text = "";
+			for (const block of message.content) {
+				if (block.type === "text") text += block.text;
+			}
+			return text.trim() || undefined;
+		}
+		if (message.role === "bashExecution") {
+			return bashExecutionToText(message);
+		}
+		if (message.role === "custom") {
+			const content = message.content;
+			if (typeof content === "string") return content.trim() || undefined;
+			let text = "";
+			for (const block of content) {
+				if (block.type === "text") text += block.text;
+			}
+			return text.trim() || undefined;
+		}
+		return undefined;
+	}
+
 	// =========================================================================
 	// Extension System
 	// =========================================================================

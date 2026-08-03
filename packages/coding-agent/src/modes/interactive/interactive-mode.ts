@@ -3049,7 +3049,10 @@ export class InteractiveMode {
 				return;
 			}
 			if (text === "/copy" || (text.startsWith("/copy") && /^\s/.test(text.slice(5)))) {
-				const arg = text === "/copy" ? "" : text.slice(5).trim();
+				// Keep the raw suffix untrimmed: a leading newline distinguishes
+				// next-line payload (literal copy) from same-line content (which may
+				// be an index, a quoted substring match, or literal text).
+				const arg = text === "/copy" ? "" : text.slice(5);
 				this.editor.setText("");
 				await this.handleCopyCommand(arg);
 				return;
@@ -6323,7 +6326,7 @@ export class InteractiveMode {
 		let statusMessage: string;
 
 		if (arg === "") {
-			// No argument: copy the last assistant message (backward compatible).
+			// No argument: copy the last non-harness assistant message.
 			text = this.session.getLastAssistantText();
 			if (!text) {
 				this.showError("No agent messages to copy yet.");
@@ -6331,9 +6334,27 @@ export class InteractiveMode {
 			}
 			statusMessage = "Copied last agent message to clipboard";
 		} else {
-			const index = Number.parseInt(arg, 10);
-			if (Number.isInteger(index) && index >= 0 && arg === String(index)) {
+			// The payload starts on the same line as /copy unless the suffix begins
+			// with a newline. Next-line payloads are always copied literally
+			// (including any quote characters).
+			const firstNonSpace = arg.search(/\S/);
+			const firstNewline = arg.indexOf("\n");
+			const sameLine = firstNewline === -1 || (firstNonSpace >= 0 && firstNonSpace < firstNewline);
+			const trimmed = arg.trim();
+
+			if (sameLine && trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length > 2) {
+				// Quoted same-line substring: copy every transcript message whose
+				// text contains the quoted substring (may span multiple lines).
+				const substring = trimmed.slice(1, -1);
+				text = this.session.getMessagesTextContaining(substring);
+				if (!text) {
+					this.showError(`No message contains: ${substring}`);
+					return;
+				}
+				statusMessage = "Copied matching messages to clipboard";
+			} else if (/^\d+$/.test(trimmed)) {
 				// Numeric argument: copy the N-th editable message (skipping harness).
+				const index = Number.parseInt(trimmed, 10);
 				text = this.session.getEditableMessageText(index);
 				if (!text) {
 					this.showError("No message to copy at that index");
@@ -6341,8 +6362,8 @@ export class InteractiveMode {
 				}
 				statusMessage = `Copied message ${index} to clipboard`;
 			} else {
-				// Non-numeric argument: copy the text itself.
-				text = arg;
+				// Literal copy of the provided text.
+				text = trimmed;
 				statusMessage = "Copied text to clipboard";
 			}
 		}
