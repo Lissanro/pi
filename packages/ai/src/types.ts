@@ -396,6 +396,15 @@ export interface ToolCall {
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
 	/** OpenAI Responses namespace for calls to dynamically loaded or namespaced tools. */
 	namespace?: string;
+	/**
+	 * Raw model-format tool-call tokens for this call, captured from providers
+	 * that emit a per-call raw field (e.g. llama-server's streaming `__raw`).
+	 * Concatenated across streaming deltas. Used to resume an interrupted
+	 * assistant message (prefill continuation) via `tool_calls_raw`, which
+	 * supports both complete and partial tool calls. Only populated by
+	 * providers that emit it; absent for providers that do not.
+	 */
+	raw?: string;
 }
 
 export interface Usage {

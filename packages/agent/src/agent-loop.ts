@@ -181,8 +181,10 @@ export async function runAgentLoopContinue(
  * A user or tool-result message is always continuable. An assistant message is
  * only continuable via prefill continuation (`config.returnPrefill`): the last
  * assistant message is re-sent as a prefill so the provider echoes it back with
- * newly generated tokens. Tool-call messages and non-openai-completions providers
- * are not supported for prefill continuation.
+ * newly generated tokens. Assistant messages with tool calls are supported: the
+ * raw tool-call tokens are sent via `tool_calls_raw` so the provider can resume
+ * both complete and partial tool calls. Non-openai-completions providers are not
+ * supported for prefill continuation.
  */
 function assertContinuableLastMessage(lastMessage: AgentMessage, config: AgentLoopConfig): void {
 	if (lastMessage.role !== "assistant") {
@@ -190,9 +192,6 @@ function assertContinuableLastMessage(lastMessage: AgentMessage, config: AgentLo
 	}
 	if (!config.returnPrefill) {
 		throw new Error("Cannot continue from message role: assistant");
-	}
-	if (lastMessage.content.some((block) => block.type === "toolCall")) {
-		throw new Error("Cannot continue a message with a tool call");
 	}
 	if (config.model.api !== "openai-completions") {
 		throw new Error("Continuation is only supported for openai-completions providers (e.g., llama-server)");
@@ -370,12 +369,26 @@ async function streamAssistantResponse(
 
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
+	// In prefill continuation the last context message is the assistant prefill
+	// being resumed. Replace it with the streamed partial instead of appending,
+	// so the context does not retain a duplicate of the prefill alongside the
+	// response (which would send the prefill's tool calls twice on a subsequent
+	// tool-result turn). convertToLlm above already received the prefill as the
+	// trailing assistant message, so it is safe to replace it here.
+	const replaceLast =
+		config.returnPrefill === true &&
+		context.messages.length > 0 &&
+		context.messages[context.messages.length - 1].role === "assistant";
 
 	for await (const event of response) {
 		switch (event.type) {
 			case "start":
 				partialMessage = event.partial;
-				context.messages.push(partialMessage);
+				if (replaceLast) {
+					context.messages[context.messages.length - 1] = partialMessage;
+				} else {
+					context.messages.push(partialMessage);
+				}
 				addedPartial = true;
 				await emit({ type: "message_start", message: { ...partialMessage } });
 				break;

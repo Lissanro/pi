@@ -169,6 +169,8 @@ export interface OpenAICompletionsOptions extends StreamOptions {
 
 export interface ConvertCompletionsMessagesOptions {
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
+	/** When true, skip synthesizing a tool result for a trailing unresolved tool call. */
+	prefill?: boolean;
 }
 
 interface OpenAICompatCacheControl {
@@ -608,6 +610,14 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 								const nextInput = getCustomToolCallInput(block) + toolCall.custom.input;
 								delta = appendCustomToolCallInput(block, nextInput, false) ?? "";
 							}
+							// Capture the per-call raw tool-call tokens (llama-server `__raw`)
+							// so an interrupted assistant message can be resumed via
+							// `tool_calls_raw` prefill. Each streaming chunk carries a raw
+							// delta; concatenate per call to reconstruct the full raw.
+							const rawDelta = (toolCall as { __raw?: string }).__raw;
+							if (typeof rawDelta === "string" && rawDelta.length > 0) {
+								block.raw = (block.raw ?? "") + rawDelta;
+							}
 							stream.push({
 								type: "toolcall_delta",
 								contentIndex: getContentIndex(block),
@@ -757,7 +767,10 @@ function buildParams(
 		compat.supportsOpenAIGrammarTools,
 	),
 ) {
-	const messages = convertMessages(model, context, compat, { grammarToolInputProperties });
+	const messages = convertMessages(model, context, compat, {
+		grammarToolInputProperties,
+		prefill: !!options?.returnPrefill,
+	});
 	const cacheControl = getCompatCacheControl(compat, cacheRetention);
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
@@ -1169,7 +1182,9 @@ export function convertMessages(
 		return id;
 	};
 
-	const transformedMessages = transformMessages(context.messages, model, (id) => normalizeToolCallId(id));
+	const transformedMessages = transformMessages(context.messages, model, (id) => normalizeToolCallId(id), {
+		skipTrailingToolResultSynthesis: options?.prefill === true,
+	});
 
 	if (context.systemPrompt) {
 		const useDeveloperRole = model.reasoning && compat.supportsDeveloperRole;
@@ -1288,27 +1303,39 @@ export function convertMessages(
 			}
 
 			if (toolCalls.length > 0) {
-				assistantMsg.tool_calls = toolCalls.map((tc): ChatCompletionMessageToolCall => {
-					const customInputProperty = options?.grammarToolInputProperties?.get(tc.name);
-					if (customInputProperty !== undefined) {
+				// Prefill continuation: when the trailing assistant message carries
+				// tool calls and every call has captured raw tokens (llama-server
+				// `__raw`), send `tool_calls_raw` so the server resumes from the raw
+				// tokens. This supports both complete and partial tool calls. When
+				// raw is unavailable (e.g. a provider that does not emit `__raw`),
+				// fall back to structured `tool_calls` (complete calls only).
+				const isPrefillMessage = options?.prefill === true && i === transformedMessages.length - 1;
+				const hasRawTokens = toolCalls.every((tc) => typeof tc.raw === "string" && tc.raw.length > 0);
+				if (isPrefillMessage && hasRawTokens) {
+					(assistantMsg as { tool_calls_raw?: string }).tool_calls_raw = toolCalls.map((tc) => tc.raw!).join("");
+				} else {
+					assistantMsg.tool_calls = toolCalls.map((tc): ChatCompletionMessageToolCall => {
+						const customInputProperty = options?.grammarToolInputProperties?.get(tc.name);
+						if (customInputProperty !== undefined) {
+							return {
+								id: tc.id,
+								type: "custom",
+								custom: {
+									name: tc.name,
+									input: sanitizeSurrogates(getGrammarToolInput(tc.name, tc.arguments, customInputProperty)),
+								},
+							};
+						}
 						return {
 							id: tc.id,
-							type: "custom",
-							custom: {
+							type: "function",
+							function: {
 								name: tc.name,
-								input: sanitizeSurrogates(getGrammarToolInput(tc.name, tc.arguments, customInputProperty)),
+								arguments: JSON.stringify(tc.arguments),
 							},
 						};
-					}
-					return {
-						id: tc.id,
-						type: "function",
-						function: {
-							name: tc.name,
-							arguments: JSON.stringify(tc.arguments),
-						},
-					};
-				});
+					});
+				}
 			}
 			if (preservedReasoningDetails) {
 				assistantMsg.reasoning_details = preservedReasoningDetails;
@@ -1331,7 +1358,8 @@ export function convertMessages(
 				content !== null &&
 				content !== undefined &&
 				(typeof content === "string" ? content.length > 0 : content.length > 0);
-			if (!hasContent && !assistantMsg.tool_calls && nonEmptyThinkingBlocks.length === 0) {
+			const hasToolCallsRaw = typeof (assistantMsg as { tool_calls_raw?: string }).tool_calls_raw === "string";
+			if (!hasContent && !assistantMsg.tool_calls && !hasToolCallsRaw && nonEmptyThinkingBlocks.length === 0) {
 				continue;
 			}
 			params.push(assistantMsg);

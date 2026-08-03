@@ -65,6 +65,7 @@ export function transformMessages<TApi extends Api>(
 	messages: Message[],
 	model: Model<TApi>,
 	normalizeToolCallId?: (id: string, model: Model<TApi>, source: AssistantMessage) => string,
+	options?: { skipTrailingToolResultSynthesis?: boolean },
 ): Message[] {
 	// Build a map of original tool call IDs to normalized IDs
 	const toolCallIdMap = new Map<string, string>();
@@ -190,7 +191,14 @@ export function transformMessages<TApi extends Api>(
 	}
 
 	// If the conversation ends with unresolved tool calls, synthesize results now.
-	insertSyntheticToolResults();
+	// In prefill continuation mode the trailing assistant message carries
+	// unresolved tool calls on purpose (they are the prefill to resume), so
+	// synthesizing results for them would append tool messages after the
+	// assistant and break the prefill (the server requires the assistant to
+	// be the trailing message).
+	if (!options?.skipTrailingToolResultSynthesis) {
+		insertSyntheticToolResults();
+	}
 
 	return result;
 }

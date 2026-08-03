@@ -5273,17 +5273,7 @@ export class InteractiveMode {
 			if (errorMessage.includes("No messages to continue from")) {
 				this.showStatus("No messages to continue from");
 			} else if (errorMessage.includes("Cannot continue from message role: assistant")) {
-				if (
-					last !== undefined &&
-					last.role === "assistant" &&
-					last.content.some((block) => block.type === "toolCall")
-				) {
-					this.showStatus("Cannot continue a message with a tool call");
-				} else if (
-					last !== undefined &&
-					last.role === "assistant" &&
-					agent.state.model.api !== "openai-completions"
-				) {
+				if (last !== undefined && last.role === "assistant" && agent.state.model.api !== "openai-completions") {
 					this.showStatus("Continuation is only supported for llama-server");
 				} else {
 					this.showStatus("Last message is from assistant. Send a message first or use /new to start fresh.");

@@ -873,18 +873,105 @@ describe("Agent", () => {
 			]);
 		});
 
-		it("throws when prefill has a tool call", async () => {
+		it("continues an assistant message with a tool call via prefill and executes the echoed call", async () => {
+			let capturedContext: Context | undefined;
+			let capturedOptions: SimpleStreamOptions | undefined;
+			const toolSchema = Type.Object({ command: Type.String() });
+			const bashTool: AgentTool<typeof toolSchema> = {
+				name: "bash",
+				label: "Bash",
+				description: "Run a command",
+				parameters: toolSchema,
+				async execute(_id, params) {
+					return {
+						content: [{ type: "text", text: `ran: ${params.command}` }],
+						details: {},
+						terminate: true,
+					};
+				},
+			};
 			const agent = new Agent({
-				initialState: { model: createCompletionsModel() },
-				streamFn: () => new MockAssistantStream(),
+				initialState: { model: createCompletionsModel(), tools: [bashTool] },
+				streamFn: (_model, context, options) => {
+					capturedContext = context;
+					capturedOptions = options;
+					const stream = new MockAssistantStream();
+					queueMicrotask(() => {
+						// Echo the prefill tool call (same name + raw) so the prefill
+						// echo verification passes, then complete with toolUse.
+						const message = createAssistantToolUseMessage([
+							{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" }, raw: "<raw>" },
+						]);
+						stream.push({ type: "start", partial: message });
+						stream.push({ type: "done", reason: "toolUse", message });
+					});
+					return stream;
+				},
 			});
 
+			const userMessage: AgentMessage = { role: "user", content: "Hello", timestamp: Date.now() };
 			const prefill: AgentMessage = createAssistantToolUseMessage([
-				{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } },
+				{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" }, raw: "<raw>" },
 			]);
-			agent.state.messages = [{ role: "user", content: "Hello", timestamp: Date.now() }];
+			agent.state.messages = [userMessage];
 
-			await expect(agent.continue(prefill)).rejects.toThrow("Cannot continue a message with a tool call");
+			await agent.continue(prefill);
+
+			// The prefill was the last message in the LLM context.
+			expect(capturedContext?.messages.length).toBe(2);
+			expect(capturedContext?.messages[1]).toBe(prefill);
+			// returnPrefill was forwarded to the stream function.
+			expect(capturedOptions?.returnPrefill).toBe(true);
+			// The prefill was replaced by the continued message, then the tool call
+			// was executed (terminate), so state is [user, assistant, toolResult].
+			expect(agent.state.messages.length).toBe(3);
+			expect(agent.state.messages[0]).toBe(userMessage);
+			const continued = agent.state.messages[1] as AssistantMessage;
+			expect(continued.content.some((b) => b.type === "toolCall")).toBe(true);
+			expect(agent.state.messages[2].role).toBe("toolResult");
+		});
+
+		it("produces an error when the tool-call echo does not match", async () => {
+			const toolSchema = Type.Object({ command: Type.String() });
+			const bashTool: AgentTool<typeof toolSchema> = {
+				name: "bash",
+				label: "Bash",
+				description: "Run a command",
+				parameters: toolSchema,
+				async execute() {
+					return { content: [{ type: "text", text: "ok" }], details: {}, terminate: true };
+				},
+			};
+			const agent = new Agent({
+				initialState: { model: createCompletionsModel(), tools: [bashTool] },
+				streamFn: () => {
+					const stream = new MockAssistantStream();
+					queueMicrotask(() => {
+						// Echo a DIFFERENT tool call name so the prefill echo verification fails.
+						const message = createAssistantToolUseMessage([
+							{ type: "toolCall", id: "tc-2", name: "other_tool", arguments: {}, raw: "<other>" },
+						]);
+						stream.push({ type: "start", partial: message });
+						stream.push({ type: "done", reason: "toolUse", message });
+					});
+					return stream;
+				},
+			});
+
+			const userMessage: AgentMessage = { role: "user", content: "Hello", timestamp: Date.now() };
+			const prefill: AgentMessage = createAssistantToolUseMessage([
+				{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" }, raw: "<raw>" },
+			]);
+			agent.state.messages = [userMessage];
+
+			// The echo mismatch throws inside processEvents, which handleRunFailure
+			// turns into an error assistant message (AgentSession restores the
+			// prefill at its layer).
+			await agent.continue(prefill);
+			const last = agent.state.messages[agent.state.messages.length - 1] as AssistantMessage;
+			expect(last.role).toBe("assistant");
+			expect(last.stopReason).toBe("error");
+			expect(last.errorMessage).toContain("Prefill echo mismatch: tool call 0 name");
 		});
 
 		it("throws when model is not openai-completions", async () => {

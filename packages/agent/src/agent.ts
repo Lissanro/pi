@@ -20,6 +20,7 @@ import type {
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	AgentToolCall,
 	BeforeToolCallContext,
 	BeforeToolCallResult,
 	PrepareNextTurnContext,
@@ -392,17 +393,14 @@ export class Agent {
 				throw new Error("Prefill must be an assistant message");
 			}
 			const assistantPrefill = prefill;
-			if (assistantPrefill.content.some((block) => block.type === "toolCall")) {
-				throw new Error("Cannot continue a message with a tool call");
-			}
 			if (this._state.model.api !== "openai-completions") {
 				throw new Error("Continuation is only supported for openai-completions providers (e.g., llama-server)");
 			}
 
 			// Verify the prefill echo during streaming: the model must return at
-			// least the prefill reasoning_content and content before generating
-			// new tokens. The check runs once as soon as both fields are long
-			// enough, then normal generation continues.
+			// least the prefill reasoning_content, content, and tool calls before
+			// generating new tokens. The check runs once as soon as all prefilled
+			// fields are long enough, then normal generation continues.
 			this._pendingPrefill = assistantPrefill;
 			this._prefillVerified = false;
 			try {
@@ -465,10 +463,12 @@ export class Agent {
 	/**
 	 * Gatekept prefill echo verification.
 	 *
-	 * Runs on every streamed partial message. Once both the reasoning_content
-	 * (thinking) and content (text) are at least as long as the prefill, it
-	 * performs a one-time prefix comparison. If the prefixes match, verification
-	 * is marked complete and generation continues normally. If they do not
+	 * Runs on every streamed partial message. Once the reasoning_content
+	 * (thinking), content (text), and tool calls are at least as long as the
+	 * prefill, it performs a one-time comparison. Tool calls are verified by
+	 * raw-token prefix (covering both complete and partial calls) when raw is
+	 * available, otherwise by name. If everything matches, verification is
+	 * marked complete and generation continues normally. If anything does not
 	 * match, it throws so the caller can restore the original message.
 	 */
 	private checkPrefillEcho(partialMessage: AgentMessage): void {
@@ -500,6 +500,36 @@ export class Agent {
 		}
 		if (!partialText.startsWith(prefillText)) {
 			throw new Error("Prefill echo mismatch: content does not match the prefill.");
+		}
+
+		// Verify tool calls: with return_prefill the provider echoes the prefilled
+		// tool calls before generating new ones, so the partial's first N tool
+		// calls must reproduce the prefill's N tool calls. Raw tokens are a prefix
+		// of the streamed call (equal for complete calls, a prefix for partial
+		// calls the model completes). When raw is unavailable (provider did not
+		// emit it), only the name is verified; argument equality is left to the
+		// post-run fallback check.
+		const prefillToolCalls = prefill.content.filter((b): b is AgentToolCall => b.type === "toolCall");
+		if (prefillToolCalls.length > 0) {
+			const partialToolCalls = partial.content.filter((b): b is AgentToolCall => b.type === "toolCall");
+			if (partialToolCalls.length < prefillToolCalls.length) {
+				return;
+			}
+			for (let i = 0; i < prefillToolCalls.length; i++) {
+				const prefillTc = prefillToolCalls[i];
+				const partialTc = partialToolCalls[i];
+				if (prefillTc.name !== partialTc.name) {
+					throw new Error(`Prefill echo mismatch: tool call ${i} name does not match the prefill.`);
+				}
+				if (typeof prefillTc.raw === "string" && prefillTc.raw.length > 0) {
+					if (typeof partialTc.raw !== "string" || partialTc.raw.length < prefillTc.raw.length) {
+						return;
+					}
+					if (!partialTc.raw.startsWith(prefillTc.raw)) {
+						throw new Error(`Prefill echo mismatch: tool call ${i} raw tokens do not match the prefill.`);
+					}
+				}
+			}
 		}
 
 		this._prefillVerified = true;

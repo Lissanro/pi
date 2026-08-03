@@ -1809,7 +1809,7 @@ describe("agentLoopContinue prefill continuation", () => {
 		expect(() => agentLoopContinue(context, config)).toThrow("Cannot continue from message role: assistant");
 	});
 
-	it("throws when continuing an assistant message with a tool call", () => {
+	it("continues an assistant message with a tool call when returnPrefill is set", async () => {
 		const user = createUserMessage("Hello");
 		const prefill = createAssistantMessage([
 			{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } },
@@ -1824,7 +1824,39 @@ describe("agentLoopContinue prefill continuation", () => {
 			convertToLlm: identityConverter,
 			returnPrefill: true,
 		};
-		expect(() => agentLoopContinue(context, config)).toThrow("Cannot continue a message with a tool call");
+
+		let capturedContext: Context | undefined;
+		let capturedOptions: SimpleStreamOptions | undefined;
+		const streamFn: StreamFn = (_model, llmContext, options) => {
+			capturedContext = llmContext;
+			capturedOptions = options;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: createAssistantMessage([{ type: "text", text: "continued" }]),
+				});
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoopContinue(context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+		const messages = await stream.result();
+
+		// The prefill was the last message in the LLM context.
+		expect(capturedContext?.messages.length).toBe(2);
+		expect(capturedContext?.messages[1]).toBe(prefill);
+		// returnPrefill is forwarded to the stream function.
+		expect(capturedOptions?.returnPrefill).toBe(true);
+		// The loop returns the new assistant message (no throw for tool calls).
+		expect(messages.length).toBe(1);
+		expect(messages[0].role).toBe("assistant");
+		expect((messages[0] as AssistantMessage).content).toEqual([{ type: "text", text: "continued" }]);
 	});
 
 	it("throws when continuing an assistant message with a non-openai-completions model", () => {

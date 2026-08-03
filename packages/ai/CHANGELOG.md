@@ -301,6 +301,8 @@
 ### Added
 
 - Added `returnPrefill` to `StreamOptions`. When set, openai-completions providers send `return_prefill: true` so llama-server echoes the last assistant message (prefill) back as part of the streamed response, enabling prefill continuation.
+- Added `raw` to `ToolCall` to capture per-call raw tool-call tokens (llama-server streaming `__raw`), concatenated across deltas. Used to resume interrupted assistant messages via `tool_calls_raw` prefill.
+- `openai-completions` `convertMessages` now sends `tool_calls_raw` (concatenated raw tokens) for the trailing assistant message during prefill continuation when every tool call has `raw`, falling back to structured `tool_calls` when `raw` is unavailable. `transformMessages` gained a `skipTrailingToolResultSynthesis` option so the trailing assistant's unresolved tool calls are not replaced by synthetic tool results during prefill continuation.
 - Added provider-owned authentication and availability resolution to `Models`, including stored OAuth refresh and interactive login support through `CredentialStore`.
 - Added async non-secret credential enumeration through `CredentialStore.list()` and credential-aware `Provider.filterModels()` availability policy.
 - Added neutral auth-flow information/link events and provider-owned Amazon Bedrock and Google Vertex AI credential selection flows.
