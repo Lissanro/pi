@@ -151,7 +151,10 @@ describe("InteractiveMode compaction events", () => {
 			showStatus: vi.fn(),
 			clearStatusIndicator: vi.fn(),
 			flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
-			settingsManager: { getShowTerminalProgress: () => false },
+			settingsManager: {
+				getShowTerminalProgress: () => false,
+				getCompactionSummaryPlacement: () => "chronological",
+			},
 			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
 		};
 
@@ -194,6 +197,85 @@ describe("InteractiveMode compaction events", () => {
 			kind: "compaction",
 			usage,
 		});
+		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+	});
+
+	test("rebuilds chat from context entries for the default context placement", async () => {
+		const usage: Usage = {
+			input: 10,
+			output: 20,
+			cacheRead: 30,
+			cacheWrite: 40,
+			totalTokens: 100,
+			cost: { input: 0.01, output: 0.02, cacheRead: 0.03, cacheWrite: 0.065, total: 0.125 },
+		};
+		const latestCompaction: SessionEntry = {
+			type: "compaction",
+			id: "latest",
+			parentId: "previous",
+			timestamp: "2025-01-02T00:00:00Z",
+			summary: "summary",
+			firstKeptEntryId: "kept",
+			tokensBefore: 123,
+			usage,
+		};
+		const fakeThis = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			autoCompactionEscapeHandler: undefined as (() => void) | undefined,
+			autoCompactionLoader: undefined,
+			defaultEditor: {},
+			statusContainer: { clear: vi.fn() },
+			chatContainer: { clear: vi.fn() },
+			sessionManager: { buildContextEntries: vi.fn().mockReturnValue([latestCompaction]) },
+			renderSessionEntries: vi.fn(),
+			rebuildChatFromMessages: vi.fn(),
+			addMessageToChat: vi.fn(),
+			addCompactionCostNotice: vi.fn(),
+			showError: vi.fn(),
+			showStatus: vi.fn(),
+			clearStatusIndicator: vi.fn(),
+			flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
+			settingsManager: {
+				getShowTerminalProgress: () => false,
+				getCompactionSummaryPlacement: () => "context",
+			},
+			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
+		};
+
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof fakeThis,
+			event: {
+				type: "compaction_end";
+				reason: "manual" | "threshold" | "overflow";
+				result: { tokensBefore: number; summary: string; usage?: Usage } | undefined;
+				aborted: boolean;
+				willRetry: boolean;
+				errorMessage?: string;
+			},
+		) => Promise<void>;
+
+		await handleEvent.call(fakeThis, {
+			type: "compaction_end",
+			reason: "manual",
+			result: {
+				tokensBefore: 123,
+				summary: "summary",
+				usage,
+			},
+			aborted: false,
+			willRetry: false,
+		});
+
+		// The summary is stored in the session at its real position; the chat is
+		// rebuilt from context entries so it renders before the kept range, with the
+		// cost notice inline (renderSessionEntries handles it). No synthetic summary
+		// or separate cost notice is appended.
+		expect(fakeThis.rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(fakeThis.renderSessionEntries).not.toHaveBeenCalled();
+		expect(fakeThis.addMessageToChat).not.toHaveBeenCalled();
+		expect(fakeThis.addCompactionCostNotice).not.toHaveBeenCalled();
+		expect(fakeThis.footer.invalidate).toHaveBeenCalled();
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
 	});
 

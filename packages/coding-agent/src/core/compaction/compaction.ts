@@ -411,7 +411,7 @@ export function findCutPoint(
 	entries: SessionEntry[],
 	startIndex: number,
 	endIndex: number,
-	keepRecentTokens: number,
+	keepRecentTokens?: number,
 	keepRecentMessages?: number,
 ): CutPointResult {
 	const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
@@ -420,11 +420,14 @@ export function findCutPoint(
 		return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
 	}
 
-	let cutIndex = cutPoints[0]; // Default: keep from first message (not header)
+	// Default: keep from the first valid cut point (keeps the most history).
+	const keepAllIndex = cutPoints[0];
+	const candidates: number[] = [];
 
+	// Message-count budget: keep the last N context-visible entries.
 	if (keepRecentMessages !== undefined && keepRecentMessages > 0) {
-		// Keep the last N entries that contribute context-visible messages.
 		let keptCount = 0;
+		let countCut = keepAllIndex;
 		for (let i = endIndex - 1; i >= startIndex; i--) {
 			const entry = entries[i];
 			const messageTokens = sessionEntryToContextMessages(entry).reduce(
@@ -437,16 +440,20 @@ export function findCutPoint(
 				// Find the closest valid cut point at or before this entry.
 				for (let c = cutPoints.length - 1; c >= 0; c--) {
 					if (cutPoints[c] <= i) {
-						cutIndex = cutPoints[c];
+						countCut = cutPoints[c];
 						break;
 					}
 				}
 				break;
 			}
 		}
-	} else {
-		// Walk backwards from newest, accumulating estimated message sizes.
+		candidates.push(countCut);
+	}
+
+	// Token budget: keep roughly keepRecentTokens tokens of recent context.
+	if (keepRecentTokens !== undefined && keepRecentTokens > 0) {
 		let accumulatedTokens = 0;
+		let tokenCut = keepAllIndex;
 		for (let i = endIndex - 1; i >= startIndex; i--) {
 			const entry = entries[i];
 			const messageTokens = sessionEntryToContextMessages(entry).reduce(
@@ -461,14 +468,19 @@ export function findCutPoint(
 				// Find the closest valid cut point at or after this entry.
 				for (let c = 0; c < cutPoints.length; c++) {
 					if (cutPoints[c] >= i) {
-						cutIndex = cutPoints[c];
+						tokenCut = cutPoints[c];
 						break;
 					}
 				}
 				break;
 			}
 		}
+		candidates.push(tokenCut);
 	}
+
+	// When both budgets are given, the one that keeps fewer messages wins
+	// ("shortest wins"), i.e. the larger firstKeptEntryIndex (more discarded).
+	let cutIndex = candidates.length > 0 ? Math.max(...candidates) : keepAllIndex;
 
 	// Scan backwards from cutIndex to include adjacent metadata entries that do not affect context.
 	while (cutIndex > startIndex) {
@@ -843,8 +855,13 @@ export function prepareCompaction(
 
 	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
+	// Apply only the budgets the caller explicitly set. When neither is given,
+	// fall back to the configured token budget. This lets `/compact 10` keep 10
+	// messages without also being clamped by the default token budget.
 	const keepRecentMessages = overrides?.keepRecentMessages;
-	const keepRecentTokens = overrides?.keepRecentTokens ?? settings.keepRecentTokens;
+	const keepRecentTokens =
+		overrides?.keepRecentTokens ??
+		(overrides?.keepRecentMessages === undefined ? settings.keepRecentTokens : undefined);
 	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, keepRecentTokens, keepRecentMessages);
 
 	// Get UUID of first kept entry
@@ -872,8 +889,23 @@ export function prepareCompaction(
 		}
 	}
 
+	// Nothing new to summarize: the kept tail already fits within the recent budget,
+	// so a repeated compaction would only re-summarize the previous summary itself.
 	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) {
 		return undefined;
+	}
+
+	// Prepend the previous compaction's summary message so the summarization
+	// request carries exactly what the chat contains before compaction: system
+	// prompt plus the unaltered history (with the previous summary in its natural
+	// position), minus only the preserved tail, plus the summarization instruction
+	// at the end. The provider KV cache is prefix-based, so even a single byte of
+	// difference before the instruction forces a full re-prefill of the whole
+	// request; without the summary message here the request would diverge from the
+	// cached prefix immediately after the system prompt.
+	if (prevCompactionIndex >= 0) {
+		const prevSummaryMsg = sessionEntryToContextMessages(pathEntries[prevCompactionIndex])[0];
+		if (prevSummaryMsg) messagesToSummarize.unshift(prevSummaryMsg);
 	}
 
 	// Extract file operations from messages and previous compaction

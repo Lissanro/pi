@@ -361,8 +361,14 @@ describe("AgentSession compaction retry", () => {
 			return stream;
 		};
 
-		// Start compact in background
+		// Start compact in background. Attach the rejection handler immediately
+		// (before driving fake timers) so the abort rejection doesn't briefly
+		// surface as an unhandled rejection while timers advance.
 		const compactPromise = harness.session.compact();
+		const compactOutcome = compactPromise.then(
+			(value) => ({ ok: true as const, value }),
+			(error: unknown) => ({ ok: false as const, error }),
+		);
 
 		// Let first call fail and enter retry backoff
 		await vi.advanceTimersByTimeAsync(0);
@@ -373,7 +379,9 @@ describe("AgentSession compaction retry", () => {
 		// Advance time past the backoff
 		await vi.advanceTimersByTimeAsync(10000);
 
-		await expect(compactPromise).rejects.toThrow("Compaction cancelled");
+		const outcome = await compactOutcome;
+		expect(outcome.ok).toBe(false);
+		expect((outcome as { ok: false; error: Error }).error.message).toBe("Compaction cancelled");
 
 		// Verify retry was cancelled
 		expect(retryEndEvents.length).toBeGreaterThanOrEqual(1);

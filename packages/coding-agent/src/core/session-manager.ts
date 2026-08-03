@@ -1,5 +1,5 @@
 import { type AgentMessage, isHarnessMessage, uuidv7 } from "@earendil-works/pi-agent-core";
-import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 } from "@earendil-works/pi-ai";
+import { type ImageContent, type Message, type TextContent, type Usage } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
 import {
 	appendFileSync,
@@ -438,7 +438,9 @@ export function buildContextEntries(
 		return path;
 	}
 
-	const contextEntries: SessionEntry[] = [compaction];
+	// Entries kept verbatim after the previous compaction (the kept range),
+	// from firstKeptEntryId up to (but not including) the compaction entry.
+	const keptRangeIds = new Set<string>();
 	let foundFirstKept = false;
 	for (let i = 0; i < compactionIdx; i++) {
 		const entry = path[i];
@@ -446,7 +448,15 @@ export function buildContextEntries(
 			foundFirstKept = true;
 		}
 		if (foundFirstKept) {
-			contextEntries.push(entry);
+			keptRangeIds.add(entry.id);
+		}
+	}
+
+	const contextEntries: SessionEntry[] = [];
+	contextEntries.push(compaction);
+	for (let i = 0; i < compactionIdx; i++) {
+		if (keptRangeIds.has(path[i].id)) {
+			contextEntries.push(path[i]);
 		}
 	}
 	contextEntries.push(...path.slice(compactionIdx + 1));

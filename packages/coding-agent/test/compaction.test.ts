@@ -387,6 +387,25 @@ describe("findCutPoint", () => {
 		const result = findCutPoint(entries, 0, entries.length, 20000, 3);
 		expect(result.firstKeptEntryIndex).toBe(3);
 	});
+
+	it("keeps the smaller window when both message count and token limit are given (shortest wins)", () => {
+		// 6 tiny messages (~1 estimated token each).
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("1")),
+			createMessageEntry(createAssistantMessage("a", createMockUsage(0, 0, 100, 0))),
+			createMessageEntry(createUserMessage("2")),
+			createMessageEntry(createAssistantMessage("b", createMockUsage(0, 0, 100, 0))),
+			createMessageEntry(createUserMessage("3")),
+			createMessageEntry(createAssistantMessage("c", createMockUsage(0, 0, 100, 0))),
+		];
+
+		// keepRecentMessages=4 -> keep last 4 (cut at index 2)
+		expect(findCutPoint(entries, 0, entries.length, undefined, 4).firstKeptEntryIndex).toBe(2);
+		// keepRecentTokens=2 -> keep ~last 2 (cut at index 4)
+		expect(findCutPoint(entries, 0, entries.length, 2, undefined).firstKeptEntryIndex).toBe(4);
+		// both: the token limit keeps fewer messages, so it wins (larger index)
+		expect(findCutPoint(entries, 0, entries.length, 2, 4).firstKeptEntryIndex).toBe(4);
+	});
 });
 
 describe("buildSessionContext", () => {
@@ -511,10 +530,47 @@ describe("prepareCompaction with previous compaction", () => {
 		const preparation = prepareCompaction([u1, a1, u2, a2, u3, a3, compaction1, u4, a4], settings);
 
 		expect(preparation).toBeDefined();
+		// The summarization request must carry exactly what the chat contains before
+		// compaction: the previous summary message in its natural position at the head,
+		// followed by the raw messages being cut. Anything less diverges from the
+		// cached prefix right after the system prompt and wastes the provider cache.
+		expect(preparation!.messagesToSummarize[0]).toMatchObject({
+			role: "compactionSummary",
+			summary: "First summary",
+		});
 		const summarizedText = extractText(preparation!.messagesToSummarize);
 		expect(summarizedText).toContain("user msg 2 - kept by compaction1");
 		expect(summarizedText).toContain("user msg 3 - kept by compaction1");
-		expect(summarizedText).not.toContain("First summary");
+		expect(preparation!.previousSummary).toBe("First summary");
+	});
+
+	it("prepends the previous compaction summary to messagesToSummarize for cache fidelity", () => {
+		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)".repeat(4)));
+		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1".repeat(4)));
+		const u2 = createMessageEntry(createUserMessage("user msg 2 - kept by compaction1 ".repeat(12)));
+		const a2 = createMessageEntry(createAssistantMessage("assistant msg 2 ".repeat(12)));
+		const u3 = createMessageEntry(createUserMessage("user msg 3 - kept by compaction1 ".repeat(12)));
+		const a3 = createMessageEntry(createAssistantMessage("assistant msg 3 ".repeat(12), createMockUsage(5000, 1000)));
+		const compaction1 = createCompactionEntry("First summary", u2.id);
+		const u4 = createMessageEntry(createUserMessage("user msg 4 (new after compaction1) ".repeat(12)));
+		const a4 = createMessageEntry(createAssistantMessage("assistant msg 4 ".repeat(12), createMockUsage(8000, 2000)));
+
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 100,
+		};
+		const preparation = prepareCompaction([u1, a1, u2, a2, u3, a3, compaction1, u4, a4], settings);
+
+		expect(preparation).toBeDefined();
+		// The previous summary message leads messagesToSummarize exactly as it leads
+		// the chat context before compaction, so the summarization request stays
+		// byte-identical to the normal chat prefix (provider cache reuse).
+		expect(preparation!.messagesToSummarize[0]).toMatchObject({
+			role: "compactionSummary",
+			summary: "First summary",
+		});
+		expect(extractText(preparation!.messagesToSummarize.slice(1))).toContain("user msg 2 - kept by compaction1");
+		// previousSummary is available for iterative update.
 		expect(preparation!.previousSummary).toBe("First summary");
 	});
 });
@@ -599,10 +655,13 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		const newEntries = [...entries, compactionEntry];
 		const reloaded = buildSessionContext(newEntries);
 
-		// Should have summary + kept messages
+		// Should have summary + kept messages. When the first user message is
+		// pinned it appears ahead of the summary; either way the summary is
+		// present and the context shrank.
 		expect(reloaded.messages.length).toBeLessThan(loaded.messages.length);
-		expect(reloaded.messages[0].role).toBe("compactionSummary");
-		expect((reloaded.messages[0] as any).summary).toContain(compactionResult.summary);
+		const summaryMsg = reloaded.messages.find((m) => m.role === "compactionSummary");
+		expect(summaryMsg).toBeDefined();
+		expect((summaryMsg as any).summary).toContain(compactionResult.summary);
 
 		console.log("Original messages:", loaded.messages.length);
 		console.log("After compaction:", reloaded.messages.length);

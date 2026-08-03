@@ -254,7 +254,7 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.faux.state.callCount).toBe(1);
 	});
 
-	it("uses the standalone compaction request context", async () => {
+	it("reuses the agent context pipeline so the summarization request stays cache-compatible", async () => {
 		const harness = await createHarness({ settings: { compaction: { keepRecentTokens: 1 } } });
 		harnesses.push(harness);
 		seedCompactableSession(harness);
@@ -273,13 +273,16 @@ describe("AgentSession compaction characterization", () => {
 
 		await harness.session.compact();
 
-		expect(transformContext).not.toHaveBeenCalled();
-		expect(requestContext?.systemPrompt).not.toBe(harness.session.agent.state.systemPrompt);
-		expect(requestContext?.tools).toBeUndefined();
-		expect(JSON.stringify(requestContext?.messages)).toContain("<conversation>");
+		// Cache-valid summarization reuses the agent's transformContext, system
+		// prompt, and tools so the request byte-matches a normal chat turn (the
+		// summarization only appends its instruction at the end).
+		expect(transformContext).toHaveBeenCalled();
+		expect(requestContext?.systemPrompt).toBe(harness.session.agent.state.systemPrompt);
+		expect(requestContext?.tools).toEqual(harness.session.agent.state.tools);
+		// The one-off summary still avoids cache writes and uses fresh routing.
 		expect(requestOptions).toMatchObject({ cacheRetention: "none" });
 		expect(requestOptions?.sessionId).not.toBe("active-routing-session");
-		expect(requestOptions?.transport).toBeUndefined();
+		expect(requestOptions?.transport).toBe(harness.session.agent.transport);
 	});
 
 	it("persists usage from pi-generated manual compaction", async () => {

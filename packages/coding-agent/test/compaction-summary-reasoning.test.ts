@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CompactionPreparation,
@@ -129,47 +129,11 @@ describe("generateSummary reasoning options", () => {
 		});
 	});
 
-	it("preserves the standalone split-turn summary prompt", async () => {
-		const preparation: CompactionPreparation = {
-			firstKeptEntryId: "entry-keep",
-			messagesToSummarize: [],
-			turnPrefixMessages: messages,
-			isSplitTurn: true,
-			tokensBefore: 100,
-			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
-			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20 },
-		};
-
-		await compact(preparation, createModel(false), "test-key");
-
-		const requestContext = completeSimpleMock.mock.calls[0][1] as Context;
-		const prompt = JSON.stringify(requestContext.messages);
-		expect(prompt).toContain("This is the PREFIX of a turn that was too large to keep");
-		expect(prompt).toContain("<conversation>");
-	});
-
 	it("rejects tool calls from conversation summaries", async () => {
 		completeSimpleMock.mockResolvedValueOnce(mockToolCallResponse);
 
 		await expect(generateSummaryWithUsage(messages, createModel(false), 2000, "test-key")).rejects.toThrow(
 			"Summarization attempted to call a tool",
-		);
-	});
-
-	it("rejects tool calls from split-turn summaries", async () => {
-		completeSimpleMock.mockResolvedValueOnce(mockToolCallResponse);
-		const preparation: CompactionPreparation = {
-			firstKeptEntryId: "entry-keep",
-			messagesToSummarize: [],
-			turnPrefixMessages: messages,
-			isSplitTurn: true,
-			tokensBefore: 100,
-			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
-			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20 },
-		};
-
-		await expect(compact(preparation, createModel(false), "test-key")).rejects.toThrow(
-			"Turn prefix summarization attempted to call a tool",
 		);
 	});
 
@@ -253,13 +217,9 @@ describe("generateSummary reasoning options", () => {
 
 		const result = await compact(preparation, createModel(false, 128000), "test-key");
 
-		expect(result.usage).toEqual({
-			...mockSummaryResponse.usage,
-			input: 20,
-			output: 20,
-			totalTokens: 40,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		});
-		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000, 128000]);
+		// Split turns are summarized in a single call (turn-prefix messages are
+		// concatenated into the conversation), so usage is a single response's usage.
+		expect(result.usage).toEqual(mockSummaryResponse.usage);
+		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000]);
 	});
 });

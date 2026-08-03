@@ -173,24 +173,46 @@ import {
 } from "./theme/theme.ts";
 import { InteractiveThemeController } from "./theme/theme-controller.ts";
 
-function parseCompactArgs(args: string): {
+export function parseCompactArgs(args: string): {
 	options: { keepRecentTokens?: number; keepRecentMessages?: number };
 	instructions: string;
 } {
 	const options: { keepRecentTokens?: number; keepRecentMessages?: number } = {};
+	// Budgets can be given as flags (--keep-tokens N / --keep-messages N), a bare
+	// integer ("10" => keep N messages), or an integer with a K/M suffix
+	// ("20K"/"1m" => token limit, case-insensitive). Anything else is free text
+	// (custom focus for the summary). The first count and first limit win; any
+	// remaining tokens become the instructions. When both a count and a limit are
+	// given, the one that keeps fewer messages wins (handled in findCutPoint).
 	const tokens = args.match(/(?:--\S+|"[^"]*"|\S+)/g) ?? [];
 	const remaining: string[] = [];
+	const limitPattern = /^(\d+)([KkMm])$/;
 
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i] ?? "";
 		if (token === "--keep-tokens" || token === "--keep-tok") {
 			const value = tokens[++i];
-			if (value) options.keepRecentTokens = Number(value);
+			if (value && options.keepRecentTokens === undefined) options.keepRecentTokens = Number(value);
 		} else if (token === "--keep-messages" || token === "--keep-msg") {
 			const value = tokens[++i];
-			if (value) options.keepRecentMessages = Number(value);
+			if (value && options.keepRecentMessages === undefined) options.keepRecentMessages = Number(value);
 		} else {
-			remaining.push(token.replace(/^"|"$/g, ""));
+			const bare = token.replace(/^"|"$/g, "");
+			const limitMatch = bare.match(limitPattern);
+			if (limitMatch) {
+				const value = Number.parseInt(limitMatch[1]!, 10);
+				const multiplier = limitMatch[2]!.toUpperCase() === "M" ? 1_000_000 : 1000;
+				if (options.keepRecentTokens === undefined) options.keepRecentTokens = value * multiplier;
+				else remaining.push(bare);
+			} else if (/^\d+$/.test(bare)) {
+				if (options.keepRecentMessages === undefined) {
+					options.keepRecentMessages = Number.parseInt(bare, 10);
+				} else {
+					remaining.push(bare);
+				}
+			} else {
+				remaining.push(bare);
+			}
 		}
 	}
 
@@ -3480,26 +3502,35 @@ export class InteractiveMode {
 						this.showStatus("Auto-compaction cancelled");
 					}
 				} else if (event.result) {
-					const entries = this.sessionManager.buildContextEntries();
-					if (entries[0]?.type !== "compaction") {
-						throw new Error("Completed compaction is missing from the session context");
-					}
-					this.chatContainer.clear();
-					// The latest compaction is prepended for model context; append it below at its chronological position.
-					this.renderSessionEntries(entries.slice(1));
-					this.addMessageToChat(
-						createCompactionSummaryMessage(
-							event.result.summary,
-							event.result.tokensBefore,
-							new Date().toISOString(),
-						),
-					);
-					if (event.result.usage) {
-						this.addCompactionCostNotice({
-							type: "compaction_cost",
-							kind: "compaction",
-							usage: event.result.usage,
-						});
+					if (this.settingsManager.getCompactionSummaryPlacement() === "chronological") {
+						// Chronological placement: the summary is appended at the end of the
+						// chat, when compaction happened (the original mainline behavior).
+						const entries = this.sessionManager.buildContextEntries();
+						if (entries[0]?.type !== "compaction") {
+							throw new Error("Completed compaction is missing from the session context");
+						}
+						this.chatContainer.clear();
+						this.renderSessionEntries(entries.slice(1));
+						this.addMessageToChat(
+							createCompactionSummaryMessage(
+								event.result.summary,
+								event.result.tokensBefore,
+								new Date().toISOString(),
+							),
+						);
+						if (event.result.usage) {
+							this.addCompactionCostNotice({
+								type: "compaction_cost",
+								kind: "compaction",
+								usage: event.result.usage,
+							});
+						}
+					} else {
+						// Default "context" placement: the summary is stored as a compaction
+						// entry at its real position (before the kept messages). Rebuild the
+						// chat from context entries so the summary renders before the kept
+						// range, with the compaction cost notice inline.
+						this.rebuildChatFromMessages();
 					}
 					this.footer.invalidate();
 				} else if (event.errorMessage) {

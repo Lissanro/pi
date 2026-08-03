@@ -102,9 +102,10 @@ describe.skipIf(!API_KEY)("AgentSession compaction e2e", () => {
 		const messages = session.messages;
 		expect(messages.length).toBeGreaterThan(0);
 
-		// First message should be the summary (a user message with summary content)
-		const firstMsg = messages[0];
-		expect(firstMsg.role).toBe("compactionSummary");
+		// The very first user message is pinned ahead of the summary so the
+		// session's original goals survive compaction, followed by the summary.
+		expect(messages[0].role).toBe("user");
+		expect(messages.some((m) => m.role === "compactionSummary")).toBe(true);
 	}, 120000);
 
 	it("should maintain valid session state after compaction", async () => {

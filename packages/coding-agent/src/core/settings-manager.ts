@@ -10,10 +10,20 @@ import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 
+/**
+ * Where the compaction summary is shown in the chat UI.
+ * - "context": at its real position, before the kept messages (matches the LLM
+ *   context order, where the summary precedes the kept range). Default.
+ * - "chronological": appended at the end of the chat, when compaction happened.
+ * This only affects the chat UI; the LLM context order is always "context".
+ */
+export type CompactionSummaryPlacement = "context" | "chronological";
+
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
+	summaryPlacement?: CompactionSummaryPlacement; // default: "context"
 }
 
 export interface BranchSummarySettings {
@@ -842,6 +852,19 @@ export class SettingsManager {
 
 	getCompactionKeepRecentTokens(): number {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
+	}
+
+	getCompactionSummaryPlacement(): CompactionSummaryPlacement {
+		return this.settings.compaction?.summaryPlacement ?? "context";
+	}
+
+	setCompactionSummaryPlacement(placement: CompactionSummaryPlacement): void {
+		if (!this.globalSettings.compaction) {
+			this.globalSettings.compaction = {};
+		}
+		this.globalSettings.compaction.summaryPlacement = placement;
+		this.markModified("compaction", "summaryPlacement");
+		this.save();
 	}
 
 	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {

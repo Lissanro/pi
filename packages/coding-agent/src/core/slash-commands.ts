@@ -40,7 +40,11 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "login", description: "Configure provider authentication", argumentHint: "<provider>" },
 	{ name: "logout", description: "Remove provider authentication" },
 	{ name: "new", description: "Start a new session" },
-	{ name: "compact", description: "Manually compact the session context" },
+	{
+		name: "compact",
+		description: "Manually compact the session context",
+		argumentHint: "[N msgs] [K|M tokens] [--keep-tokens N] [--keep-messages N] [text]  e.g. /compact 10 20K (shortest wins)",
+	},
 	{ name: "continue", description: "Continue the current session without adding a message" },
 	{ name: "delete", description: "Delete the last message (or N messages: /delete N)", argumentHint: "[count]" },
 	{ name: "edit", description: "Edit the last message (or N messages back: /edit N)", argumentHint: "[index]" },
