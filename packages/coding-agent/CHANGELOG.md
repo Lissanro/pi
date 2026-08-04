@@ -566,6 +566,7 @@
 - Added extension provider `refreshModels(context)` support for dynamic model discovery with optional provider-controlled persistence.
 - Added `pi update --models` to force an immediate model catalog refresh without updating pi or extensions.
 - Added inherited xAI device-code OAuth login and Grok 4.5 OpenAI Responses support, with low, medium, and high thinking levels ([#6651](https://github.com/earendil-works/pi-mono/pull/6651) by [@Jaaneek](https://github.com/Jaaneek)).
+- Added `/copy "substring"` (same-line quoted) to copy every transcript message whose text contains the substring, including tool results, bash executions, and custom messages while ignoring harness messages. Next-line payloads remain literal copies, and `/copy N` still copies by index skipping harness messages.
 
 ### Changed
 
@@ -581,6 +582,8 @@
 - Fixed inherited terminal output to normalize tab characters consistently ([#6697](https://github.com/earendil-works/pi-mono/pull/6697) by [@xz-dev](https://github.com/xz-dev)).
 - Fixed the Windows terminal title after checking npm packages ([#6629](https://github.com/earendil-works/pi-mono/issues/6629)).
 - Fixed Bun standalone binaries to bundle OAuth adapters for interactive logins.
+- Fixed auto-retry after connection errors to use the same prefill continuation path as `/continue` for openai-completions providers (e.g., llama-server). Trailing harness messages and the partial assistant message are now cleared before each retry continue, and the partial is restored on failure. A new `transcript_changed` event re-renders the UI so deleted/restored messages stay in sync with the session log.
+- Fixed `/edit` leaving raw `<pi_reasoning_content>` XML in the message when the thinking block carried a signature attribute.
 
 ## [0.80.7] - 2026-07-14
 
