@@ -161,10 +161,14 @@ function parseInnerContent(
 	if (role === "assistant") {
 		const leadingWhitespace = content.match(/^\s*/)?.[0] ?? "";
 		const afterWhitespace = content.slice(leadingWhitespace.length);
-		if (afterWhitespace.startsWith("<pi_reasoning_content>")) {
+		// The formatted tag may carry attributes (`signature="..."` and/or
+		// `redacted="true"`), so match the opening tag with optional attributes
+		// rather than the exact attribute-less tag.
+		const reasoningOpenMatch = afterWhitespace.match(/^<pi_reasoning_content(\s[^>]*)?>/);
+		if (reasoningOpenMatch) {
 			const reasoningClose = findLastTagClose(content, "pi_reasoning_content");
 			if (reasoningClose) {
-				const openEnd = leadingWhitespace.length + "<pi_reasoning_content>".length;
+				const openEnd = leadingWhitespace.length + reasoningOpenMatch[0].length;
 				const thinking = content.slice(openEnd, reasoningClose.start);
 				const reasoningOpen = findNextTag(content, leadingWhitespace.length);
 				const reasoningAttrs = reasoningOpen?.attributes ?? {};

@@ -120,6 +120,16 @@ describe("message edit XML parsing", () => {
 		]);
 	});
 
+	it("parses a signed reasoning block (with signature attribute) as thinking, not raw XML", () => {
+		const xml =
+			'<pi_edit id="0" role="assistant"><pi_reasoning_content signature="reasoning_content">think</pi_reasoning_content>answer</pi_edit>';
+		const blocks = parseMessageEdits(xml);
+		expect(blocks[0]?.content).toEqual([
+			{ type: "thinking", thinking: "think", thinkingSignature: "reasoning_content" },
+			{ type: "text", text: "answer" },
+		]);
+	});
+
 	it("parses multiple edit blocks", () => {
 		const blocks = parseMessageEdits(
 			'<pi_edit id="1" role="user">first</pi_edit><pi_edit id="0" role="assistant">second</pi_edit>',
