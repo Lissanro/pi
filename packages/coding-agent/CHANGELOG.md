@@ -586,6 +586,7 @@
 - Fixed auto-retry after connection errors to use the same prefill continuation path as `/continue` for openai-completions providers (e.g., llama-server). Trailing harness messages and the partial assistant message are now cleared before each retry continue, and the partial is restored on failure. A new `transcript_changed` event re-renders the UI so deleted/restored messages stay in sync with the session log.
 - Fixed `/edit` leaving raw `<pi_reasoning_content>` XML in the message when the thinking block carried a signature attribute.
 - Fixed `/compact` not removing old messages from the LLM prompt after compaction. The summary is now stored as a `compaction` entry (not a user+assistant message pair), so `buildContextEntries()` correctly strips pre-compaction messages from the context sent to the LLM while keeping them in the session tree for UI history. This also fixes the context usage counter remaining stuck at the pre-compaction percentage instead of resetting to `?` until the next LLM response.
+- Fixed the TUI "Retrying" status getting stuck (and Escape unresponsive) after `/compact`. Compaction retries now emit `auto_retry_end` and reset the attempt counter whenever the compaction loop exits (success, failure, or cancellation), `compact()` closes any stale agent retry cycle left by an in-flight retry aborted while agent events were disconnected, and the TUI clears leftover retry state on `compaction_end` and preserves the original Escape handler across repeated retry attempts.
 
 ## [0.80.7] - 2026-07-14
 

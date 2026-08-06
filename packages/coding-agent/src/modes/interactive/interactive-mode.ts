@@ -3498,6 +3498,15 @@ export class InteractiveMode {
 					this.autoCompactionEscapeHandler = undefined;
 				}
 				this.clearStatusIndicator("compaction");
+				// A compaction retry swaps the compaction indicator for a retry
+				// indicator; if its auto_retry_end was lost (e.g. agent events
+				// swallowed while aborting a stale retry for /compact), the retry
+				// state gets stuck. Clear it here as a fallback. The saved retry
+				// escape handler is stale and must be discarded, not restored.
+				if (this.retryEscapeHandler) {
+					this.retryEscapeHandler = undefined;
+				}
+				this.clearStatusIndicator("retry");
 				if (event.aborted) {
 					if (event.reason === "manual") {
 						this.showError("Compaction cancelled");
@@ -3550,8 +3559,13 @@ export class InteractiveMode {
 			}
 
 			case "auto_retry_start": {
-				// Set up escape to abort retry
-				this.retryEscapeHandler = this.defaultEditor.onEscape;
+				// Set up escape to abort retry. Preserve the original escape handler
+				// across repeated attempts: overwriting it with the transient retry
+				// closure would leave Escape calling abortRetry() instead of the normal
+				// handler after the retry cycle ends.
+				if (!this.retryEscapeHandler) {
+					this.retryEscapeHandler = this.defaultEditor.onEscape;
+				}
 				this.defaultEditor.onEscape = () => {
 					this.session.abortRetry();
 				};
