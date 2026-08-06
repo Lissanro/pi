@@ -69,8 +69,7 @@ describe("pre-prompt compaction regression", () => {
 		});
 		// willRetry=true means the interrupted prompt is resumed after compaction.
 		expect(result).toBe(true);
-		// The summary is appended as a normal assistant message pair, not a
-		// synthetic compaction entry.
-		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+		// The summary is stored as a compaction entry.
+		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(true);
 	});
 });
