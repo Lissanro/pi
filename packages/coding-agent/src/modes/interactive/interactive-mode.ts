@@ -7,7 +7,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type AgentMessage, stripTrailingHarnessMessages, type ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { type AgentMessage, isHarnessMessage, stripTrailingHarnessMessages, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { AssistantMessage, ImageContent, Message, Model, Usage } from "@earendil-works/pi-ai/compat";
 import type {
@@ -304,6 +304,67 @@ function normalizeMessageSelectorArg(arg: string): string {
 	return trimmed;
 }
 
+/** Trigger for a /schedule'd message. */
+export type ScheduledTrigger =
+	| { type: "settled" } // Send when the current agent task completes
+	| { type: "messages"; remaining: number } // Send after N user/assistant messages
+	| { type: "time"; at: number }; // Send at (or after) a timestamp
+
+export interface ScheduledMessage {
+	id: number;
+	text: string;
+	when: ScheduledTrigger;
+	timer?: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * Parse the schedule specification from the first line of a /schedule command.
+ * Supported forms: empty (send when the current task completes), a positive
+ * message count (send after N user/assistant messages), sleep(1)-style
+ * durations summed over tokens ("1h", "5.5m", "1h 30m"; units s/m/h/d), and
+ * an absolute local datetime ("2026-08-08 00:34" or "2026-08-09 10:14:59").
+ * Returns undefined when the specification is invalid or in the past.
+ */
+export function parseScheduleWhen(spec: string): ScheduledTrigger | undefined {
+	const trimmed = spec.trim();
+	if (trimmed === "") return { type: "settled" };
+	if (/^\d+$/.test(trimmed)) {
+		const count = Number.parseInt(trimmed, 10);
+		return count >= 1 ? { type: "messages", remaining: count } : undefined;
+	}
+	// Absolute datetime: 2026-08-08 00:34 or 2026-08-09 10:14:59
+	const datetimeMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{1,2}))?$/);
+	if (datetimeMatch) {
+		const [, year, month, day, hour, minute, second] = datetimeMatch;
+		const at = new Date(
+			Number.parseInt(year, 10),
+			Number.parseInt(month, 10) - 1,
+			Number.parseInt(day, 10),
+			Number.parseInt(hour, 10),
+			Number.parseInt(minute, 10),
+			second ? Number.parseInt(second, 10) : 0,
+		).getTime();
+		if (Number.isNaN(at) || at <= Date.now()) return undefined;
+		return { type: "time", at };
+	}
+	// sleep(1)-style durations; multiple tokens are summed ("1h 30m")
+	let totalMs = 0;
+	for (const token of trimmed.split(/\s+/)) {
+		const durationMatch = token.match(/^(\d+(?:\.\d+)?)([smhd])$/);
+		if (!durationMatch) return undefined;
+		const value = Number.parseFloat(durationMatch[1]);
+		const unit = durationMatch[2];
+		totalMs += value * (unit === "s" ? 1000 : unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : 86_400_000);
+	}
+	return totalMs > 0 ? { type: "time", at: Date.now() + totalMs } : undefined;
+}
+
+function formatScheduledTime(at: number): string {
+	const date = new Date(at);
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function quoteIfNeeded(value: string): string {
 	if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) {
 		return value;
@@ -569,6 +630,10 @@ export class InteractiveMode {
 
 	// Messages queued while compaction is running
 	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
+
+	// Scheduled messages (/schedule)
+	private scheduledMessages: ScheduledMessage[] = [];
+	private nextScheduleId = 1;
 
 	// Shutdown state
 	private shutdownRequested = false;
@@ -2105,6 +2170,7 @@ export class InteractiveMode {
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
+		this.clearScheduledMessages();
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.pendingTools.clear();
@@ -3181,6 +3247,12 @@ export class InteractiveMode {
 				await this.handleEditCommand(arg);
 				return;
 			}
+			if (text === "/schedule" || (text.startsWith("/schedule") && /^\s/.test(text.slice(9)))) {
+				const arg = text === "/schedule" ? "" : text.slice(9);
+				this.editor.setText("");
+				await this.handleScheduleCommand(arg);
+				return;
+			}
 			if (text === "/quit") {
 				this.editor.setText("");
 				await this.shutdown();
@@ -3386,6 +3458,7 @@ export class InteractiveMode {
 				break;
 
 			case "message_end":
+				this.countScheduledMessageEvent(event.message);
 				if (event.message.role === "user") break;
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
@@ -3489,6 +3562,7 @@ export class InteractiveMode {
 
 			case "agent_settled":
 				await this.checkShutdownRequested();
+				this.fireDueScheduledMessages();
 				break;
 
 			case "compaction_start": {
@@ -5251,6 +5325,121 @@ export class InteractiveMode {
 		});
 	}
 
+	/**
+	 * Queue a message for later delivery. The first line carries the schedule
+	 * specification (empty = when the current task completes, N = after N
+	 * user/assistant messages, a sleep(1)-style duration, or an absolute
+	 * datetime); the message to send goes on the following line(s).
+	 */
+	private async handleScheduleCommand(arg: string): Promise<void> {
+		const newlineIndex = arg.indexOf("\n");
+		const spec = (newlineIndex === -1 ? arg : arg.slice(0, newlineIndex)).trim();
+		const payload = newlineIndex === -1 ? "" : arg.slice(newlineIndex + 1).trim();
+
+		const when = parseScheduleWhen(spec);
+		if (!when || payload === "") {
+			this.showStatus(
+				"Usage: /schedule [N | duration | YYYY-MM-DD HH:MM[:SS]] with the message on the following line(s)",
+			);
+			return;
+		}
+
+		if (when.type === "settled" && this.session.isIdle) {
+			// No task in progress; "when the agent is done" is now.
+			this.deliverScheduledMessage(payload);
+			return;
+		}
+
+		const entry: ScheduledMessage = { id: this.nextScheduleId++, text: payload, when };
+		if (when.type === "time") {
+			entry.timer = setTimeout(
+				() => {
+					this.fireScheduledMessage(entry.id);
+				},
+				Math.max(when.at - Date.now(), 0),
+			);
+		}
+		this.scheduledMessages.push(entry);
+
+		const description =
+			when.type === "messages"
+				? `after ${when.remaining} message${when.remaining === 1 ? "" : "s"}`
+				: when.type === "time"
+					? `for ${formatScheduledTime(when.at)}`
+					: "when the current task completes";
+		this.showStatus(`Scheduled message ${description}`);
+	}
+
+	private fireScheduledMessage(id: number): void {
+		const index = this.scheduledMessages.findIndex((entry) => entry.id === id);
+		if (index === -1) return;
+		const [entry] = this.scheduledMessages.splice(index, 1);
+		if (entry.timer) clearTimeout(entry.timer);
+		this.deliverScheduledMessage(entry.text);
+	}
+
+	private deliverScheduledMessage(text: string): void {
+		if (this.session.isCompacting) {
+			// Flushed after compaction like user-typed queued messages.
+			this.compactionQueuedMessages.push({ text, mode: "followUp" });
+			this.updatePendingMessagesDisplay();
+			return;
+		}
+		if (this.session.isStreaming) {
+			// Queue after the current task instead of interrupting each turn.
+			void this.session.prompt(text, { streamingBehavior: "followUp" }).catch((error: unknown) => {
+				this.showError(error instanceof Error ? error.message : String(error));
+			});
+			return;
+		}
+		void this.session.prompt(text).catch((error: unknown) => {
+			// A concurrently fired scheduled message may have started streaming
+			// first; fall back to queueing after it.
+			if (error instanceof Error && error.message.includes("already processing")) {
+				void this.session.prompt(text, { streamingBehavior: "followUp" }).catch((inner: unknown) => {
+					this.showError(inner instanceof Error ? inner.message : String(inner));
+				});
+				return;
+			}
+			this.showError(error instanceof Error ? error.message : String(error));
+		});
+	}
+
+	/** Count a completed message toward message-count scheduled triggers. */
+	private countScheduledMessageEvent(message: AgentMessage): void {
+		if (this.scheduledMessages.length === 0) return;
+		if (message.role !== "user" && message.role !== "assistant") return;
+		if (message.role === "assistant" && isHarnessMessage(message)) return;
+		const due: number[] = [];
+		for (const entry of this.scheduledMessages) {
+			if (entry.when.type !== "messages") continue;
+			entry.when.remaining -= 1;
+			if (entry.when.remaining <= 0) {
+				due.push(entry.id);
+			}
+		}
+		for (const id of due) {
+			this.fireScheduledMessage(id);
+		}
+	}
+
+	/** Fire settled-trigger scheduled messages after the agent run completes. */
+	private fireDueScheduledMessages(): void {
+		// Fire one settled message per agent_settled; further settled messages
+		// fire after the runs they start, preserving queue order.
+		const due = this.scheduledMessages.find((entry) => entry.when.type === "settled");
+		if (due) {
+			this.fireScheduledMessage(due.id);
+		}
+	}
+
+	private clearScheduledMessages(): void {
+		for (const entry of this.scheduledMessages) {
+			if (entry.timer) clearTimeout(entry.timer);
+		}
+		this.scheduledMessages = [];
+	}
+
 	private showUserMessageSelector(): void {
 		const forkableMessages = this.session.getForkableMessages();
 
@@ -6963,6 +7152,7 @@ export class InteractiveMode {
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
 		}
+		this.clearScheduledMessages();
 		this.clearStatusIndicator();
 		this.themeController.disableAutoSync();
 		this.clearExtensionTerminalInputListeners();

@@ -52,6 +52,12 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	},
 	{ name: "continue", description: "Continue the current session without adding a message" },
 	{
+		name: "schedule",
+		description:
+			"Send the message below later: when the task completes, after N messages, after a duration, or at a time",
+		argumentHint: "[N|duration|YYYY-MM-DD HH:MM[:SS]]",
+	},
+	{
 		name: "delete",
 		description: "Delete the last message (or N messages: /delete N, or unique match: /delete substring)",
 		argumentHint: "[count|substring]",
