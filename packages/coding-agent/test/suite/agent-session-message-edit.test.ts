@@ -534,6 +534,69 @@ describe("AgentSession.getEditableMessagesContaining", () => {
 
 		expect(harness.session.getEditableMessagesContaining("real")).toHaveLength(1);
 	});
+
+	it("matches thinking content and tool call arguments", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage([
+				fauxThinking("secret plan"),
+				fauxText("answer"),
+				fauxToolCall("read", { path: "/foo" }, { id: "call_1" }),
+			]),
+		]);
+		await harness.session.prompt("user");
+
+		expect(harness.session.getEditableMessagesContaining("secret plan")).toHaveLength(1);
+		expect(harness.session.getEditableMessagesContaining('{"path":"/foo"}')).toHaveLength(1);
+		expect(harness.session.getEditableMessagesContaining("pi_reasoning_content")).toHaveLength(1);
+	});
+
+	it("matches a pasted pi_edit block from /copy or /edit output", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage([
+				fauxThinking("secret plan"),
+				fauxText("answer"),
+				fauxToolCall("read", { path: "/foo" }, { id: "call_1" }),
+			]),
+		]);
+		await harness.session.prompt("user");
+
+		const pasted =
+			'<pi_edit id="0" role="assistant"><pi_reasoning_content>secret plan</pi_reasoning_content>answer<pi_tool_call id="call_1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>';
+		const matches = harness.session.getEditableMessagesContaining(pasted);
+		expect(matches).toHaveLength(1);
+		expect(matches[0].index).toBe(0);
+	});
+
+	it("getCopyableMessagesContaining includes tool results and carries editable indices", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("fence here")]);
+		await harness.session.prompt("user with fence");
+		harness.sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: "tc-1",
+			toolName: "bash",
+			content: [{ type: "text", text: "result with fence" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		harness.session.agent.state.messages = harness.session.sessionManager.buildSessionContext().messages;
+
+		const matches = harness.session.getCopyableMessagesContaining("fence");
+		expect(matches).toHaveLength(3);
+		// Chronological: user (index 1), assistant (index 0), toolResult (no index).
+		expect(matches[0].editableIndex).toBe(1);
+		expect(matches[1].editableIndex).toBe(0);
+		expect(matches[2].editableIndex).toBeUndefined();
+		expect(matches[2].message.role).toBe("toolResult");
+	});
 });
 
 describe("AgentSession.deleteMessage", () => {

@@ -82,7 +82,7 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import { formatMessageForEdit, isMessageEdit } from "../../core/message-edit.ts";
+import { formatMessageContent, formatMessageForEdit, isMessageEdit } from "../../core/message-edit.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
@@ -3090,9 +3090,14 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/fork") {
-				this.showUserMessageSelector();
+			if (text === "/fork" || text.startsWith("/fork ")) {
+				const arg = text.startsWith("/fork ") ? text.slice(6).trim() : "";
 				this.editor.setText("");
+				if (arg === "") {
+					this.showUserMessageSelector();
+				} else {
+					await this.handleForkCommand(arg);
+				}
 				return;
 			}
 			if (text === "/clone") {
@@ -5261,18 +5266,7 @@ export class InteractiveMode {
 				userMessages.map((m) => ({ id: m.entryId, text: m.text })),
 				async (entryId) => {
 					done();
-					try {
-						const result = await this.runtimeHost.fork(entryId);
-						if (result.cancelled) {
-							this.ui.requestRender();
-							return;
-						}
-
-						this.editor.setText(result.selectedText ?? "");
-						this.showStatus("Forked to new session");
-					} catch (error: unknown) {
-						this.showError(error instanceof Error ? error.message : String(error));
-					}
+					await this.forkToEntry(entryId);
 				},
 				() => {
 					done();
@@ -5282,6 +5276,60 @@ export class InteractiveMode {
 			);
 			return { component: selector, focus: selector.getMessageList() };
 		});
+	}
+
+	private async forkToEntry(entryId: string): Promise<void> {
+		try {
+			const result = await this.runtimeHost.fork(entryId);
+			if (result.cancelled) {
+				this.ui.requestRender();
+				return;
+			}
+
+			this.editor.setText(result.selectedText ?? "");
+			this.showStatus("Forked to new session");
+		} catch (error: unknown) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	/**
+	 * Fork from a user message selected by argument instead of the selector UI.
+	 * A numeric argument selects by index (0 = latest user message, counting
+	 * backwards); a substring argument selects the single user message whose
+	 * text contains it. Out-of-bounds indices and non-unique or absent
+	 * substring matches are reported without forking.
+	 */
+	private async handleForkCommand(arg: string): Promise<void> {
+		const userMessages = this.session.getUserMessagesForForking();
+		if (userMessages.length === 0) {
+			this.showStatus("No messages to fork from");
+			return;
+		}
+
+		let target: { entryId: string; text: string } | undefined;
+		if (/^\d+$/.test(arg)) {
+			const index = Number.parseInt(arg, 10);
+			target = userMessages[userMessages.length - 1 - index];
+			if (!target) {
+				this.showError(`No user message at index ${index} (${userMessages.length} user messages)`);
+				return;
+			}
+		} else {
+			const substring = normalizeMessageSelectorArg(arg);
+			const matches = userMessages.filter((m) => m.text.includes(substring));
+			if (matches.length === 0) {
+				this.showError(`No user message contains: ${substring}`);
+				return;
+			}
+			if (matches.length > 1) {
+				this.showError(`Found ${matches.length} user messages containing: ${substring}`);
+				return;
+			}
+			target = matches[0];
+		}
+
+		await this.forkToEntry(target.entryId);
 	}
 
 	private async handleCloneCommand(): Promise<void> {
@@ -6399,13 +6447,17 @@ export class InteractiveMode {
 		let statusMessage: string;
 
 		if (arg === "") {
-			// No argument: copy the last non-harness assistant message.
-			text = this.session.getLastAssistantText();
-			if (!text) {
-				this.showError("No agent messages to copy yet.");
+			// No argument: copy the latest non-harness message (user or assistant)
+			// in the /edit content format so thinking blocks and tool calls are
+			// included. The pi_edit wrapper is omitted for a single message.
+			const target = this.session.getEditableMessage(0);
+			const content = target ? formatMessageContent(target.message) : null;
+			if (!target || content === null || !content.trim()) {
+				this.showError("No messages to copy yet.");
 				return;
 			}
-			statusMessage = "Copied last agent message to clipboard";
+			text = content;
+			statusMessage = "Copied last message to clipboard";
 		} else {
 			// The payload starts on the same line as /copy unless the suffix begins
 			// with a newline. Next-line payloads are always copied literally
@@ -6417,22 +6469,36 @@ export class InteractiveMode {
 
 			if (sameLine && trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length > 2) {
 				// Quoted same-line substring: copy every transcript message whose
-				// text contains the quoted substring (may span multiple lines).
+				// search haystack contains the quoted substring (may span lines).
 				const substring = trimmed.slice(1, -1);
-				text = this.session.getMessagesTextContaining(substring);
-				if (!text) {
+				const matches = this.session.getCopyableMessagesContaining(substring);
+				const multiple = matches.length > 1;
+				const parts: string[] = [];
+				for (const match of matches) {
+					const formatted = this.formatCopyMatch(match, multiple);
+					if (formatted && formatted.trim()) {
+						parts.push(formatted);
+					}
+				}
+				if (parts.length === 0) {
 					this.showError(`No message contains: ${substring}`);
 					return;
 				}
-				statusMessage = "Copied matching messages to clipboard";
+				text = parts.join("\n\n");
+				statusMessage = multiple
+					? `Copied ${matches.length} matching messages to clipboard`
+					: "Copied matching message to clipboard";
 			} else if (/^\d+$/.test(trimmed)) {
-				// Numeric argument: copy the N-th editable message (skipping harness).
+				// Numeric argument: copy the N-th editable message (skipping harness)
+				// in the /edit content format.
 				const index = Number.parseInt(trimmed, 10);
-				text = this.session.getEditableMessageText(index);
-				if (!text) {
+				const target = this.session.getEditableMessage(index);
+				const content = target ? formatMessageContent(target.message) : null;
+				if (!target || content === null || !content.trim()) {
 					this.showError("No message to copy at that index");
 					return;
 				}
+				text = content;
 				statusMessage = `Copied message ${index} to clipboard`;
 			} else {
 				// Literal copy of the provided text.
@@ -6451,6 +6517,27 @@ export class InteractiveMode {
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
 		}
+	}
+
+	/**
+	 * Format one substring-copy match. User/assistant messages use the /edit
+	 * XML format; the outer <pi_edit> tags act as message separators and are
+	 * only included when copying multiple matches. Other message kinds (tool
+	 * results, bash executions, custom messages) fall back to their plain
+	 * copyable text.
+	 */
+	private formatCopyMatch(
+		match: { message: AgentMessage; editableIndex: number | undefined },
+		multiple: boolean,
+	): string | undefined {
+		const { message, editableIndex } = match;
+		if (message.role === "user" || message.role === "assistant") {
+			if (multiple && editableIndex !== undefined) {
+				return formatMessageForEdit(editableIndex, message) ?? undefined;
+			}
+			return formatMessageContent(message) ?? undefined;
+		}
+		return this.session.getMessageCopyText(message);
 	}
 
 	private handleNameCommand(text: string): void {

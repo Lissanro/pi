@@ -97,8 +97,8 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { editBlockToMessage, parseMessageEdits } from "./message-edit.ts";
-import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import { editBlockToMessage, formatMessageContent, formatMessageForEdit, parseMessageEdits } from "./message-edit.ts";
+import { type BashExecutionMessage, bashExecutionToText, type CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -1096,19 +1096,22 @@ export class AgentSession {
 
 	/**
 	 * Find editable messages (user/assistant, skipping harness messages) whose
-	 * text contains the given substring (case-sensitive plain match). Each
-	 * match carries its index counting backwards from the latest editable
-	 * message (0 = latest), matching the numbering used by getEditableMessage().
-	 * Matches are returned in chronological order.
+	 * search haystack contains the given substring (case-sensitive plain
+	 * match). The haystack covers the plain text, thinking blocks, tool call
+	 * arguments, and the /edit XML form, so pasted /copy or /edit output
+	 * matches as well as plain text. Each match carries its index counting
+	 * backwards from the latest editable message (0 = latest), matching the
+	 * numbering used by getEditableMessage(). Matches are chronological.
 	 */
 	getEditableMessagesContaining(substring: string): Array<{ index: number; entryId: string; message: AgentMessage }> {
 		const editable = this.getEditableMessageEntries();
 		const matches: Array<{ index: number; entryId: string; message: AgentMessage }> = [];
 		for (let i = 0; i < editable.length; i++) {
 			const { entryId, message } = editable[i];
-			const text = getMessageTextContent(message);
-			if (text?.includes(substring)) {
-				matches.push({ index: editable.length - 1 - i, entryId, message });
+			const index = editable.length - 1 - i;
+			const haystack = this._messageSearchHaystack(message, index);
+			if (haystack?.includes(substring)) {
+				matches.push({ index, entryId, message });
 			}
 		}
 		return matches;
@@ -3850,31 +3853,63 @@ export class AgentSession {
 	}
 
 	/**
-	 * Join the text content of every transcript message whose text contains the
-	 * given substring (case-sensitive plain match). Includes user messages,
-	 * assistant messages, tool results, bash executions, and custom messages;
-	 * harness messages are ignored. Returns undefined if nothing matches.
+	 * Build the search haystack for substring message matching. For user and
+	 * assistant messages it combines the plain text, the /edit inner XML form
+	 * (thinking blocks and tool calls included), and the full <pi_edit> block
+	 * carrying the message's current editable index, so pasted /copy or /edit
+	 * output matches as well as plain text. Other message kinds are searched
+	 * by their copyable text only. Returns undefined when there is no text.
 	 */
-	getMessagesTextContaining(substring: string): string | undefined {
-		const matches: string[] = [];
+	private _messageSearchHaystack(message: AgentMessage, editableIndex: number): string | undefined {
+		if (message.role !== "user" && message.role !== "assistant") {
+			return this.getMessageCopyText(message);
+		}
+		const parts: string[] = [];
+		const text = getMessageTextContent(message);
+		if (text) parts.push(text);
+		const content = formatMessageContent(message);
+		if (content !== null && content !== text) parts.push(content);
+		const xml = formatMessageForEdit(editableIndex, message);
+		if (xml !== null) parts.push(xml);
+		return parts.length > 0 ? parts.join("\n") : undefined;
+	}
+
+	/**
+	 * Find transcript messages matching the given substring (case-sensitive
+	 * plain match against the message search haystack). Includes user messages,
+	 * assistant messages, tool results, bash executions, and custom messages;
+	 * harness messages are ignored. Each match carries the message and, for
+	 * user/assistant messages, the editable index counting backwards from the
+	 * latest editable message (0 = latest). Matches are chronological.
+	 */
+	getCopyableMessagesContaining(
+		substring: string,
+	): Array<{ message: AgentMessage; editableIndex: number | undefined }> {
+		const editable = this.getEditableMessageEntries();
+		const indexByEntryId = new Map<string, number>();
+		for (let i = 0; i < editable.length; i++) {
+			indexByEntryId.set(editable[i].entryId, editable.length - 1 - i);
+		}
+		const matches: Array<{ message: AgentMessage; editableIndex: number | undefined }> = [];
 		const entries = this.sessionManager.buildContextEntries();
 		for (const entry of entries) {
 			if (entry.type !== "message") continue;
 			const message = entry.message as AgentMessage;
 			if (message.role === "assistant" && isHarnessMessage(message)) continue;
-			const text = this._messageToCopyText(message);
-			if (text?.includes(substring)) {
-				matches.push(text);
+			const editableIndex = indexByEntryId.get(entry.id);
+			const haystack = this._messageSearchHaystack(message, editableIndex ?? 0);
+			if (haystack?.includes(substring)) {
+				matches.push({ message, editableIndex });
 			}
 		}
-		return matches.length > 0 ? matches.join("\n\n") : undefined;
+		return matches;
 	}
 
 	/**
 	 * Extract copyable text from any transcript message. Returns undefined for
 	 * messages without text (e.g. image-only tool results).
 	 */
-	private _messageToCopyText(message: AgentMessage): string | undefined {
+	getMessageCopyText(message: AgentMessage): string | undefined {
 		if (message.role === "user" || message.role === "assistant") {
 			return getMessageTextContent(message);
 		}

@@ -27,8 +27,9 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "share", description: "Share session as a secret GitHub gist" },
 	{
 		name: "copy",
-		description: "Copy last agent message, message by index (/copy N), or given text (/copy text) to clipboard",
-		argumentHint: "[index|text]",
+		description:
+			'Copy last message, message by index (/copy N), matches (/copy "substr"), or given text (/copy text) to clipboard',
+		argumentHint: '[index|"substring"|text]',
 	},
 	{ name: "name", description: "Set session display name" },
 	{ name: "session", description: "Show session info and stats" },

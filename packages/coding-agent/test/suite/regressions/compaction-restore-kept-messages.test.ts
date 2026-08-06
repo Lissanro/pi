@@ -136,7 +136,11 @@ describe("AgentSession substring /copy matching", () => {
 		} as never);
 		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 
-		const matched = harness.session.getMessagesTextContaining("```");
+		const matches = harness.session.getCopyableMessagesContaining("```");
+		const matched = matches
+			.map((match) => harness.session.getMessageCopyText(match.message))
+			.filter((text): text is string => text !== undefined)
+			.join("\n\n");
 		expect(matched).toBeTruthy();
 		expect(matched).toContain("user message with a ``` code block");
 		expect(matched).toContain("command output with ``` a fence ```");
@@ -144,9 +148,10 @@ describe("AgentSession substring /copy matching", () => {
 		expect(matched).toContain("found ``` fence");
 		// Harness and non-matching assistant messages are excluded.
 		expect(matched).not.toContain("assistant without a fence");
+		expect(matches).toHaveLength(3);
 	});
 
-	it("substring copy returns undefined when nothing matches", async () => {
+	it("substring copy returns no matches when nothing matches", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
@@ -158,7 +163,7 @@ describe("AgentSession substring /copy matching", () => {
 		});
 		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 
-		expect(harness.session.getMessagesTextContaining("does not exist")).toBeUndefined();
+		expect(harness.session.getCopyableMessagesContaining("does not exist")).toEqual([]);
 	});
 });
 

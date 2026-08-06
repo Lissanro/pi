@@ -548,6 +548,7 @@
 - Replaced SDK request-auth assembly through `ModelRegistry.getApiKeyAndHeaders()` with `ModelRuntime.getAuth()`. Passing a provider ID returns provider-scoped auth; passing a model also resolves built-in, `models.json`, and extension model headers.
 - Changed extension-facing `ModelRegistry.refresh()` from synchronous `void` to `Promise<void>` because `models.json` loading is asynchronous. Extensions must await it before making synchronous registry reads.
 - Moved canonical dynamic catalog refresh to async `ModelRuntime.refresh()`/pi-ai `Models.refresh()`. Legacy extension OAuth `modifyModels` remains supported as a synchronous compatibility projection after credential initialization.
+- Removed `AgentSession.getMessagesTextContaining()`; use the structured `AgentSession.getCopyableMessagesContaining()` instead, which carries each matched message and its editable index.
 
 ### Added
 
@@ -569,6 +570,7 @@
 - Added `/copy "substring"` (same-line quoted) to copy every transcript message whose text contains the substring, including tool results, bash executions, and custom messages while ignoring harness messages. Next-line payloads remain literal copies, and `/copy N` still copies by index skipping harness messages.
 - Added substring matching to `/edit`: `/edit <substring>` (quoted or plain) loads every editable message whose text contains the substring into the editor as `<pi_edit>` blocks, so multiple matching messages can be edited at once. `/edit N` still edits by index.
 - Added substring matching to `/delete`: `/delete <substring>` (quoted or plain) deletes the single editable message whose text contains the substring while preserving later messages, and fails without changes when more than one message matches. `/delete N` still deletes the last N messages.
+- Added direct message selection to `/fork`: `/fork N` forks from the user message at index N (0 = latest user message, counting backwards) and `/fork <substring>` (quoted or plain) forks from the single user message whose text contains the substring. Out-of-bounds indices and absent or non-unique substring matches are reported without forking; bare `/fork` still opens the selector UI.
 
 ### Changed
 
@@ -588,6 +590,7 @@
 - Fixed `/edit` leaving raw `<pi_reasoning_content>` XML in the message when the thinking block carried a signature attribute.
 - Fixed `/compact` not removing old messages from the LLM prompt after compaction. The summary is now stored as a `compaction` entry (not a user+assistant message pair), so `buildContextEntries()` correctly strips pre-compaction messages from the context sent to the LLM while keeping them in the session tree for UI history. This also fixes the context usage counter remaining stuck at the pre-compaction percentage instead of resetting to `?` until the next LLM response.
 - Fixed the TUI "Retrying" status getting stuck (and Escape unresponsive) after `/compact`. Compaction retries now emit `auto_retry_end` and reset the attempt counter whenever the compaction loop exits (success, failure, or cancellation), `compact()` closes any stale agent retry cycle left by an in-flight retry aborted while agent events were disconnected, and the TUI clears leftover retry state on `compaction_end` and preserves the original Escape handler across repeated retry attempts.
+- Fixed `/copy` reporting "No agent messages to copy yet" for a thinking-only assistant message and omitting thinking blocks and tool calls. `/copy` (no args) now copies the latest non-harness message (user or assistant) and `/copy N` the indexed one, both in the `/edit` content format (`<pi_reasoning_content>` / `<pi_tool_call>`). `/copy "substring"` formats user/assistant matches the same way; with multiple matches each is wrapped in `<pi_edit id="N" role="...">` as a separator (N = the `/edit` index), while tool results, bash executions, and custom messages keep their plain text form. Substring search also matches thinking content, tool call arguments, and pasted `/copy` or `/edit` output.
 
 ## [0.80.7] - 2026-07-14
 
