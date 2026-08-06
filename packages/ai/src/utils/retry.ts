@@ -21,6 +21,12 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	"out of budget",
 	"quota exceeded",
 	"billing",
+
+	// Context window / token limit errors - retrying won't help.
+	"context size",
+	"context window",
+	"token limit",
+	"max tokens",
 ]);
 
 const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
