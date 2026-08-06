@@ -3090,10 +3090,10 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/fork" || text.startsWith("/fork ")) {
-				const arg = text.startsWith("/fork ") ? text.slice(6).trim() : "";
+			if (text === "/fork" || (text.startsWith("/fork") && /^\s/.test(text.slice(5)))) {
+				const arg = text === "/fork" ? "" : text.slice(5);
 				this.editor.setText("");
-				if (arg === "") {
+				if (arg.trim() === "") {
 					this.showUserMessageSelector();
 				} else {
 					await this.handleForkCommand(arg);
@@ -3169,14 +3169,14 @@ export class InteractiveMode {
 				await this.handleContinueCommand();
 				return;
 			}
-			if (text === "/delete" || text.startsWith("/delete ")) {
-				const arg = text.startsWith("/delete ") ? text.slice(7).trim() : "";
+			if (text === "/delete" || (text.startsWith("/delete") && /^\s/.test(text.slice(7)))) {
+				const arg = text === "/delete" ? "" : text.slice(7);
 				this.editor.setText("");
 				await this.handleDeleteCommand(arg);
 				return;
 			}
-			if (text === "/edit" || text.startsWith("/edit ")) {
-				const arg = text.startsWith("/edit ") ? text.slice(6).trim() : "";
+			if (text === "/edit" || (text.startsWith("/edit") && /^\s/.test(text.slice(5)))) {
+				const arg = text === "/edit" ? "" : text.slice(5);
 				this.editor.setText("");
 				await this.handleEditCommand(arg);
 				return;
@@ -5252,21 +5252,22 @@ export class InteractiveMode {
 	}
 
 	private showUserMessageSelector(): void {
-		const userMessages = this.session.getUserMessagesForForking();
+		const forkableMessages = this.session.getForkableMessages();
 
-		if (userMessages.length === 0) {
+		if (forkableMessages.length === 0) {
 			this.showStatus("No messages to fork from");
 			return;
 		}
 
-		const initialSelectedId = userMessages[userMessages.length - 1]?.entryId;
+		const initialSelectedId = forkableMessages[forkableMessages.length - 1]?.entryId;
+		const roleByEntryId = new Map(forkableMessages.map((m) => [m.entryId, m.role]));
 
 		this.showSelector((done) => {
 			const selector = new UserMessageSelectorComponent(
-				userMessages.map((m) => ({ id: m.entryId, text: m.text })),
+				forkableMessages.map((m) => ({ id: m.entryId, text: m.text })),
 				async (entryId) => {
 					done();
-					await this.forkToEntry(entryId);
+					await this.forkToMessage(entryId, roleByEntryId.get(entryId) ?? "user");
 				},
 				() => {
 					done();
@@ -5278,9 +5279,12 @@ export class InteractiveMode {
 		});
 	}
 
-	private async forkToEntry(entryId: string): Promise<void> {
+	private async forkToMessage(entryId: string, role: "user" | "assistant"): Promise<void> {
 		try {
-			const result = await this.runtimeHost.fork(entryId);
+			// Forking from a user message cuts before it and loads its text into
+			// the editor for resending; forking from an assistant message keeps it
+			// as the branch leaf so the session continues from that point.
+			const result = await this.runtimeHost.fork(entryId, role === "assistant" ? { position: "at" } : undefined);
 			if (result.cancelled) {
 				this.ui.requestRender();
 				return;
@@ -5294,42 +5298,43 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Fork from a user message selected by argument instead of the selector UI.
-	 * A numeric argument selects by index (0 = latest user message, counting
-	 * backwards); a substring argument selects the single user message whose
-	 * text contains it. Out-of-bounds indices and non-unique or absent
-	 * substring matches are reported without forking.
+	 * Fork from a message selected by argument instead of the selector UI. A
+	 * numeric argument selects by index (0 = latest non-harness message,
+	 * counting backwards over user and assistant messages); a substring
+	 * argument selects the single message whose search haystack contains it
+	 * (may span multiple lines when pasted below the command). Out-of-bounds
+	 * indices and non-unique or absent substring matches are reported without
+	 * forking.
 	 */
 	private async handleForkCommand(arg: string): Promise<void> {
-		const userMessages = this.session.getUserMessagesForForking();
-		if (userMessages.length === 0) {
-			this.showStatus("No messages to fork from");
+		const trimmed = arg.trim();
+		if (/^\d+$/.test(trimmed)) {
+			const forkable = this.session.getForkableMessages();
+			if (forkable.length === 0) {
+				this.showStatus("No messages to fork from");
+				return;
+			}
+			const index = Number.parseInt(trimmed, 10);
+			const target = forkable[forkable.length - 1 - index];
+			if (!target) {
+				this.showError(`No message at index ${index} (${forkable.length} messages)`);
+				return;
+			}
+			await this.forkToMessage(target.entryId, target.role);
 			return;
 		}
 
-		let target: { entryId: string; text: string } | undefined;
-		if (/^\d+$/.test(arg)) {
-			const index = Number.parseInt(arg, 10);
-			target = userMessages[userMessages.length - 1 - index];
-			if (!target) {
-				this.showError(`No user message at index ${index} (${userMessages.length} user messages)`);
-				return;
-			}
-		} else {
-			const substring = normalizeMessageSelectorArg(arg);
-			const matches = userMessages.filter((m) => m.text.includes(substring));
-			if (matches.length === 0) {
-				this.showError(`No user message contains: ${substring}`);
-				return;
-			}
-			if (matches.length > 1) {
-				this.showError(`Found ${matches.length} user messages containing: ${substring}`);
-				return;
-			}
-			target = matches[0];
+		const substring = normalizeMessageSelectorArg(trimmed);
+		const matches = this.session.getEditableMessagesContaining(substring);
+		if (matches.length === 0) {
+			this.showError(`No message contains: ${substring}`);
+			return;
 		}
-
-		await this.forkToEntry(target.entryId);
+		if (matches.length > 1) {
+			this.showError(`Found ${matches.length} messages containing: ${substring}`);
+			return;
+		}
+		await this.forkToMessage(matches[0].entryId, matches[0].message.role as "user" | "assistant");
 	}
 
 	private async handleCloneCommand(): Promise<void> {
@@ -5403,8 +5408,9 @@ export class InteractiveMode {
 			this.showStatus("Cannot delete while streaming is in progress");
 			return;
 		}
-		if (arg !== "" && !/^\d+$/.test(arg)) {
-			const substring = normalizeMessageSelectorArg(arg);
+		const trimmed = arg.trim();
+		if (trimmed !== "" && !/^\d+$/.test(trimmed)) {
+			const substring = normalizeMessageSelectorArg(trimmed);
 			const matches = this.session.getEditableMessagesContaining(substring);
 			if (matches.length === 0) {
 				this.showStatus(`No message contains: ${substring}`);
@@ -5424,7 +5430,7 @@ export class InteractiveMode {
 			void this.flushCompactionQueue({ willRetry: false });
 			return;
 		}
-		const count = arg === "" ? 1 : Number.parseInt(arg, 10);
+		const count = trimmed === "" ? 1 : Number.parseInt(trimmed, 10);
 		if (!Number.isInteger(count) || count < 1) {
 			this.showStatus("Usage: /delete [count|substring]");
 			return;
@@ -5452,8 +5458,9 @@ export class InteractiveMode {
 			this.showStatus("Cannot edit while streaming is in progress");
 			return;
 		}
-		if (arg !== "" && !/^\d+$/.test(arg)) {
-			const substring = normalizeMessageSelectorArg(arg);
+		const trimmed = arg.trim();
+		if (trimmed !== "" && !/^\d+$/.test(trimmed)) {
+			const substring = normalizeMessageSelectorArg(trimmed);
 			const matches = this.session.getEditableMessagesContaining(substring);
 			if (matches.length === 0) {
 				this.showStatus(`No message contains: ${substring}`);
@@ -5473,7 +5480,7 @@ export class InteractiveMode {
 			this.editor.setText(blocks.join("\n"));
 			return;
 		}
-		const index = arg === "" ? 0 : Number.parseInt(arg, 10);
+		const index = trimmed === "" ? 0 : Number.parseInt(trimmed, 10);
 		if (!Number.isInteger(index) || index < 0) {
 			this.showStatus("Usage: /edit [index|substring]");
 			return;

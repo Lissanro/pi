@@ -28,7 +28,7 @@ For the JSONL file format and SessionManager API, see [Session Format](session-f
 | `/name <name>` | Set the current session display name |
 | `/session` | Show session info |
 | `/tree` | Navigate the current session tree |
-| `/fork` | Create a new session from a previous user message |
+| `/fork` | Create a new session from a previous message (selector, index, or substring) |
 | `/clone` | Duplicate the current active branch into a new session |
 | `/compact [prompt]` | Summarize older context; see [Compaction](compaction.md) |
 | `/export [file]` | Export session to HTML |

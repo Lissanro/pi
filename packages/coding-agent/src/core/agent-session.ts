@@ -3677,6 +3677,30 @@ export class AgentSession {
 	}
 
 	/**
+	 * Get all forkable messages from the active context (user/assistant,
+	 * skipping harness messages), in chronological order. Each match carries
+	 * its editable index counting backwards from the latest editable message
+	 * (0 = latest) and a display text (the plain text, or the /edit content
+	 * form for messages without plain text, e.g. thinking-only assistant
+	 * messages).
+	 */
+	getForkableMessages(): Array<{ index: number; entryId: string; role: "user" | "assistant"; text: string }> {
+		const editable = this.getEditableMessageEntries();
+		const result: Array<{ index: number; entryId: string; role: "user" | "assistant"; text: string }> = [];
+		for (let i = 0; i < editable.length; i++) {
+			const { entryId, message } = editable[i];
+			const text = getMessageTextContent(message) ?? formatMessageContent(message) ?? "";
+			result.push({
+				index: editable.length - 1 - i,
+				entryId,
+				role: message.role as "user" | "assistant",
+				text,
+			});
+		}
+		return result;
+	}
+
+	/**
 	 * Get all user messages from session for fork selector.
 	 */
 	getUserMessagesForForking(): Array<{ entryId: string; text: string }> {
