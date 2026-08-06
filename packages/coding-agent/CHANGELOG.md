@@ -567,7 +567,8 @@
 - Added `pi update --models` to force an immediate model catalog refresh without updating pi or extensions.
 - Added inherited xAI device-code OAuth login and Grok 4.5 OpenAI Responses support, with low, medium, and high thinking levels ([#6651](https://github.com/earendil-works/pi-mono/pull/6651) by [@Jaaneek](https://github.com/Jaaneek)).
 - Added `/copy "substring"` (same-line quoted) to copy every transcript message whose text contains the substring, including tool results, bash executions, and custom messages while ignoring harness messages. Next-line payloads remain literal copies, and `/copy N` still copies by index skipping harness messages.
-
+- Added substring matching to `/edit`: `/edit <substring>` (quoted or plain) loads every editable message whose text contains the substring into the editor as `<pi_edit>` blocks, so multiple matching messages can be edited at once. `/edit N` still edits by index.
+- Added substring matching to `/delete`: `/delete <substring>` (quoted or plain) deletes the single editable message whose text contains the substring while preserving later messages, and fails without changes when more than one message matches. `/delete N` still deletes the last N messages.
 
 ### Changed
 

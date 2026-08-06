@@ -466,3 +466,127 @@ describe("AgentSession.applyMessageEdits", () => {
 		);
 	});
 });
+
+describe("AgentSession.getEditableMessagesContaining", () => {
+	const harnesses: Harness[] = [];
+
+	afterEach(() => {
+		while (harnesses.length > 0) {
+			harnesses.pop()?.cleanup();
+		}
+	});
+
+	it("returns chronological matches with indices counting from the latest", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("needles in hay"), fauxAssistantMessage("more hay")]);
+		await harness.session.prompt("find the needle");
+		await harness.session.prompt("again");
+
+		const matches = harness.session.getEditableMessagesContaining("needle");
+		expect(matches).toHaveLength(2);
+		// Editable messages: "find the needle"(3), "needles in hay"(2), "again"(1), "more hay"(0).
+		expect(matches[0].index).toBe(3);
+		expect(getMessageText(matches[0].message)).toBe("find the needle");
+		expect(matches[1].index).toBe(2);
+		expect(getMessageText(matches[1].message)).toBe("needles in hay");
+		// Indices match getEditableMessage()'s numbering.
+		expect(harness.session.getEditableMessage(2)?.entryId).toBe(matches[1].entryId);
+	});
+
+	it("returns no matches when nothing contains the substring", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("ok")]);
+		await harness.session.prompt("user");
+
+		expect(harness.session.getEditableMessagesContaining("absent")).toEqual([]);
+	});
+
+	it("skips harness messages", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("real")]);
+		await harness.session.prompt("user");
+
+		const harnessMessage: AgentMessage = {
+			role: "assistant",
+			content: [],
+			api: "openai-responses",
+			provider: "openai",
+			model: "unknown",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "aborted",
+			timestamp: Date.now(),
+		};
+		harness.session.sessionManager.appendMessage(harnessMessage as Message);
+		harness.session.agent.state.messages = harness.session.sessionManager.buildSessionContext().messages;
+
+		expect(harness.session.getEditableMessagesContaining("real")).toHaveLength(1);
+	});
+});
+
+describe("AgentSession.deleteMessage", () => {
+	const harnesses: Harness[] = [];
+
+	afterEach(() => {
+		while (harnesses.length > 0) {
+			harnesses.pop()?.cleanup();
+		}
+	});
+
+	it("deletes a middle message while preserving later messages", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("second answer")]);
+		await harness.session.prompt("first question");
+		await harness.session.prompt("second question");
+
+		const target = harness.session.getEditableMessagesContaining("first answer");
+		expect(target).toHaveLength(1);
+		expect(harness.session.deleteMessage(target[0].entryId)).toBe(true);
+
+		const texts = harness.session.messages.map((m) => getMessageText(m));
+		expect(texts).toEqual(["first question", "second question", "second answer"]);
+		// Session log agrees with agent state.
+		const branchTexts = harness.sessionManager
+			.getBranch()
+			.filter((entry) => entry.type === "message")
+			.map((entry) => getMessageText(entry.message));
+		expect(branchTexts).toEqual(["first question", "second question", "second answer"]);
+	});
+
+	it("deletes the latest message", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("only answer")]);
+		await harness.session.prompt("only question");
+
+		const target = harness.session.getEditableMessage(0);
+		expect(harness.session.deleteMessage(target!.entryId)).toBe(true);
+		expect(harness.session.messages.map((m) => getMessageText(m))).toEqual(["only question"]);
+	});
+
+	it("returns false for unknown or non-message entries", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("ok")]);
+		await harness.session.prompt("user");
+
+		expect(harness.session.deleteMessage("nonexistent-id")).toBe(false);
+		expect(harness.session.messages.map((m) => getMessageText(m))).toEqual(["user", "ok"]);
+	});
+});

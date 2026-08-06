@@ -46,8 +46,16 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		argumentHint: "[N msgs] [K|M tokens] [--keep-tokens N] [--keep-messages N] [text]  e.g. /compact 10 20K (shortest wins)",
 	},
 	{ name: "continue", description: "Continue the current session without adding a message" },
-	{ name: "delete", description: "Delete the last message (or N messages: /delete N)", argumentHint: "[count]" },
-	{ name: "edit", description: "Edit the last message (or N messages back: /edit N)", argumentHint: "[index]" },
+	{
+		name: "delete",
+		description: "Delete the last message (or N messages: /delete N, or unique match: /delete substring)",
+		argumentHint: "[count|substring]",
+	},
+	{
+		name: "edit",
+		description: "Edit the last message (or N messages back: /edit N, or all matches: /edit substring)",
+		argumentHint: "[index|substring]",
+	},
 	{ name: "resume", description: "Resume a different session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },

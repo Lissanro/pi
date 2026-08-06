@@ -291,6 +291,19 @@ function isUnknownModel(model: Model<any> | undefined): boolean {
 	return !!model && model.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
 }
 
+/**
+ * Normalize a message selector argument for commands that accept a substring
+ * (/edit, /delete, /fork). A same-line fully quoted argument is unquoted,
+ * matching the /copy "substring" convention; anything else is used as-is.
+ */
+function normalizeMessageSelectorArg(arg: string): string {
+	const trimmed = arg.trim();
+	if (trimmed.length > 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+		return trimmed.slice(1, -1);
+	}
+	return trimmed;
+}
+
 function quoteIfNeeded(value: string): string {
 	if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) {
 		return value;
@@ -3153,16 +3166,14 @@ export class InteractiveMode {
 			}
 			if (text === "/delete" || text.startsWith("/delete ")) {
 				const arg = text.startsWith("/delete ") ? text.slice(7).trim() : "";
-				const count = arg === "" ? 1 : Number.parseInt(arg, 10);
 				this.editor.setText("");
-				await this.handleDeleteCommand(count);
+				await this.handleDeleteCommand(arg);
 				return;
 			}
 			if (text === "/edit" || text.startsWith("/edit ")) {
 				const arg = text.startsWith("/edit ") ? text.slice(6).trim() : "";
-				const index = arg === "" ? 0 : Number.parseInt(arg, 10);
 				this.editor.setText("");
-				await this.handleEditCommand(index);
+				await this.handleEditCommand(arg);
 				return;
 			}
 			if (text === "/quit") {
@@ -5333,17 +5344,41 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Delete the last N messages from the session. Harness messages (aborts/errors
-	 * with no real content) are skipped when counting and removed if they trail
-	 * the deletion point.
+	 * Delete messages from the session. Numeric argument deletes the last N
+	 * messages; a substring argument deletes the single editable message whose
+	 * text contains it, failing when more than one message matches. Harness
+	 * messages (aborts/errors with no real content) are skipped when counting
+	 * and do not participate in substring matching.
 	 */
-	private async handleDeleteCommand(count: number): Promise<void> {
+	private async handleDeleteCommand(arg: string): Promise<void> {
 		if (this.session.isStreaming) {
 			this.showStatus("Cannot delete while streaming is in progress");
 			return;
 		}
+		if (arg !== "" && !/^\d+$/.test(arg)) {
+			const substring = normalizeMessageSelectorArg(arg);
+			const matches = this.session.getEditableMessagesContaining(substring);
+			if (matches.length === 0) {
+				this.showStatus(`No message contains: ${substring}`);
+				return;
+			}
+			if (matches.length > 1) {
+				this.showError(`Found ${matches.length} messages containing: ${substring}`);
+				return;
+			}
+			if (!this.session.deleteMessage(matches[0].entryId)) {
+				this.showError("Selected message cannot be deleted");
+				return;
+			}
+			this.chatContainer.clear();
+			this.renderInitialMessages();
+			this.showStatus("Deleted 1 message");
+			void this.flushCompactionQueue({ willRetry: false });
+			return;
+		}
+		const count = arg === "" ? 1 : Number.parseInt(arg, 10);
 		if (!Number.isInteger(count) || count < 1) {
-			this.showStatus("Usage: /delete [count]");
+			this.showStatus("Usage: /delete [count|substring]");
 			return;
 		}
 		const removed = this.session.deleteLastMessages(count);
@@ -5358,17 +5393,41 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Populate the editor with an XML edit block for the target message.
-	 * Index 0 is the latest editable message, 1 is the message before it, etc.
-	 * Harness messages are skipped and do not count.
+	 * Populate the editor with XML edit blocks for the target message(s).
+	 * A numeric argument selects a single message: 0 is the latest editable
+	 * message, 1 is the message before it, etc. A substring argument selects
+	 * every editable message whose text contains it, producing one edit block
+	 * per match. Harness messages are skipped and do not count.
 	 */
-	private async handleEditCommand(index: number): Promise<void> {
+	private async handleEditCommand(arg: string): Promise<void> {
 		if (this.session.isStreaming) {
 			this.showStatus("Cannot edit while streaming is in progress");
 			return;
 		}
+		if (arg !== "" && !/^\d+$/.test(arg)) {
+			const substring = normalizeMessageSelectorArg(arg);
+			const matches = this.session.getEditableMessagesContaining(substring);
+			if (matches.length === 0) {
+				this.showStatus(`No message contains: ${substring}`);
+				return;
+			}
+			const blocks: string[] = [];
+			for (const match of matches) {
+				const xml = formatMessageForEdit(match.index, match.message);
+				if (xml !== null) {
+					blocks.push(xml);
+				}
+			}
+			if (blocks.length === 0) {
+				this.showStatus("Selected message cannot be edited");
+				return;
+			}
+			this.editor.setText(blocks.join("\n"));
+			return;
+		}
+		const index = arg === "" ? 0 : Number.parseInt(arg, 10);
 		if (!Number.isInteger(index) || index < 0) {
-			this.showStatus("Usage: /edit [index]");
+			this.showStatus("Usage: /edit [index|substring]");
 			return;
 		}
 		const target = this.session.getEditableMessage(index);

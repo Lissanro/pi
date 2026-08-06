@@ -1050,6 +1050,20 @@ export class AgentSession {
 	}
 
 	/**
+	 * Delete a single message entry by its session entry id, preserving later
+	 * messages. Rebuilds the agent's message state from the session log.
+	 * Returns false if the entry is not a message on the active leaf path.
+	 */
+	deleteMessage(entryId: string): boolean {
+		const removed = this.sessionManager.removeMessage(entryId);
+		if (removed) {
+			const sessionContext = this.sessionManager.buildSessionContext();
+			this.agent.state.messages = sessionContext.messages;
+		}
+		return removed;
+	}
+
+	/**
 	 * Get editable message entries from the active context, counting backwards
 	 * from the latest message. Harness messages and non-message entries are
 	 * skipped. Returns the entry and message at the given 0-based index.
@@ -1078,6 +1092,26 @@ export class AgentSession {
 		const target = this.getEditableMessage(index);
 		if (!target) return undefined;
 		return getMessageTextContent(target.message);
+	}
+
+	/**
+	 * Find editable messages (user/assistant, skipping harness messages) whose
+	 * text contains the given substring (case-sensitive plain match). Each
+	 * match carries its index counting backwards from the latest editable
+	 * message (0 = latest), matching the numbering used by getEditableMessage().
+	 * Matches are returned in chronological order.
+	 */
+	getEditableMessagesContaining(substring: string): Array<{ index: number; entryId: string; message: AgentMessage }> {
+		const editable = this.getEditableMessageEntries();
+		const matches: Array<{ index: number; entryId: string; message: AgentMessage }> = [];
+		for (let i = 0; i < editable.length; i++) {
+			const { entryId, message } = editable[i];
+			const text = getMessageTextContent(message);
+			if (text?.includes(substring)) {
+				matches.push({ index: editable.length - 1 - i, entryId, message });
+			}
+		}
+		return matches;
 	}
 
 	/**
