@@ -33,7 +33,10 @@ function testModel(id: string) {
 }
 
 describe("ModelRuntime auth options", () => {
-	it("accepts a pi-ai CredentialStore", async () => {
+	// Tests using built-in providers require their registration; local-only
+	// mode (PI_DISABLE_CLOUD_PROVIDERS=1) hides them from the registry.
+	const cloudDisabled = process.env.PI_DISABLE_CLOUD_PROVIDERS === "1";
+	it.skipIf(cloudDisabled)("accepts a pi-ai CredentialStore", async () => {
 		const credentials = new InMemoryCredentialStore();
 		await credentials.modify("anthropic", async () => ({ type: "api_key", key: "stored-key" }));
 		const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
@@ -41,7 +44,7 @@ describe("ModelRuntime auth options", () => {
 		expect((await runtime.getAuth("anthropic"))?.auth.apiKey).toBe("stored-key");
 	});
 
-	it("scopes provider availability reads and records refresh failures", async () => {
+	it.skipIf(cloudDisabled)("scopes provider availability reads and records refresh failures", async () => {
 		const base = new InMemoryCredentialStore();
 		const reads: string[] = [];
 		let failReads = false;
@@ -70,7 +73,7 @@ describe("ModelRuntime auth options", () => {
 		expect(runtime.getError()).toBeUndefined();
 	});
 
-	it("projects provider-owned methods, names, and status", async () => {
+	it.skipIf(cloudDisabled)("projects provider-owned methods, names, and status", async () => {
 		const runtime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
 		const options = authOptions(runtime);
 
@@ -105,7 +108,7 @@ describe("ModelRuntime auth options", () => {
 		expect(options.some((option) => option.provider.id === "openai-codex" && option.type === "api_key")).toBe(false);
 	});
 
-	it("attaches the provider's active auth status to every method option", async () => {
+	it.skipIf(cloudDisabled)("attaches the provider's active auth status to every method option", async () => {
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory({
 				anthropic: {

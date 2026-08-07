@@ -49,7 +49,10 @@ afterEach(() => {
 });
 
 describe("Radius provider", () => {
-	it("restores the legacy credential catalog without network access", async () => {
+	// The radius provider is part of the built-in provider set; local-only
+	// mode (PI_DISABLE_CLOUD_PROVIDERS=1) hides it from the registry.
+	const cloudDisabled = process.env.PI_DISABLE_CLOUD_PROVIDERS === "1";
+	it.skipIf(cloudDisabled)("restores the legacy credential catalog without network access", async () => {
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory({
 				[RADIUS_PROVIDER_ID]: radiusOAuthCredential("https://radius.example.com/v1"),
@@ -65,13 +68,13 @@ describe("Radius provider", () => {
 		expect(runtime.hasConfiguredAuth(RADIUS_PROVIDER_ID)).toBe(true);
 	});
 
-	it("fetches and stores the catalog for configured Radius auth", async () => {
-		vi.spyOn(globalThis, "fetch").mockImplementation(
-			async () =>
-				new Response(JSON.stringify(radiusConfig("https://radius.example.com/v1")), {
-					status: 200,
-					headers: { "content-type": "application/json" },
-				}),
+	it.skipIf(cloudDisabled)("fetches and stores the catalog for configured Radius auth", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify(radiusConfig("https://radius.example.com/v1")), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+
 		);
 		const modelsStore = new InMemoryModelsStore();
 		const credentials = AuthStorage.inMemory({

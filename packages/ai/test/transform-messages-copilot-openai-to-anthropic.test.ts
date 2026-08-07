@@ -47,7 +47,7 @@ function makeAssistantMessage(content: AssistantMessage["content"]): AssistantMe
 }
 
 describe("OpenAI to Anthropic session migration for Copilot Claude", () => {
-	it("converts thinking blocks to plain text when source model differs", () => {
+	it("preserves signed thinking blocks when source model differs", () => {
 		const model = makeCopilotClaudeModel();
 		const messages: Message[] = [
 			{ role: "user", content: "hello", timestamp: Date.now() },
@@ -80,14 +80,16 @@ describe("OpenAI to Anthropic session migration for Copilot Claude", () => {
 		const result = transformMessages(messages, model, anthropicNormalizeToolCallId);
 		const assistantMsg = result.find((m) => m.role === "assistant") as AssistantMessage;
 
-		// Thinking block should be converted to text since models differ
+		// transformMessages keeps thinking blocks with signatures (needed for
+		// replay/prefill continuation) regardless of model switching; any
+		// downgrade for the target model happens in the API layer.
 		const textBlocks = assistantMsg.content.filter((b) => b.type === "text");
 		const thinkingBlocks = assistantMsg.content.filter((b) => b.type === "thinking");
-		expect(thinkingBlocks).toHaveLength(0);
-		expect(textBlocks.length).toBeGreaterThanOrEqual(2);
+		expect(thinkingBlocks).toHaveLength(1);
+		expect(textBlocks.length).toBeGreaterThanOrEqual(1);
 	});
 
-	it("removes thoughtSignature from tool calls when migrating between models", () => {
+	it("preserves thoughtSignature on tool calls when source model differs", () => {
 		const model = makeCopilotClaudeModel();
 		const messages: Message[] = [
 			{ role: "user", content: "run a command", timestamp: Date.now() },
@@ -130,7 +132,11 @@ describe("OpenAI to Anthropic session migration for Copilot Claude", () => {
 		const assistantMsg = result.find((m) => m.role === "assistant") as AssistantMessage;
 		const toolCall = assistantMsg.content.find((b) => b.type === "toolCall") as ToolCall;
 
-		expect(toolCall.thoughtSignature).toBeUndefined();
+		// Kept for replay/prefill continuation; the API layer decides how to
+		// serialize or drop foreign signatures for the target model.
+		expect(toolCall.thoughtSignature).toBe(
+			JSON.stringify({ type: "reasoning.encrypted", id: "call_123", data: "encrypted" }),
+		);
 	});
 
 	it("adds synthetic tool results for trailing orphaned tool calls", () => {

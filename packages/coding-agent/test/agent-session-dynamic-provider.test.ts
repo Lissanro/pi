@@ -12,6 +12,9 @@ import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
+// Dynamic provider overrides target built-in providers; local-only mode
+// (PI_DISABLE_CLOUD_PROVIDERS=1) hides them from the registry.
+
 function nativeAnthropicProvider(baseUrl: string): Provider {
 	const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, baseUrl };
 	return {
@@ -34,7 +37,7 @@ function nativeAnthropicProvider(baseUrl: string): Provider {
 	};
 }
 
-describe("AgentSession dynamic provider registration", () => {
+describe.skipIf(process.env.PI_DISABLE_CLOUD_PROVIDERS === "1")("AgentSession dynamic provider registration", () => {
 	let tempDir: string;
 	let agentDir: string;
 

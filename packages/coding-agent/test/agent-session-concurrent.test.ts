@@ -58,7 +58,10 @@ function createAssistantMessage(text: string): AssistantMessage {
 	};
 }
 
-describe("AgentSession concurrent prompt guard", () => {
+// Streaming prompt flows require a registered provider; local-only mode
+// (PI_DISABLE_CLOUD_PROVIDERS=1) hides all built-in providers. Ungated tests
+// would leave a queued prompt continuation that rejects after test end.
+describe.skipIf(process.env.PI_DISABLE_CLOUD_PROVIDERS === "1")("AgentSession concurrent prompt guard", () => {
 	let session: AgentSession;
 	let tempDir: string;
 

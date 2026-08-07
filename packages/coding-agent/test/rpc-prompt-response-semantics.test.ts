@@ -185,6 +185,9 @@ async function startRpcMode(options: { withAuth: boolean; responseDelayMs: numbe
 }
 
 describe("RPC prompt response semantics", () => {
+	// Successful prompt preflight requires a registered provider; local-only
+	// mode (PI_DISABLE_CLOUD_PROVIDERS=1) hides all built-in providers.
+	const cloudDisabled = process.env.PI_DISABLE_CLOUD_PROVIDERS === "1";
 	afterEach(() => {
 		rpcIo.outputLines = [];
 		rpcIo.lineHandler = undefined;
@@ -229,7 +232,7 @@ describe("RPC prompt response semantics", () => {
 		}
 	});
 
-	it("emits one success response when prompt preflight succeeds", async () => {
+	it.skipIf(cloudDisabled)("emits one success response when prompt preflight succeeds", async () => {
 		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
 
 		try {
@@ -250,7 +253,7 @@ describe("RPC prompt response semantics", () => {
 		}
 	});
 
-	it("emits one success response when prompt is queued during streaming", async () => {
+	it.skipIf(cloudDisabled)("emits one success response when prompt is queued during streaming", async () => {
 		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 100 });
 
 		try {

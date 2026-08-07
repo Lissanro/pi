@@ -307,7 +307,11 @@ async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAu
 	} finally {
 		interaction.signal.removeEventListener("abort", onAbort);
 		manualAbort.abort();
-		server.server.close();
+		// Release the callback port fully before resolving: close() is
+		// asynchronous, and a subsequent login on the same fixed port must
+		// not race the lingering listener (EADDRINUSE).
+		server.server.closeAllConnections();
+		await new Promise<void>((resolveClose) => server.server.close(() => resolveClose()));
 	}
 }
 

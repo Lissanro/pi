@@ -59,6 +59,10 @@ describe("openai-completions empty tools handling", () => {
 		mockState.lastClientOptions = undefined;
 	});
 
+	// Cloudflare AI Gateway tests need the cloud provider registration that
+	// local-only mode (PI_DISABLE_CLOUD_PROVIDERS=1) intentionally hides.
+	const cloudDisabled = process.env.PI_DISABLE_CLOUD_PROVIDERS === "1";
+
 	it("omits tools field when context.tools is an empty array", async () => {
 		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
 		const model = { ...baseModel, api: "openai-completions" } as const;
@@ -160,44 +164,47 @@ describe("openai-completions empty tools handling", () => {
 		expect(params.max_completion_tokens).toBe(3904);
 	});
 
-	it("uses conservative OpenAI-compatible fields for Cloudflare AI Gateway /compat models", async () => {
-		process.env.CLOUDFLARE_API_KEY = "cf-token";
-		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
-		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-		const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6")!;
+	it.skipIf(cloudDisabled)(
+		"uses conservative OpenAI-compatible fields for Cloudflare AI Gateway /compat models",
+		async () => {
+			process.env.CLOUDFLARE_API_KEY = "cf-token";
+			process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
+			process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
+			const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6")!;
 
-		await streamSimple(
-			model,
-			{
-				systemPrompt: "You are helpful.",
-				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
-			{ maxTokens: 1234, reasoning: "high" },
-		).result();
+			await streamSimple(
+				model,
+				{
+					systemPrompt: "You are helpful.",
+					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+				},
+				{ maxTokens: 1234, reasoning: "high" },
+			).result();
 
-		const params = mockState.lastParams as {
-			messages: Array<{ role: string }>;
-			max_tokens?: number;
-			max_completion_tokens?: number;
-			reasoning_effort?: string;
-			store?: boolean;
-		};
-		expect(params.messages[0].role).toBe("system");
-		expect(params.max_tokens).toBe(1234);
-		expect(params.max_completion_tokens).toBeUndefined();
-		expect(params.reasoning_effort).toBeUndefined();
-		expect(params.store).toBeUndefined();
+			const params = mockState.lastParams as {
+				messages: Array<{ role: string }>;
+				max_tokens?: number;
+				max_completion_tokens?: number;
+				reasoning_effort?: string;
+				store?: boolean;
+			};
+			expect(params.messages[0].role).toBe("system");
+			expect(params.max_tokens).toBe(1234);
+			expect(params.max_completion_tokens).toBeUndefined();
+			expect(params.reasoning_effort).toBeUndefined();
+			expect(params.store).toBeUndefined();
 
-		const clientOptions = mockState.lastClientOptions as {
-			baseURL?: string;
-			defaultHeaders?: Record<string, unknown>;
-		};
-		expect(clientOptions.baseURL).toBe("https://gateway.ai.cloudflare.com/v1/account-id/gateway-id/compat");
-		expect(clientOptions.defaultHeaders?.Authorization).toBeNull();
-		expect(clientOptions.defaultHeaders?.["cf-aig-authorization"]).toBe("Bearer cf-token");
-	});
+			const clientOptions = mockState.lastClientOptions as {
+				baseURL?: string;
+				defaultHeaders?: Record<string, unknown>;
+			};
+			expect(clientOptions.baseURL).toBe("https://gateway.ai.cloudflare.com/v1/account-id/gateway-id/compat");
+			expect(clientOptions.defaultHeaders?.Authorization).toBeNull();
+			expect(clientOptions.defaultHeaders?.["cf-aig-authorization"]).toBe("Bearer cf-token");
+		},
+	);
 
-	it("resolves Cloudflare AI Gateway base URL through provider auth", async () => {
+	it.skipIf(cloudDisabled)("resolves Cloudflare AI Gateway base URL through provider auth", async () => {
 		process.env.CLOUDFLARE_API_KEY = "cf-token";
 		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
 		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
@@ -211,24 +218,27 @@ describe("openai-completions empty tools handling", () => {
 		expect(clientOptions.baseURL).toBe("https://gateway.ai.cloudflare.com/v1/account-id/gateway-id/compat");
 	});
 
-	it("preserves inline upstream Authorization for Cloudflare AI Gateway BYOK requests", async () => {
-		process.env.CLOUDFLARE_API_KEY = "cf-token";
-		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
-		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-		const model = getModel("cloudflare-ai-gateway", "gpt-5.1")!;
+	it.skipIf(cloudDisabled)(
+		"preserves inline upstream Authorization for Cloudflare AI Gateway BYOK requests",
+		async () => {
+			process.env.CLOUDFLARE_API_KEY = "cf-token";
+			process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
+			process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
+			const model = getModel("cloudflare-ai-gateway", "gpt-5.1")!;
 
-		await streamSimple(
-			model,
-			{
-				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
-			{ headers: { Authorization: "Bearer upstream-token" } },
-		).result();
+			await streamSimple(
+				model,
+				{
+					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+				},
+				{ headers: { Authorization: "Bearer upstream-token" } },
+			).result();
 
-		const clientOptions = mockState.lastClientOptions as { defaultHeaders?: Record<string, unknown> };
-		expect(clientOptions.defaultHeaders?.Authorization).toBe("Bearer upstream-token");
-		expect(clientOptions.defaultHeaders?.["cf-aig-authorization"]).toBe("Bearer cf-token");
-	});
+			const clientOptions = mockState.lastClientOptions as { defaultHeaders?: Record<string, unknown> };
+			expect(clientOptions.defaultHeaders?.Authorization).toBe("Bearer upstream-token");
+			expect(clientOptions.defaultHeaders?.["cf-aig-authorization"]).toBe("Bearer cf-token");
+		},
+	);
 
 	it("sends session affinity headers for Workers AI through Cloudflare AI Gateway", async () => {
 		process.env.CLOUDFLARE_API_KEY = "cf-token";

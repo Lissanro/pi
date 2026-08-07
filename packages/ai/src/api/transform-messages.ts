@@ -105,10 +105,10 @@ export function transformMessages<TApi extends Api>(
 				}
 
 				if (block.type === "text") {
-					return {
-						type: "text" as const,
-						text: block.text,
-					};
+					// Preserve textSignature (OpenAI Responses message metadata): cached
+					// websocket continuation matches replayed items against stored
+					// response items, which requires stable message IDs.
+					return block;
 				}
 
 				if (block.type === "toolCall") {

@@ -56,7 +56,9 @@ async function createCloudflareRuntime(): Promise<{ modelRuntime: ModelRuntime; 
 	return { modelRuntime, modelRegistry: new ModelRegistry(modelRuntime) };
 }
 
-describe("ModelRegistry Cloudflare compat streaming", () => {
+// Cloudflare compat streaming needs the built-in cloudflare provider;
+// local-only mode (PI_DISABLE_CLOUD_PROVIDERS=1) hides it from the registry.
+describe.skipIf(process.env.PI_DISABLE_CLOUD_PROVIDERS === "1")("ModelRegistry Cloudflare compat streaming", () => {
 	it("materializes the Cloudflare endpoint through ModelRuntime streaming", async () => {
 		const { modelRuntime } = await createCloudflareRuntime();
 		const model = modelRuntime.getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6");

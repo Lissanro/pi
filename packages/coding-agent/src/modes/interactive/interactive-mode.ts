@@ -6672,7 +6672,7 @@ export class InteractiveMode {
 				const parts: string[] = [];
 				for (const match of matches) {
 					const formatted = this.formatCopyMatch(match, multiple);
-					if (formatted && formatted.trim()) {
+					if (formatted?.trim()) {
 						parts.push(formatted);
 					}
 				}

@@ -17,6 +17,9 @@ import { clearApiKeyCache, type ModelRegistry, type ProviderConfigInput } from "
 import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
 describe("ModelRegistry", () => {
+	// Tests manipulating built-in (cloud) providers require their registration;
+	// local-only mode (PI_DISABLE_CLOUD_PROVIDERS=1) hides them from the registry.
+	const cloudDisabled = process.env.PI_DISABLE_CLOUD_PROVIDERS === "1";
 	let tempDir: string;
 	let modelsJsonPath: string;
 	let authStorage: AuthStorage;
@@ -97,7 +100,7 @@ describe("ModelRegistry", () => {
 		messages: [],
 	};
 
-	describe("baseUrl override (no custom models)", () => {
+	describe.skipIf(cloudDisabled)("baseUrl override (no custom models)", () => {
 		test("overriding baseUrl keeps all built-in models", async () => {
 			writeRawModelsJson({
 				anthropic: overrideConfig("https://my-proxy.example.com/v1"),
@@ -237,30 +240,33 @@ describe("ModelRegistry", () => {
 	});
 
 	describe("custom models merge behavior", () => {
-		test("built-in provider custom models inherit api and baseUrl without explicit fields", async () => {
-			// Built-in providers already have api/baseUrl on every model, and auth
-			// comes from env vars / auth storage. No need to specify them.
-			writeRawModelsJson({
-				openrouter: {
-					models: [
-						{
-							id: "fake-provider/fake-model",
-							name: "Fake model",
-							reasoning: true,
-							input: ["text"],
-						},
-					],
-				},
-			});
+		test.skipIf(cloudDisabled)(
+			"built-in provider custom models inherit api and baseUrl without explicit fields",
+			async () => {
+				// Built-in providers already have api/baseUrl on every model, and auth
+				// comes from env vars / auth storage. No need to specify them.
+				writeRawModelsJson({
+					openrouter: {
+						models: [
+							{
+								id: "fake-provider/fake-model",
+								name: "Fake model",
+								reasoning: true,
+								input: ["text"],
+							},
+						],
+					},
+				});
 
-			const registry = await createModelRegistry(authStorage, modelsJsonPath);
-			expect(registry.getError()).toBeUndefined();
+				const registry = await createModelRegistry(authStorage, modelsJsonPath);
+				expect(registry.getError()).toBeUndefined();
 
-			const model = registry.find("openrouter", "fake-provider/fake-model");
-			expect(model).toBeDefined();
-			expect(model?.api).toBe("openai-completions");
-			expect(model?.baseUrl).toBe("https://openrouter.ai/api/v1");
-		});
+				const model = registry.find("openrouter", "fake-provider/fake-model");
+				expect(model).toBeDefined();
+				expect(model?.api).toBe("openai-completions");
+				expect(model?.baseUrl).toBe("https://openrouter.ai/api/v1");
+			},
+		);
 
 		test("non-built-in provider custom models still require baseUrl", async () => {
 			writeRawModelsJson({
@@ -294,7 +300,7 @@ describe("ModelRegistry", () => {
 			expect(error).toContain('Provider "broken-two"');
 		});
 
-		test("custom provider with same name as built-in merges with built-in models", async () => {
+		test.skipIf(cloudDisabled)("custom provider with same name as built-in merges with built-in models", async () => {
 			writeModelsJson({
 				anthropic: providerConfig("https://my-proxy.example.com/v1", [{ id: "claude-custom" }]),
 			});
@@ -324,16 +330,19 @@ describe("ModelRegistry", () => {
 			expect(sonnetModels[0].baseUrl).toBe("https://my-proxy.example.com/v1");
 		});
 
-		test("custom provider with same name as built-in does not affect other built-in providers", async () => {
-			writeModelsJson({
-				anthropic: providerConfig("https://my-proxy.example.com/v1", [{ id: "claude-custom" }]),
-			});
+		test.skipIf(cloudDisabled)(
+			"custom provider with same name as built-in does not affect other built-in providers",
+			async () => {
+				writeModelsJson({
+					anthropic: providerConfig("https://my-proxy.example.com/v1", [{ id: "claude-custom" }]),
+				});
 
-			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+				const registry = await createModelRegistry(authStorage, modelsJsonPath);
 
-			expect(getModelsForProvider(registry, "google").length).toBeGreaterThan(0);
-			expect(getModelsForProvider(registry, "openai").length).toBeGreaterThan(0);
-		});
+				expect(getModelsForProvider(registry, "google").length).toBeGreaterThan(0);
+				expect(getModelsForProvider(registry, "openai").length).toBeGreaterThan(0);
+			},
+		);
 
 		test("provider-level baseUrl applies to both built-in and custom models", async () => {
 			writeModelsJson({
@@ -412,7 +421,7 @@ describe("ModelRegistry", () => {
 			expect(compat?.maxTokensField).toBe("max_completion_tokens");
 		});
 
-		test("provider-level compat applies to built-in models", async () => {
+		test.skipIf(cloudDisabled)("provider-level compat applies to built-in models", async () => {
 			writeRawModelsJson({
 				openrouter: {
 					compat: {
@@ -621,7 +630,7 @@ describe("ModelRegistry", () => {
 			expect(glm5?.baseUrl).toBe("https://opencode.ai/zen/go/v1");
 		});
 
-		test("modelOverrides still apply when provider also defines models", async () => {
+		test.skipIf(cloudDisabled)("modelOverrides still apply when provider also defines models", async () => {
 			writeRawModelsJson({
 				openrouter: {
 					baseUrl: "https://my-proxy.example.com/v1",
@@ -674,7 +683,7 @@ describe("ModelRegistry", () => {
 			expect(anthropicModels.some((m) => m.id.includes("claude"))).toBe(true);
 		});
 
-		test("removing custom models from models.json keeps built-in provider models", async () => {
+		test.skipIf(cloudDisabled)("removing custom models from models.json keeps built-in provider models", async () => {
 			writeModelsJson({
 				anthropic: providerConfig("https://proxy.example.com/v1", [{ id: "claude-custom" }]),
 			});
@@ -691,7 +700,7 @@ describe("ModelRegistry", () => {
 		});
 	});
 
-	describe("modelOverrides (per-model customization)", () => {
+	describe.skipIf(cloudDisabled)("modelOverrides (per-model customization)", () => {
 		test("model override applies to a single built-in model", async () => {
 			writeRawModelsJson({
 				openrouter: {
@@ -988,56 +997,59 @@ describe("ModelRegistry", () => {
 	});
 
 	describe("dynamic provider lifecycle", () => {
-		test("getProviderDisplayName resolves registered, OAuth, built-in, and fallback names", async () => {
-			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+		test.skipIf(cloudDisabled)(
+			"getProviderDisplayName resolves registered, OAuth, built-in, and fallback names",
+			async () => {
+				const registry = await createModelRegistry(authStorage, modelsJsonPath);
 
-			expect(registry.getProviderDisplayName("openai")).toBe("OpenAI");
-			expect(registry.getProviderDisplayName("github-copilot")).toBe("GitHub Copilot");
-			expect(registry.getProviderDisplayName("zai")).toBe("Z.AI");
-			expect(registry.getProviderDisplayName("unknown-provider")).toBe("unknown-provider");
+				expect(registry.getProviderDisplayName("openai")).toBe("OpenAI");
+				expect(registry.getProviderDisplayName("github-copilot")).toBe("GitHub Copilot");
+				expect(registry.getProviderDisplayName("zai")).toBe("Z.AI");
+				expect(registry.getProviderDisplayName("unknown-provider")).toBe("unknown-provider");
 
-			registry.registerProvider("named-provider", {
-				name: "Named Provider",
-				baseUrl: "https://provider.test/v1",
-				apiKey: "test-key",
-				api: "openai-completions",
-				models: [
-					{
-						id: "demo-model",
-						name: "Demo Model",
-						reasoning: false,
-						input: ["text"],
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-						contextWindow: 128000,
-						maxTokens: 4096,
+				registry.registerProvider("named-provider", {
+					name: "Named Provider",
+					baseUrl: "https://provider.test/v1",
+					apiKey: "test-key",
+					api: "openai-completions",
+					models: [
+						{
+							id: "demo-model",
+							name: "Demo Model",
+							reasoning: false,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 128000,
+							maxTokens: 4096,
+						},
+					],
+				});
+				expect(registry.getProviderDisplayName("named-provider")).toBe("Named Provider");
+
+				registry.registerProvider("oauth-provider", {
+					baseUrl: "https://provider.test/v1",
+					api: "openai-completions",
+					oauth: {
+						name: "OAuth Provider",
+						login: async () => ({ access: "access", refresh: "refresh", expires: Date.now() + 60_000 }),
+						refreshToken: async (credentials) => credentials,
+						getApiKey: (credentials) => credentials.access,
 					},
-				],
-			});
-			expect(registry.getProviderDisplayName("named-provider")).toBe("Named Provider");
-
-			registry.registerProvider("oauth-provider", {
-				baseUrl: "https://provider.test/v1",
-				api: "openai-completions",
-				oauth: {
-					name: "OAuth Provider",
-					login: async () => ({ access: "access", refresh: "refresh", expires: Date.now() + 60_000 }),
-					refreshToken: async (credentials) => credentials,
-					getApiKey: (credentials) => credentials.access,
-				},
-				models: [
-					{
-						id: "demo-model",
-						name: "Demo Model",
-						reasoning: false,
-						input: ["text"],
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-						contextWindow: 128000,
-						maxTokens: 4096,
-					},
-				],
-			});
-			expect(registry.getProviderDisplayName("oauth-provider")).toBe("OAuth Provider");
-		});
+					models: [
+						{
+							id: "demo-model",
+							name: "Demo Model",
+							reasoning: false,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 128000,
+							maxTokens: 4096,
+						},
+					],
+				});
+				expect(registry.getProviderDisplayName("oauth-provider")).toBe("OAuth Provider");
+			},
+		);
 
 		test("modelOverrides apply to dynamically registered provider models", async () => {
 			writeRawModelsJson({
@@ -1096,7 +1108,7 @@ describe("ModelRegistry", () => {
 			});
 		});
 
-		test("stored API key env propagates to request auth and resolves headers", async () => {
+		test.skipIf(cloudDisabled)("stored API key env propagates to request auth and resolves headers", async () => {
 			await authStorage.modify("cloudflare-ai-gateway", async () => ({
 				type: "api_key",
 				key: "$CLOUDFLARE_API_KEY",
@@ -1300,7 +1312,7 @@ describe("ModelRegistry", () => {
 		});
 
 		describe("dynamic provider override persistence", () => {
-			test("baseUrl-only override keeps built-in provider models after refresh", async () => {
+			test.skipIf(cloudDisabled)("baseUrl-only override keeps built-in provider models after refresh", async () => {
 				const registry = await createModelRegistry(authStorage, modelsJsonPath);
 
 				registry.registerProvider("anthropic", { baseUrl: "https://proxy.test/anthropic" });
@@ -1878,24 +1890,27 @@ describe("ModelRegistry", () => {
 				expect(count).toBe(0);
 			});
 
-			test("getAvailable filters GitHub Copilot OAuth models to account picker availability", async () => {
-				await authStorage.modify("github-copilot", async () => ({
-					type: "oauth",
-					refresh: "github-access-token",
-					access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com;",
-					expires: Date.now() + 60_000,
-					availableModelIds: ["gpt-4.1"],
-				}));
+			test.skipIf(cloudDisabled)(
+				"getAvailable filters GitHub Copilot OAuth models to account picker availability",
+				async () => {
+					await authStorage.modify("github-copilot", async () => ({
+						type: "oauth",
+						refresh: "github-access-token",
+						access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com;",
+						expires: Date.now() + 60_000,
+						availableModelIds: ["gpt-4.1"],
+					}));
 
-				const registry = await createModelRegistry(authStorage, modelsJsonPath);
+					const registry = await createModelRegistry(authStorage, modelsJsonPath);
 
-				expect(
-					registry
-						.getAvailable()
-						.filter((m) => m.provider === "github-copilot")
-						.map((m) => m.id),
-				).toEqual(["gpt-4.1"]);
-			});
+					expect(
+						registry
+							.getAvailable()
+							.filter((m) => m.provider === "github-copilot")
+							.map((m) => m.id),
+					).toEqual(["gpt-4.1"]);
+				},
+			);
 
 			test("getApiKeyAndHeaders resolves authHeader on every request", async () => {
 				const tokenFile = join(tempDir, "token");

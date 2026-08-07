@@ -50,7 +50,9 @@ type SessionWithExtensionEmitHook = {
 	_emitExtensionEvent: (event: AgentEvent) => Promise<void>;
 };
 
-describe("AgentSession retry", () => {
+// Retry flows require a registered provider; local-only mode
+// (PI_DISABLE_CLOUD_PROVIDERS=1) hides all built-in providers.
+describe.skipIf(process.env.PI_DISABLE_CLOUD_PROVIDERS === "1")("AgentSession retry", () => {
 	let session: AgentSession;
 	let tempDir: string;
 

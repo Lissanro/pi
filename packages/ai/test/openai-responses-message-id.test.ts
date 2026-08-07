@@ -21,6 +21,7 @@ describe("OpenAI Responses message ID conversion", () => {
 			content: [
 				{ type: "thinking", thinking: "private reasoning" },
 				{ type: "text", text: "visible answer" },
+				{ type: "text", text: "second answer" },
 			],
 			api: "anthropic-messages",
 			provider: "anthropic",
@@ -44,5 +45,13 @@ describe("OpenAI Responses message ID conversion", () => {
 
 		expect(messageIds).toEqual(["msg_pi_1", "msg_pi_1_1"]);
 		expect(new Set(messageIds).size).toBe(messageIds.length);
+
+		// Unsigned foreign thinking has no wire representation here; it must be
+		// dropped, never downgraded into a visible text message.
+		const messageTexts = input
+			.filter((item): item is ResponseOutputMessage => item.type === "message")
+			.flatMap((item) => item.content)
+			.map((content) => ("text" in content ? content.text : ""));
+		expect(messageTexts.some((text) => text.includes("private reasoning"))).toBe(false);
 	});
 });

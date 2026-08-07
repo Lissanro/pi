@@ -38,13 +38,18 @@ describe("builtin providers", () => {
 		const models = builtinModels();
 		const providers = models.getProviders();
 		expect(providers.length).toBe(builtinProviders().length);
-		expect(providers.map((p) => p.id)).toContain("anthropic");
 
-		const anthropic = models.getModel("anthropic", "claude-haiku-4-5");
-		expect(anthropic?.api).toBe("anthropic-messages");
+		// In local-only mode (PI_DISABLE_CLOUD_PROVIDERS=1) cloud providers are
+		// intentionally hidden, so cloud catalog assertions do not apply.
+		if (process.env.PI_DISABLE_CLOUD_PROVIDERS !== "1") {
+			expect(providers.map((p) => p.id)).toContain("anthropic");
 
-		const all = models.getModels();
-		expect(all.length).toBeGreaterThan(500);
+			const anthropic = models.getModel("anthropic", "claude-haiku-4-5");
+			expect(anthropic?.api).toBe("anthropic-messages");
+
+			const all = models.getModels();
+			expect(all.length).toBeGreaterThan(500);
+		}
 
 		// Static providers list models immediately; Radius is purely dynamic.
 		for (const provider of providers) {

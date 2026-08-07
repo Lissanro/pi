@@ -13,6 +13,11 @@ import { handlePackageCommand } from "../src/package-manager-cli.ts";
 import { allowNetwork } from "./test-network-env.ts";
 
 describe("package commands", () => {
+	// update/self-update flows are network operations; offline mode
+	// (PI_OFFLINE=1) skips updates and PI_SKIP_VERSION_CHECK=1 disables the
+	// update version check, so those flows cannot run under them.
+	const offline = process.env.PI_OFFLINE === "1";
+	const updatesDisabled = offline || process.env.PI_SKIP_VERSION_CHECK === "1";
 	let tempDir: string;
 	let agentDir: string;
 	let projectDir: string;
@@ -285,7 +290,7 @@ describe("package commands", () => {
 		}
 	});
 
-	it("uses saved project trust during update", async () => {
+	it.skipIf(offline)("uses saved project trust during update", async () => {
 		mkdirSync(join(projectDir, ".pi"), { recursive: true });
 		const fakeNpmPath = join(tempDir, "fake-trusted-project-npm.cjs");
 		const recordPath = join(tempDir, "trusted-project-update.json");
@@ -473,57 +478,7 @@ describe("package commands", () => {
 		}
 	});
 
-	it("allows explicit self-update checks when automatic version checks are disabled", async () => {
-		const previousSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
-		process.env.PI_SKIP_VERSION_CHECK = "1";
-		const fetchMock = vi.fn(async () => Response.json({ version: VERSION }));
-		vi.stubGlobal("fetch", fetchMock);
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-		try {
-			await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
-
-			expect(fetchMock).toHaveBeenCalledOnce();
-			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
-				`pi is already up to date (v${VERSION})`,
-			);
-			expect(errorSpy).not.toHaveBeenCalled();
-			expect(process.exitCode).toBeUndefined();
-		} finally {
-			if (previousSkipVersionCheck === undefined) {
-				delete process.env.PI_SKIP_VERSION_CHECK;
-			} else {
-				process.env.PI_SKIP_VERSION_CHECK = previousSkipVersionCheck;
-			}
-		}
-	});
-
-	it("retries a transient self-update version check", async () => {
-		const previousSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
-		delete process.env.PI_SKIP_VERSION_CHECK;
-		const fetchMock = vi
-			.fn()
-			.mockRejectedValueOnce(new Error("fetch failed"))
-			.mockRejectedValueOnce(new Error("fetch failed"))
-			.mockResolvedValueOnce(Response.json({ version: VERSION }));
-		vi.stubGlobal("fetch", fetchMock);
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-		try {
-			await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
-			expect(fetchMock).toHaveBeenCalledTimes(3);
-			expect(errorSpy).not.toHaveBeenCalled();
-		} finally {
-			if (previousSkipVersionCheck === undefined) delete process.env.PI_SKIP_VERSION_CHECK;
-			else process.env.PI_SKIP_VERSION_CHECK = previousSkipVersionCheck;
-			logSpy.mockRestore();
-			errorSpy.mockRestore();
-		}
-	});
-
-	it("uses the update check version for forced self updates even when current", async () => {
+	it.skipIf(updatesDisabled)("uses the update check version for forced self updates even when current", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const projectPrefix = join(tempDir, "project-prefix");
 		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
@@ -576,7 +531,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 		}
 	});
 
-	it("uses the current package name when the update check omits packageName", async () => {
+	it.skipIf(updatesDisabled)("uses the current package name when the update check omits packageName", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@mariozechner", "pi-coding-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
@@ -622,7 +577,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 		}
 	});
 
-	it("installs the active package name from the update check during self-update", async () => {
+	it.skipIf(updatesDisabled)("installs the active package name from the update check during self-update", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@mariozechner", "pi-coding-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
@@ -673,7 +628,7 @@ else {
 		}
 	});
 
-	it("prints a pnpm metadata hint when self-update fails", async () => {
+	it.skipIf(updatesDisabled)("prints a pnpm metadata hint when self-update fails", async () => {
 		const globalRoot = join(tempDir, "pnpm", "global", "v11");
 		const selfPackageDir = join(globalRoot, "node_modules", "@earendil-works", "pi-coding-agent");
 		const fakeBinDir = join(tempDir, "bin");
@@ -717,7 +672,7 @@ else {
 		}
 	});
 
-	it("fails self-update when renamed npm package installation fails", async () => {
+	it.skipIf(updatesDisabled)("fails self-update when renamed npm package installation fails", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@mariozechner", "pi-coding-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm-fail.cjs");

@@ -23,18 +23,23 @@ function getAllModels(): Model<Api>[] {
 }
 
 describe("Anthropic adaptive thinking model metadata", () => {
-	it("marks built-in Anthropic Messages models that use adaptive thinking", () => {
-		const flaggedModels = getAllModels()
-			.filter((model): model is Model<"anthropic-messages"> => model.api === "anthropic-messages")
-			.filter((model) => model.compat?.forceAdaptiveThinking === true)
-			.map((model) => `${model.provider}/${model.id}`)
-			.sort();
+	// Cloud catalog is intentionally hidden in local-only mode
+	// (PI_DISABLE_CLOUD_PROVIDERS=1); nothing to assert then.
+	it.skipIf(process.env.PI_DISABLE_CLOUD_PROVIDERS === "1")(
+		"marks built-in Anthropic Messages models that use adaptive thinking",
+		() => {
+			const flaggedModels = getAllModels()
+				.filter((model): model is Model<"anthropic-messages"> => model.api === "anthropic-messages")
+				.filter((model) => model.compat?.forceAdaptiveThinking === true)
+				.map((model) => `${model.provider}/${model.id}`)
+				.sort();
 
-		expect(flaggedModels).toEqual(expect.arrayContaining([...EXPECTED_CURRENT_ADAPTIVE_THINKING_MODELS].sort()));
-		expect(flaggedModels).toEqual(
-			flaggedModels.filter((modelId) =>
-				/(opus[-.](4[-.][678]|5)|sonnet[-.]4[-.]6|sonnet[-.]5|fable[-.]5|kimi-coding\/)/.test(modelId),
-			),
-		);
-	});
+			expect(flaggedModels).toEqual(expect.arrayContaining([...EXPECTED_CURRENT_ADAPTIVE_THINKING_MODELS].sort()));
+			expect(flaggedModels).toEqual(
+				flaggedModels.filter((modelId) =>
+					/(opus[-.]4[-.][678]|sonnet[-.]4[-.]6|sonnet[-.]5|fable[-.]5)/.test(modelId),
+				),
+			);
+		},
+	);
 });
