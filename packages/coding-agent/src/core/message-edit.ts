@@ -96,16 +96,51 @@ function findBlockClose(text: string, startPos: number): { start: number; end: n
 	return undefined;
 }
 
-function findLastTagClose(text: string, tagName: string): { start: number; end: number } | undefined {
-	let last: { start: number; end: number } | undefined;
-	let pos = 0;
-	while (pos < text.length) {
-		const tag = findNextTag(text, pos);
-		if (!tag) break;
-		if (tag.name === tagName && tag.isClosing) {
-			last = { start: tag.start, end: tag.end };
+function findFirstOpeningTag(
+	text: string,
+	pos: number,
+	tagName: string,
+): { start: number; end: number; attributes: Record<string, string> } | undefined {
+	let p = pos;
+	while (p < text.length) {
+		const tag = findNextTag(text, p);
+		if (!tag) return undefined;
+		if (tag.name === tagName && !tag.isClosing) {
+			return { start: tag.start, end: tag.end, attributes: tag.attributes };
 		}
-		pos = tag.end;
+		p = tag.end;
+	}
+	return undefined;
+}
+
+function findFirstClosingTag(text: string, pos: number, tagName: string): { start: number; end: number } | undefined {
+	let p = pos;
+	while (p < text.length) {
+		const tag = findNextTag(text, p);
+		if (!tag) return undefined;
+		if (tag.name === tagName && tag.isClosing) return { start: tag.start, end: tag.end };
+		p = tag.end;
+	}
+	return undefined;
+}
+
+/**
+ * Find the last closing tag of `tagName` located at or after `fromPos` but
+ * strictly before `beforePos`. Returns undefined if none exists.
+ */
+function findLastClosingTagBefore(
+	text: string,
+	fromPos: number,
+	beforePos: number,
+	tagName: string,
+): { start: number; end: number } | undefined {
+	let last: { start: number; end: number } | undefined;
+	let p = fromPos;
+	while (p < beforePos && p < text.length) {
+		const tag = findNextTag(text, p);
+		if (!tag || tag.start >= beforePos) break;
+		if (tag.name === tagName && tag.isClosing) last = { start: tag.start, end: tag.end };
+		p = tag.end;
 	}
 	return last;
 }
@@ -157,38 +192,123 @@ function parseInnerContent(
 	role: "user" | "assistant",
 ): (TextContent | ThinkingContent | ToolCall | ImageContent)[] {
 	const blocks: (TextContent | ThinkingContent | ToolCall | ImageContent)[] = [];
+	let rest = content;
 
 	if (role === "assistant") {
-		const leadingWhitespace = content.match(/^\s*/)?.[0] ?? "";
-		const afterWhitespace = content.slice(leadingWhitespace.length);
+		const leadingWhitespace = rest.match(/^\s*/)?.[0] ?? "";
 		// The formatted tag may carry attributes (`signature="..."` and/or
 		// `redacted="true"`), so match the opening tag with optional attributes
 		// rather than the exact attribute-less tag.
-		const reasoningOpenMatch = afterWhitespace.match(/^<pi_reasoning_content(\s[^>]*)?>/);
+		const reasoningOpenMatch = rest.slice(leadingWhitespace.length).match(/^<pi_reasoning_content(\s[^>]*)?>/);
 		if (reasoningOpenMatch) {
-			const reasoningClose = findLastTagClose(content, "pi_reasoning_content");
-			if (reasoningClose) {
-				const openEnd = leadingWhitespace.length + reasoningOpenMatch[0].length;
-				const thinking = content.slice(openEnd, reasoningClose.start);
-				const reasoningOpen = findNextTag(content, leadingWhitespace.length);
+			const openStart = leadingWhitespace.length;
+			const openEnd = openStart + reasoningOpenMatch[0].length;
+			// The first closing is found without treating any other tag as a
+			// boundary: until it is found, `<pi_content>` / `<pi_tool_call>` tags
+			// inside the reasoning text are stray content being discussed.
+			const firstClose = findFirstClosingTag(rest, openEnd, "pi_reasoning_content");
+			if (firstClose) {
+				// With the reasoning block confirmed, later sections become valid
+				// boundaries. The reasoning close is the furthest one that is still
+				// before the main content / tool call sections, so stray reasoning
+				// tags inside the reasoning text do not split it and stray tags in
+				// the main content are excluded.
+				const contentOpen = findFirstOpeningTag(rest, firstClose.end, "pi_content");
+				const toolOpen = findFirstOpeningTag(rest, firstClose.end, "pi_tool_call");
+				const boundary = Math.min(contentOpen?.start ?? rest.length, toolOpen?.start ?? rest.length);
+				const reasoningClose =
+					findLastClosingTagBefore(rest, openEnd, boundary, "pi_reasoning_content") ?? firstClose;
+				const thinking = rest.slice(openEnd, reasoningClose.start);
+				const reasoningOpen = findNextTag(rest, openStart);
 				const reasoningAttrs = reasoningOpen?.attributes ?? {};
 				const block: ThinkingContent = { type: "thinking", thinking };
 				if (reasoningAttrs.signature) block.thinkingSignature = reasoningAttrs.signature;
 				if (reasoningAttrs.redacted === "true") block.redacted = true;
 				blocks.push(block);
-				content = content.slice(reasoningClose.end);
+				rest = rest.slice(reasoningClose.end);
 			}
 		}
 	}
 
 	const specialTagName = role === "assistant" ? "pi_tool_call" : "pi_image";
-	const { specialBlocks, textEnd } = parseTrailingSpecialBlocks(content, specialTagName, role);
 
-	const text = content.slice(0, textEnd);
-	if (text.trim().length > 0) {
-		blocks.push({ type: "text", text });
+	// Main content section. Current format wraps it in `<pi_content>...</pi_content>`;
+	// older messages used bare text followed by trailing special blocks, which is
+	// still supported below as a fallback.
+	const leadingWs = rest.match(/^\s*/)?.[0] ?? "";
+	const contentOpenMatch = rest.slice(leadingWs.length).match(/^<pi_content(\s[^>]*)?>/);
+	if (contentOpenMatch) {
+		const openStart = leadingWs.length;
+		const openEnd = openStart + contentOpenMatch[0].length;
+		const firstClose = findFirstClosingTag(rest, openEnd, "pi_content");
+		if (firstClose) {
+			const specialOpen = findFirstOpeningTag(rest, firstClose.end, specialTagName);
+			const boundary = specialOpen?.start ?? rest.length;
+			const contentClose = findLastClosingTagBefore(rest, openEnd, boundary, "pi_content") ?? firstClose;
+			const text = rest.slice(openEnd, contentClose.start);
+			if (text.trim().length > 0) blocks.push({ type: "text", text });
+			blocks.push(...parseSpecialBlocksForward(rest.slice(contentClose.end), specialTagName, role));
+		} else {
+			// No closing `<pi_content>`: treat everything as raw text.
+			const text = rest.slice(openEnd);
+			if (text.trim().length > 0) blocks.push({ type: "text", text });
+		}
+	} else {
+		// Legacy bare-text format: text runs up to the trailing special blocks.
+		const { specialBlocks, textEnd } = parseTrailingSpecialBlocks(rest, specialTagName, role);
+		const text = rest.slice(0, textEnd);
+		if (text.trim().length > 0) blocks.push({ type: "text", text });
+		blocks.push(...specialBlocks);
 	}
-	blocks.push(...specialBlocks);
+
+	return blocks;
+}
+
+/**
+ * Parse special blocks (`<pi_tool_call>` / `<pi_image>`) from a region that
+ * contains only special blocks (the content after a `<pi_content>` wrapper).
+ * Each block's closing tag is the furthest closing still before the next block
+ * opening, so stray closing tags inside a block body (e.g. in tool call JSON)
+ * are ignored.
+ */
+function parseSpecialBlocksForward(
+	region: string,
+	tagName: string,
+	role: "user" | "assistant",
+): (ToolCall | ImageContent)[] {
+	const blocks: (ToolCall | ImageContent)[] = [];
+	let pos = 0;
+	while (pos < region.length) {
+		const open = findFirstOpeningTag(region, pos, tagName);
+		if (!open) break;
+		const firstClose = findFirstClosingTag(region, open.end, tagName);
+		if (!firstClose) break;
+		const nextOpen = findFirstOpeningTag(region, firstClose.end, tagName);
+		const boundary = nextOpen?.start ?? region.length;
+		const close = findLastClosingTagBefore(region, open.end, boundary, tagName) ?? firstClose;
+		const inner = region.slice(open.end, close.start);
+
+		if (role === "assistant") {
+			let args: Record<string, unknown> = {};
+			try {
+				args = JSON.parse(inner) as Record<string, unknown>;
+			} catch {
+				args = {};
+			}
+			const toolCall: ToolCall = {
+				type: "toolCall",
+				id: open.attributes.id ?? "",
+				name: open.attributes.name ?? "",
+				arguments: args,
+			};
+			if (open.attributes.thoughtSignature) toolCall.thoughtSignature = open.attributes.thoughtSignature;
+			blocks.push(toolCall);
+		} else {
+			const mimeType = open.attributes.mimeType || open.attributes.mime_type || "image/png";
+			blocks.push({ type: "image", data: inner, mimeType });
+		}
+		pos = close.end;
+	}
 	return blocks;
 }
 
@@ -296,6 +416,7 @@ function formatUserMessageContent(message: UserMessage): string {
 
 function formatAssistantMessageContent(message: AssistantMessage): string {
 	let inner = "";
+	let textBuffer = "";
 	for (const block of message.content) {
 		if (block.type === "thinking") {
 			let attrs = "";
@@ -303,12 +424,19 @@ function formatAssistantMessageContent(message: AssistantMessage): string {
 			if (block.redacted) attrs += ` redacted="true"`;
 			inner += `<pi_reasoning_content${attrs}>${block.thinking}</pi_reasoning_content>`;
 		} else if (block.type === "text") {
-			inner += block.text;
+			textBuffer += block.text;
 		} else if (block.type === "toolCall") {
+			if (textBuffer.length > 0) {
+				inner += `<pi_content>${textBuffer}</pi_content>`;
+				textBuffer = "";
+			}
 			let attrs = ` id="${escapeXmlAttr(block.id)}" name="${escapeXmlAttr(block.name)}"`;
 			if (block.thoughtSignature) attrs += ` thoughtSignature="${escapeXmlAttr(block.thoughtSignature)}"`;
 			inner += `<pi_tool_call${attrs}>${JSON.stringify(block.arguments)}</pi_tool_call>`;
 		}
+	}
+	if (textBuffer.length > 0) {
+		inner += `<pi_content>${textBuffer}</pi_content>`;
 	}
 	return inner;
 }

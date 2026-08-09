@@ -47,7 +47,7 @@ describe("message edit XML format", () => {
 	it("formats an assistant message with reasoning and text", () => {
 		const message = fauxAssistantMessage([fauxThinking("think"), fauxText("answer")], { timestamp: 1 });
 		expect(formatMessageForEdit(0, message)).toBe(
-			'<pi_edit id="0" role="assistant"><pi_reasoning_content>think</pi_reasoning_content>answer</pi_edit>',
+			'<pi_edit id="0" role="assistant"><pi_reasoning_content>think</pi_reasoning_content><pi_content>answer</pi_content></pi_edit>',
 		);
 	});
 
@@ -56,10 +56,9 @@ describe("message edit XML format", () => {
 			timestamp: 1,
 		});
 		const xml = formatMessageForEdit(0, message);
-		expect(xml).toContain('<pi_edit id="0" role="assistant">');
-		expect(xml).toContain("ok");
-		expect(xml).toContain('<pi_tool_call id="call_1" name="read">');
-		expect(xml).toContain('"path":"/foo"');
+		expect(xml).toBe(
+			'<pi_edit id="0" role="assistant"><pi_content>ok</pi_content><pi_tool_call id="call_1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>',
+		);
 	});
 
 	it("returns null for non-editable roles", () => {
@@ -178,6 +177,64 @@ describe("message edit XML parsing", () => {
 			{ type: "text", text: "ok" },
 			{ type: "toolCall", id: "c1", name: "read", arguments: { path: "/a" } },
 			{ type: "toolCall", id: "c2", name: "bash", arguments: { command: "ls" } },
+		]);
+	});
+
+	it("parses an assistant message with pi_content wrapping the main text", () => {
+		const blocks = parseMessageEdits(
+			'<pi_edit id="0" role="assistant"><pi_reasoning_content>think</pi_reasoning_content><pi_content>answer</pi_content></pi_edit>',
+		);
+		expect(blocks[0]?.content).toEqual([
+			{ type: "thinking", thinking: "think" },
+			{ type: "text", text: "answer" },
+		]);
+	});
+
+	it("does not split the reasoning block on stray reasoning tags inside it", () => {
+		// The thinking text itself discusses `<pi_reasoning_content>` tags, so it
+		// contains stray opening and closing tags. The real close is the last one.
+		const blocks = parseMessageEdits(
+			'<pi_edit id="0" role="assistant"><pi_reasoning_content>The <pi_reasoning_content> and </pi_reasoning_content> tags should not split me</pi_reasoning_content>answer</pi_edit>',
+		);
+		expect(blocks[0]?.content).toEqual([
+			{
+				type: "thinking",
+				thinking: "The <pi_reasoning_content> and </pi_reasoning_content> tags should not split me",
+			},
+			{ type: "text", text: "answer" },
+		]);
+	});
+
+	it("excludes stray reasoning tags in pi_content-wrapped main text", () => {
+		// The main text mentions `</pi_reasoning_content>` literally; the pi_content
+		// wrapper marks the boundary so the reasoning block is not extended into it.
+		const blocks = parseMessageEdits(
+			'<pi_edit id="0" role="assistant"><pi_reasoning_content>think</pi_reasoning_content><pi_content>mention </pi_reasoning_content> here</pi_content></pi_edit>',
+		);
+		expect(blocks[0]?.content).toEqual([
+			{ type: "thinking", thinking: "think" },
+			{ type: "text", text: "mention </pi_reasoning_content> here" },
+		]);
+	});
+
+	it("parses tool call JSON containing stray closing tags", () => {
+		const blocks = parseMessageEdits(
+			'<pi_edit id="0" role="assistant"><pi_content>ok</pi_content><pi_tool_call id="c1" name="read">{"note":"a </pi_tool_call> inside"}</pi_tool_call></pi_edit>',
+		);
+		expect(blocks[0]?.content).toEqual([
+			{ type: "text", text: "ok" },
+			{ type: "toolCall", id: "c1", name: "read", arguments: { note: "a </pi_tool_call> inside" } },
+		]);
+	});
+
+	it("round-trips the pi_content format through format and parse", () => {
+		const message = fauxAssistantMessage([fauxThinking("think"), fauxText("answer")], { timestamp: 1 });
+		const xml = formatMessageForEdit(0, message);
+		expect(xml).not.toBeNull();
+		const blocks = parseMessageEdits(xml!);
+		expect(blocks[0]?.content).toEqual([
+			{ type: "thinking", thinking: "think" },
+			{ type: "text", text: "answer" },
 		]);
 	});
 });
@@ -567,7 +624,7 @@ describe("AgentSession.getEditableMessagesContaining", () => {
 		await harness.session.prompt("user");
 
 		const pasted =
-			'<pi_edit id="0" role="assistant"><pi_reasoning_content>secret plan</pi_reasoning_content>answer<pi_tool_call id="call_1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>';
+			'<pi_edit id="0" role="assistant"><pi_reasoning_content>secret plan</pi_reasoning_content><pi_content>answer</pi_content><pi_tool_call id="call_1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>';
 		const matches = harness.session.getEditableMessagesContaining(pasted);
 		expect(matches).toHaveLength(1);
 		expect(matches[0].index).toBe(0);
