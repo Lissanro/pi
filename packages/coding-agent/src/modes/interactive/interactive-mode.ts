@@ -315,14 +315,20 @@ export interface ScheduledMessage {
 	text: string;
 	when: ScheduledTrigger;
 	timer?: ReturnType<typeof setTimeout>;
+	/** No message payload; run a continue when the trigger fires. */
+	isContinue?: boolean;
+	/** text is a <pi_edit> block; apply the edits then continue when it fires. */
+	isEdit?: boolean;
 }
 
 /**
  * Parse the schedule specification from the first line of a /schedule command.
- * Supported forms: empty (send when the current task completes), a positive
- * message count (send after N user/assistant messages), sleep(1)-style
+ * Supported forms: empty (continue when the current task completes), a
+ * positive message count (send after N user/assistant messages), sleep(1)-style
  * durations summed over tokens ("1h", "5.5m", "1h 30m"; units s/m/h/d), and
- * an absolute local datetime ("2026-08-08 00:34" or "2026-08-09 10:14:59").
+ * an absolute local datetime with an optional date ("2026-08-08 00:34",
+ * "2026-08-09 10:14:59", or just "14:30"/"14:30:15"). A date-less time is
+ * resolved against today: if it has already passed, it maps to the next day.
  * Returns undefined when the specification is invalid or in the past.
  */
 export function parseScheduleWhen(spec: string): ScheduledTrigger | undefined {
@@ -332,18 +338,40 @@ export function parseScheduleWhen(spec: string): ScheduledTrigger | undefined {
 		const count = Number.parseInt(trimmed, 10);
 		return count >= 1 ? { type: "messages", remaining: count } : undefined;
 	}
-	// Absolute datetime: 2026-08-08 00:34 or 2026-08-09 10:14:59
-	const datetimeMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{1,2}))?$/);
+	// Local datetime, with an optional leading date: [YYYY-MM-DD ]HH:MM[:SS].
+	// "2026-08-08 00:34", "2026-08-09 10:14:59", "14:30", "14:30:15".
+	const datetimeMatch = trimmed.match(/^(?:(\d{4})-(\d{2})-(\d{2})\s+)?(\d{1,2}):(\d{2})(?::(\d{1,2}))?$/);
 	if (datetimeMatch) {
 		const [, year, month, day, hour, minute, second] = datetimeMatch;
-		const at = new Date(
-			Number.parseInt(year, 10),
-			Number.parseInt(month, 10) - 1,
-			Number.parseInt(day, 10),
-			Number.parseInt(hour, 10),
-			Number.parseInt(minute, 10),
-			second ? Number.parseInt(second, 10) : 0,
-		).getTime();
+		const now = new Date();
+		const hourNum = Number.parseInt(hour, 10);
+		const minuteNum = Number.parseInt(minute, 10);
+		const secondNum = second ? Number.parseInt(second, 10) : 0;
+		let at: number;
+		if (year) {
+			at = new Date(
+				Number.parseInt(year, 10),
+				Number.parseInt(month, 10) - 1,
+				Number.parseInt(day, 10),
+				hourNum,
+				minuteNum,
+				secondNum,
+			).getTime();
+		} else {
+			// Date-less: resolve against today; a time already passed today maps
+			// to the next day, otherwise it is today.
+			at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hourNum, minuteNum, secondNum).getTime();
+			if (at <= now.getTime()) {
+				at = new Date(
+					now.getFullYear(),
+					now.getMonth(),
+					now.getDate() + 1,
+					hourNum,
+					minuteNum,
+					secondNum,
+				).getTime();
+			}
+		}
 		if (Number.isNaN(at) || at <= Date.now()) return undefined;
 		return { type: "time", at };
 	}
@@ -633,6 +661,8 @@ export class InteractiveMode {
 
 	// Scheduled messages (/schedule)
 	private scheduledMessages: ScheduledMessage[] = [];
+	// Deferred continue / edit+continue actions waiting for the session to settle.
+	private deferredScheduledActions: ScheduledMessage[] = [];
 	private nextScheduleId = 1;
 
 	// Shutdown state
@@ -5326,31 +5356,46 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Queue a message for later delivery. The first line carries the schedule
-	 * specification (empty = when the current task completes, N = after N
-	 * user/assistant messages, a sleep(1)-style duration, or an absolute
-	 * datetime); the message to send goes on the following line(s).
+	 * Queue a message or action for later delivery. The first line carries the
+	 * schedule specification (empty = when the current task completes, N = after
+	 * N user/assistant messages, a sleep(1)-style duration, an absolute datetime
+	 * with an optional date, or -N to cancel the last N scheduled messages). The
+	 * message to send goes on the following line(s); with no message the trigger
+	 * runs a delayed continue, and a <pi_edit> payload applies the edits then
+	 * continues.
 	 */
 	private async handleScheduleCommand(arg: string): Promise<void> {
 		const newlineIndex = arg.indexOf("\n");
 		const spec = (newlineIndex === -1 ? arg : arg.slice(0, newlineIndex)).trim();
 		const payload = newlineIndex === -1 ? "" : arg.slice(newlineIndex + 1).trim();
 
+		// Negative count cancels scheduled messages (removes the last N, keeping
+		// the rest, or whatever is available).
+		if (/^-\d+$/.test(spec)) {
+			this.cancelScheduledMessages(Number.parseInt(spec, 10) * -1);
+			return;
+		}
+
 		const when = parseScheduleWhen(spec);
-		if (!when || payload === "") {
+		if (!when) {
 			this.showStatus(
-				"Usage: /schedule [N | duration | YYYY-MM-DD HH:MM[:SS]] with the message on the following line(s)",
+				"Usage: /schedule [-N | N | duration e.g. 1h 30m | [YYYY-MM-DD ]HH:MM[:SS]] with the message on the following line(s); no message = continue",
 			);
 			return;
 		}
 
+		// An empty message acts as a delayed continue; a <pi_edit> payload acts
+		// as /edit followed by /continue.
+		const isEdit = isMessageEdit(payload);
+		const isContinue = payload === "";
+
+		const entry: ScheduledMessage = { id: this.nextScheduleId++, text: payload, when, isContinue, isEdit };
 		if (when.type === "settled" && this.session.isIdle) {
 			// No task in progress; "when the agent is done" is now.
-			this.deliverScheduledMessage(payload);
+			this.deliverScheduledEntry(entry);
 			return;
 		}
 
-		const entry: ScheduledMessage = { id: this.nextScheduleId++, text: payload, when };
 		if (when.type === "time") {
 			entry.timer = setTimeout(
 				() => {
@@ -5361,13 +5406,33 @@ export class InteractiveMode {
 		}
 		this.scheduledMessages.push(entry);
 
+		const action = isEdit ? "edit and continue" : isContinue ? "continue" : "message";
 		const description =
 			when.type === "messages"
 				? `after ${when.remaining} message${when.remaining === 1 ? "" : "s"}`
 				: when.type === "time"
 					? `for ${formatScheduledTime(when.at)}`
 					: "when the current task completes";
-		this.showStatus(`Scheduled message ${description}`);
+		this.showStatus(`Scheduled ${action} ${description}`);
+	}
+
+	/** Remove the last N scheduled messages, keeping the rest if any. */
+	private cancelScheduledMessages(count: number): void {
+		if (count <= 0) {
+			this.showStatus("Usage: /schedule -N to cancel the last N scheduled messages");
+			return;
+		}
+		let removed = 0;
+		while (removed < count && this.scheduledMessages.length > 0) {
+			const entry = this.scheduledMessages.pop();
+			if (entry?.timer) clearTimeout(entry.timer);
+			removed++;
+		}
+		if (removed === 0) {
+			this.showStatus("No scheduled messages to cancel");
+			return;
+		}
+		this.showStatus(`Cancelled ${removed} scheduled ${removed === 1 ? "message" : "messages"}`);
 	}
 
 	private fireScheduledMessage(id: number): void {
@@ -5375,7 +5440,38 @@ export class InteractiveMode {
 		if (index === -1) return;
 		const [entry] = this.scheduledMessages.splice(index, 1);
 		if (entry.timer) clearTimeout(entry.timer);
+		this.deliverScheduledEntry(entry);
+	}
+
+	private deliverScheduledEntry(entry: ScheduledMessage): void {
+		if (entry.isContinue || entry.isEdit) {
+			this.deferOrRunScheduledAction(entry);
+			return;
+		}
 		this.deliverScheduledMessage(entry.text);
+	}
+
+	/** Run a scheduled continue/edit+continue once the session is idle. */
+	private deferOrRunScheduledAction(entry: ScheduledMessage): void {
+		if (this.session.isStreaming || this.session.isCompacting) {
+			this.deferredScheduledActions.push(entry);
+			return;
+		}
+		this.runScheduledAction(entry);
+	}
+
+	/** Apply a scheduled <pi_edit> payload (if any) and run a continue. */
+	private runScheduledAction(entry: ScheduledMessage): void {
+		void (async () => {
+			try {
+				if (entry.isEdit) {
+					await this.handleApplyMessageEdits(entry.text);
+				}
+				await this.handleContinueCommand();
+			} catch (error: unknown) {
+				this.showError(error instanceof Error ? error.message : String(error));
+			}
+		})();
 	}
 
 	private deliverScheduledMessage(text: string): void {
@@ -5425,6 +5521,13 @@ export class InteractiveMode {
 
 	/** Fire settled-trigger scheduled messages after the agent run completes. */
 	private fireDueScheduledMessages(): void {
+		// Run one deferred continue/edit+continue action per settle, in order.
+		if (this.deferredScheduledActions.length > 0) {
+			const entry = this.deferredScheduledActions.shift();
+			if (entry) {
+				this.runScheduledAction(entry);
+			}
+		}
 		// Fire one settled message per agent_settled; further settled messages
 		// fire after the runs they start, preserving queue order.
 		const due = this.scheduledMessages.find((entry) => entry.when.type === "settled");
@@ -5438,6 +5541,7 @@ export class InteractiveMode {
 			if (entry.timer) clearTimeout(entry.timer);
 		}
 		this.scheduledMessages = [];
+		this.deferredScheduledActions = [];
 	}
 
 	private showUserMessageSelector(): void {

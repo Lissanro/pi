@@ -70,6 +70,74 @@ describe("parseScheduleWhen", () => {
 		expect(parseScheduleWhen("2000-01-01 00:00")).toBeUndefined();
 	});
 
+	test("date-less time in the future today schedules for today", () => {
+		const now = new Date();
+		const future = new Date(now.getTime() + 60_000);
+		const spec = `${String(future.getHours()).padStart(2, "0")}:${String(future.getMinutes()).padStart(2, "0")}`;
+		const result = parseScheduleWhen(spec);
+		expect(result?.type).toBe("time");
+		if (result?.type === "time") {
+			const at = new Date(result.at);
+			expect(at.getFullYear()).toBe(now.getFullYear());
+			expect(at.getMonth()).toBe(now.getMonth());
+			expect(at.getDate()).toBe(now.getDate());
+			expect(at.getHours()).toBe(future.getHours());
+			expect(at.getMinutes()).toBe(future.getMinutes());
+		}
+	});
+
+	test("date-less time already passed today schedules for the next day", () => {
+		const now = new Date();
+		// Use a time two minutes in the past.
+		const past = new Date(now.getTime() - 120_000);
+		const spec = `${String(past.getHours()).padStart(2, "0")}:${String(past.getMinutes()).padStart(2, "0")}`;
+		const result = parseScheduleWhen(spec);
+		expect(result?.type).toBe("time");
+		if (result?.type === "time") {
+			const at = new Date(result.at);
+			if (past.getDate() === now.getDate()) {
+				// past is earlier today, so the time already passed -> next day.
+				const expected = new Date(
+					now.getFullYear(),
+					now.getMonth(),
+					now.getDate() + 1,
+					past.getHours(),
+					past.getMinutes(),
+					0,
+				);
+				expect(at.getTime()).toBe(expected.getTime());
+			} else {
+				// Crossed midnight: the spec time is still in the future today.
+				const expected = new Date(
+					now.getFullYear(),
+					now.getMonth(),
+					now.getDate(),
+					past.getHours(),
+					past.getMinutes(),
+					0,
+				);
+				expect(at.getTime()).toBe(expected.getTime());
+			}
+		}
+	});
+
+	test("date-less time with seconds schedules a time", () => {
+		const now = new Date();
+		const future = new Date(now.getTime() + 120_000);
+		const spec = `${String(future.getHours()).padStart(2, "0")}:${String(future.getMinutes()).padStart(2, "0")}:${String(future.getSeconds()).padStart(2, "0")}`;
+		const result = parseScheduleWhen(spec);
+		expect(result?.type).toBe("time");
+		if (result?.type === "time") {
+			const at = new Date(result.at);
+			expect(at.getFullYear()).toBe(now.getFullYear());
+			expect(at.getMonth()).toBe(now.getMonth());
+			expect(at.getDate()).toBe(now.getDate());
+			expect(at.getHours()).toBe(future.getHours());
+			expect(at.getMinutes()).toBe(future.getMinutes());
+			expect(at.getSeconds()).toBe(future.getSeconds());
+		}
+	});
+
 	test("garbage specifications are invalid", () => {
 		expect(parseScheduleWhen("tomorrow")).toBeUndefined();
 		expect(parseScheduleWhen("5x")).toBeUndefined();

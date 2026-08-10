@@ -54,8 +54,8 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "schedule",
 		description:
-			"Send the message below later: when the task completes, after N messages, after a duration, or at a time",
-		argumentHint: "[N|duration|YYYY-MM-DD HH:MM[:SS]]",
+			"Send the message below later, or continue with no message: when the task completes, after N messages, after a duration (e.g. 1h 30m), or at a time ([YYYY-MM-DD ]HH:MM[:SS]). Use -N to cancel the last N scheduled messages",
+		argumentHint: "[-N|N|duration e.g. 1h 30m|[YYYY-MM-DD ]HH:MM[:SS]]",
 	},
 	{
 		name: "delete",
