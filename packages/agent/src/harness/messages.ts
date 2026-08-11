@@ -1,7 +1,7 @@
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "../types.ts";
 
-export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+export const COMPACTION_SUMMARY_PREFIX = `Context checkpoint: the following is a condensed summary of earlier work:
 
 <summary>
 `;
@@ -9,7 +9,7 @@ export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this p
 export const COMPACTION_SUMMARY_SUFFIX = `
 </summary>`;
 
-export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
+export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that was explored:
 
 <summary>
 `;

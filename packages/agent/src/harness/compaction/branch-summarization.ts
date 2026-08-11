@@ -170,17 +170,16 @@ export function prepareBranchEntries(entries: Entry[], tokenBudget: number = 0):
 	return { messages, fileOps, totalTokens };
 }
 
-const BRANCH_SUMMARY_PREAMBLE = `The user explored a different conversation branch before returning here.
-Summary of that exploration:
+const BRANCH_SUMMARY_PREAMBLE = `An alternative branch was explored. Summary of that exploration:
 
 `;
 
-const BRANCH_SUMMARY_PROMPT = `Create a structured summary of this conversation branch for context when returning later.
+const BRANCH_SUMMARY_PROMPT = `Create a structured summary of this branch for context when returning later.
 
 Use this EXACT format:
 
 ## Goal
-[What was the user trying to accomplish in this branch?]
+[What was being accomplished in this branch?]
 
 ## Constraints & Preferences
 - [Any constraints, preferences, or requirements mentioned]

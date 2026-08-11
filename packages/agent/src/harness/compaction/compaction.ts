@@ -421,19 +421,19 @@ export function findCutPoint(
 	};
 }
 
-export const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
+export const SUMMARIZATION_SYSTEM_PROMPT = `Produce a structured summary of the session history that follows the exact format specified.
 
-Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
+Output ONLY the structured summary.`;
 
-const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+const SUMMARIZATION_PROMPT = `Summarize the messages above into a structured context checkpoint that will be used to continue the work.
 
 Use this EXACT format:
 
 ## Goal
-[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+[What the session aims to accomplish. Can be multiple items if different tasks are covered.]
 
 ## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned by user]
+- [Any constraints, preferences, or requirements mentioned in the notes]
 - [Or "(none)" if none were mentioned]
 
 ## Progress
@@ -458,11 +458,11 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
-const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+const UPDATE_SUMMARIZATION_PROMPT = `The messages above contain new session entries to incorporate into the existing summary provided in <previous-summary> tags.
 
 Update the existing structured summary with new information. RULES:
 - PRESERVE all existing information from the previous summary
-- ADD new progress, decisions, and context from the new messages
+- ADD new progress, decisions, and context from the new entries
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
@@ -497,7 +497,7 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
-/** Generate or update a conversation summary for compaction. */
+/** Generate or update a session summary for compaction. */
 export async function generateSummary(
 	currentMessages: AgentMessage[],
 	models: Models,
