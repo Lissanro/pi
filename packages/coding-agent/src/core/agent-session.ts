@@ -252,11 +252,6 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
-	/**
-	 * Prefix prepended to every incoming user message (prompt, steer, followUp)
-	 * before it enters the context. Set to undefined to disable (default).
-	 */
-	incomingMessagePrefix?: string;
 }
 
 export interface ExtensionBindings {
@@ -367,8 +362,6 @@ export class AgentSession {
 	private _followUpMessages: string[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
-	/** Prefix prepended to each incoming user message text before it enters context. */
-	private _incomingMessagePrefix: string | undefined;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -447,7 +440,6 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
-		this._incomingMessagePrefix = config.incomingMessagePrefix;
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -1603,10 +1595,9 @@ export class AgentSession {
 			// Build messages array (custom message if any, then user message)
 			messages = [];
 
-			// Add user message
-			const userContent: (TextContent | ImageContent)[] = [
-				{ type: "text", text: this._applyIncomingPrefix(expandedText) },
-			];
+			const framePrefix = this.settingsManager.getIncomingMessagePrefix();
+			const framedText = framePrefix !== undefined ? framePrefix + expandedText : expandedText;
+			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: framedText }];
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
@@ -1766,20 +1757,15 @@ export class AgentSession {
 		await this._queueFollowUp(expandedText, images);
 	}
 
-	private _applyIncomingPrefix(text: string): string {
-		if (this._incomingMessagePrefix !== undefined) {
-			return this._incomingMessagePrefix + text;
-		}
-		return text;
-	}
-
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text: this._applyIncomingPrefix(text) }];
+		const framePrefix = this.settingsManager.getIncomingMessagePrefix();
+		const framedText = framePrefix !== undefined ? framePrefix + text : text;
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text: framedText }];
 		if (images) {
 			content.push(...images);
 		}
@@ -1796,7 +1782,9 @@ export class AgentSession {
 	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
 		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text: this._applyIncomingPrefix(text) }];
+		const framePrefix = this.settingsManager.getIncomingMessagePrefix();
+		const framedText = framePrefix !== undefined ? framePrefix + text : text;
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text: framedText }];
 		if (images) {
 			content.push(...images);
 		}
@@ -2184,6 +2172,7 @@ export class AgentSession {
 	private syncQueueModesFromSettings(): void {
 		this.agent.steeringMode = this.settingsManager.getSteeringMode();
 		this.agent.followUpMode = this.settingsManager.getFollowUpMode();
+		this.agent.incomingMessagePrefix = this.settingsManager.getIncomingMessagePrefix();
 	}
 
 	/**

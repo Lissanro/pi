@@ -84,11 +84,6 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
-	/**
-	 * Prefix prepended to every incoming user message (prompt, steer, followUp)
-	 * before it enters the context. Set to undefined to disable (default).
-	 */
-	incomingMessagePrefix?: string;
 }
 
 /** Result from createAgentSession */
@@ -313,6 +308,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			thinkingLevel,
 			tools: [],
 		},
+		incomingMessagePrefix: settingsManager.getIncomingMessagePrefix(),
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, options) => {
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
@@ -402,7 +398,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
-		incomingMessagePrefix: options.incomingMessagePrefix,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

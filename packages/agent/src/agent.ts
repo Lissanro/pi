@@ -117,6 +117,12 @@ export interface AgentOptions {
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
+	/**
+	 * Prefix prepended to the text of user messages created from string input.
+	 * Applied only when prompt() is called with a string (not pre-built messages).
+	 * Can be updated at runtime via the incomingMessagePrefix getter/setter.
+	 */
+	incomingMessagePrefix?: string;
 	sessionId?: string;
 	thinkingBudgets?: ThinkingBudgets;
 	transport?: Transport;
@@ -206,6 +212,8 @@ export class Agent {
 	private activeRun?: ActiveRun;
 	private _pendingPrefill?: AgentMessage;
 	private _prefillVerified = false;
+	/** Prefix prepended to user message text created from string input. */
+	private _incomingMessagePrefix: string | undefined;
 	/** Session identifier forwarded to providers for cache-aware backends. */
 	public sessionId?: string;
 	/** Optional per-level thinking token budgets forwarded to the stream function. */
@@ -234,6 +242,7 @@ export class Agent {
 		this.prepareNextTurnWithContext = runtimeOptions.prepareNextTurnWithContext;
 		this.steeringQueue = new PendingMessageQueue(runtimeOptions.steeringMode ?? "one-at-a-time");
 		this.followUpQueue = new PendingMessageQueue(runtimeOptions.followUpMode ?? "one-at-a-time");
+		this._incomingMessagePrefix = runtimeOptions.incomingMessagePrefix;
 		this.sessionId = runtimeOptions.sessionId;
 		this.thinkingBudgets = runtimeOptions.thinkingBudgets;
 		this.transport = runtimeOptions.transport ?? "auto";
@@ -281,6 +290,15 @@ export class Agent {
 
 	get followUpMode(): QueueMode {
 		return this.followUpQueue.mode;
+	}
+
+	/** Prefix prepended to user message text created from string input. */
+	set incomingMessagePrefix(prefix: string | undefined) {
+		this._incomingMessagePrefix = prefix;
+	}
+
+	get incomingMessagePrefix(): string | undefined {
+		return this._incomingMessagePrefix;
 	}
 
 	/** Queue a message to be injected after the current assistant turn finishes. */
@@ -547,7 +565,8 @@ export class Agent {
 			return [input];
 		}
 
-		const content: Array<TextContent | ImageContent> = [{ type: "text", text: input }];
+		const text = this._incomingMessagePrefix !== undefined ? this._incomingMessagePrefix + input : input;
+		const content: Array<TextContent | ImageContent> = [{ type: "text", text }];
 		if (images && images.length > 0) {
 			content.push(...images);
 		}

@@ -108,6 +108,7 @@ export interface Settings {
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
+	incomingMessagePrefix?: string; // Prefix prepended to every incoming user message
 	theme?: string;
 	compaction?: CompactionSettings;
 	branchSummary?: BranchSummarySettings;
@@ -766,6 +767,16 @@ export class SettingsManager {
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void {
 		this.globalSettings.followUpMode = mode;
 		this.markModified("followUpMode");
+		this.save();
+	}
+
+	getIncomingMessagePrefix(): string | undefined {
+		return this.settings.incomingMessagePrefix;
+	}
+
+	setIncomingMessagePrefix(prefix: string | undefined): void {
+		this.globalSettings.incomingMessagePrefix = prefix;
+		this.markModified("incomingMessagePrefix");
 		this.save();
 	}
 
