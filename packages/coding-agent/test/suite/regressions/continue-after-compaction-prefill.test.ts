@@ -12,11 +12,7 @@
  *   context)
  */
 
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	fauxAssistantMessage,
-} from "@earendil-works/pi-ai";
+import { type AssistantMessage, createAssistantMessageEventStream, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getMessageText, type Harness } from "../harness.ts";
 
@@ -128,9 +124,7 @@ describe("continue after compaction preserves the compaction entry", () => {
 		// No "Entry not found", no compaction lost.
 		expect(compactionEntryCount(harness)).toBe(1);
 		// The continuation replaced the partial with the completed response.
-		const texts = harness.session.messages
-			.filter((m) => m.role === "assistant")
-			.map((m) => getMessageText(m));
+		const texts = harness.session.messages.filter((m) => m.role === "assistant").map((m) => getMessageText(m));
 		expect(texts.some((t) => t.includes("continued"))).toBe(true);
 	});
 
@@ -176,9 +170,7 @@ describe("continue after compaction preserves the compaction entry", () => {
 		await expect(harness.session.continue()).resolves.toBeUndefined();
 		expect(compactionEntryCount(harness)).toBe(1);
 		// The original partial message is restored to the transcript.
-		const texts = harness.session.messages
-			.filter((m) => m.role === "assistant")
-			.map((m) => getMessageText(m));
+		const texts = harness.session.messages.filter((m) => m.role === "assistant").map((m) => getMessageText(m));
 		expect(texts).toContain("partial response");
 	});
 });

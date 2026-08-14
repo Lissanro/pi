@@ -1347,10 +1347,9 @@ export class SessionManager {
 					id = entry.id;
 					break;
 				}
-				case "message":
-				case "custom_message":
 				default:
-					// Messages are restored by the caller via appendMessage().
+					// Message and custom_message entries are restored by the caller via
+					// appendMessage(); skip them here.
 					continue;
 			}
 			if (id) appended.push(id);
