@@ -658,6 +658,9 @@ export class InteractiveMode {
 
 	// Messages queued while compaction is running
 	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
+	// A /continue issued while compaction is running, deferred until the session
+	// is idle (compaction complete and any queued compaction messages drained).
+	private pendingCompactionContinue = false;
 
 	// Scheduled messages (/schedule)
 	private scheduledMessages: ScheduledMessage[] = [];
@@ -3674,6 +3677,10 @@ export class InteractiveMode {
 					}
 				}
 				void this.flushCompactionQueue({ willRetry: event.willRetry });
+				// A /continue queued during compaction must run after compaction
+				// completes. Manual compaction does not emit agent_settled, so flush
+				// deferred actions here too.
+				this.fireDueScheduledMessages();
 				this.ui.requestRender();
 				break;
 			}
@@ -5528,6 +5535,12 @@ export class InteractiveMode {
 				this.runScheduledAction(entry);
 			}
 		}
+		// A /continue queued during compaction runs once the session is idle
+		// (after compaction and any queued compaction messages have drained).
+		if (this.pendingCompactionContinue && !this.session.isStreaming && !this.session.isCompacting) {
+			this.pendingCompactionContinue = false;
+			void this.handleContinueCommand();
+		}
 		// Fire one settled message per agent_settled; further settled messages
 		// fire after the runs they start, preserving queue order.
 		const due = this.scheduledMessages.find((entry) => entry.when.type === "settled");
@@ -5542,6 +5555,7 @@ export class InteractiveMode {
 		}
 		this.scheduledMessages = [];
 		this.deferredScheduledActions = [];
+		this.pendingCompactionContinue = false;
 	}
 
 	private showUserMessageSelector(): void {
@@ -5660,6 +5674,14 @@ export class InteractiveMode {
 	 * continuation fails.
 	 */
 	private async handleContinueCommand(): Promise<void> {
+		if (this.session.isCompacting) {
+			// Running a continuation while compaction is in flight races the
+			// compaction and corrupts session state. Queue it to run once the
+			// session is idle after compaction completes.
+			this.pendingCompactionContinue = true;
+			this.showStatus("Queued continue until compaction completes");
+			return;
+		}
 		if (this.session.isStreaming) {
 			this.showStatus("Cannot continue while streaming is in progress");
 			return;

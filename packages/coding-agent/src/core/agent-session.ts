@@ -1346,6 +1346,13 @@ export class AgentSession {
 				"Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
 			);
 		}
+		// A continuation must never run while compaction is in flight: it would
+		// race the truncation and corrupt the session. Callers that queue a
+		// continue (e.g. the TUI during /compact) must run it after compaction
+		// completes; anything that bypasses that is a bug and should fail loudly.
+		if (this.isCompacting) {
+			throw new Error("Cannot continue while compaction is in progress.");
+		}
 		this._isAgentRunActive = true;
 		try {
 			await this._continueOnce(prefill);
