@@ -1263,6 +1263,102 @@ export class SessionManager {
 	}
 
 	/**
+	 * Re-append previously removed trailing entries (e.g. a compaction entry that
+	 * followed a removed prefill message) after the current leaf, re-chaining
+	 * their parent ids. Message entries are skipped; the caller restores the
+	 * prefill message itself via appendMessage(). Returns the ids of the
+	 * appended entries.
+	 *
+	 * @param entries Trailing entries to re-append.
+	 * @param firstKeptEntryIdFallback For compaction entries whose referenced
+	 * first kept entry no longer exists (e.g. it was the removed prefill),
+	 * substitute this id instead.
+	 */
+	appendTrailingEntries(entries: SessionEntry[], firstKeptEntryIdFallback?: string): string[] {
+		const appended: string[] = [];
+		for (const source of entries) {
+			let id: string | undefined;
+			const timestamp = new Date().toISOString();
+			switch (source.type) {
+				case "compaction": {
+					const e = source as CompactionEntry;
+					// If the compaction's first kept entry is not on the active leaf
+					// path (e.g. it was the captured prefill, which removeMessage
+					// branched away from), point it at the restored message so
+					// buildSessionContext keeps the restored partial in context.
+					const firstKeptOnPath = this.getBranch().some((entry) => entry.id === e.firstKeptEntryId);
+					const firstKeptEntryId =
+						!firstKeptOnPath && firstKeptEntryIdFallback ? firstKeptEntryIdFallback : e.firstKeptEntryId;
+					const entry: CompactionEntry = {
+						type: "compaction",
+						id: generateId(this.byId),
+						parentId: this.leafId,
+						timestamp,
+						summary: e.summary,
+						firstKeptEntryId,
+						tokensBefore: e.tokensBefore,
+						details: e.details,
+						fromHook: e.fromHook,
+					};
+					this._appendEntry(entry);
+					id = entry.id;
+					break;
+				}
+				case "model_change": {
+					const e = source as ModelChangeEntry;
+					id = this.appendModelChange(e.provider, e.modelId);
+					break;
+				}
+				case "thinking_level_change": {
+					const e = source as ThinkingLevelChangeEntry;
+					id = this.appendThinkingLevelChange(e.thinkingLevel);
+					break;
+				}
+				case "custom": {
+					const e = source as CustomEntry;
+					id = this.appendCustomEntry(e.customType, e.data);
+					break;
+				}
+				case "session_info": {
+					const e = source as SessionInfoEntry;
+					id = this.appendSessionInfo(e.name ?? "");
+					break;
+				}
+				case "label": {
+					const e = source as LabelEntry;
+					if (this.byId.has(e.targetId)) {
+						id = this.appendLabelChange(e.targetId, e.label);
+					}
+					break;
+				}
+				case "branch_summary": {
+					const e = source as BranchSummaryEntry;
+					const entry: BranchSummaryEntry = {
+						type: "branch_summary",
+						id: generateId(this.byId),
+						parentId: this.leafId,
+						timestamp,
+						fromId: e.fromId,
+						summary: e.summary,
+						details: e.details,
+						fromHook: e.fromHook,
+					};
+					this._appendEntry(entry);
+					id = entry.id;
+					break;
+				}
+				case "message":
+				case "custom_message":
+				default:
+					// Messages are restored by the caller via appendMessage().
+					continue;
+			}
+			if (id) appended.push(id);
+		}
+		return appended;
+	}
+
+	/**
 	 * Walk from entry to root, returning all entries in path order.
 	 * Includes all entry types (messages, compaction, model changes, etc.).
 	 * Use buildSessionContext() to get the resolved messages for the LLM.

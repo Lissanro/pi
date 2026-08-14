@@ -151,6 +151,9 @@ describe("InteractiveMode compaction events", () => {
 			showStatus: vi.fn(),
 			clearStatusIndicator: vi.fn(),
 			flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
+			// fireDueScheduledMessages is invoked after compaction to run a /continue
+			// queued during compaction.
+			fireDueScheduledMessages: vi.fn(),
 			settingsManager: {
 				getShowTerminalProgress: () => false,
 				getCompactionSummaryPlacement: () => "chronological",
@@ -198,6 +201,7 @@ describe("InteractiveMode compaction events", () => {
 			usage,
 		});
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+		expect(fakeThis.fireDueScheduledMessages).toHaveBeenCalledTimes(1);
 	});
 
 	test("rebuilds chat from context entries for the default context placement", async () => {
@@ -236,6 +240,7 @@ describe("InteractiveMode compaction events", () => {
 			showStatus: vi.fn(),
 			clearStatusIndicator: vi.fn(),
 			flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
+			fireDueScheduledMessages: vi.fn(),
 			settingsManager: {
 				getShowTerminalProgress: () => false,
 				getCompactionSummaryPlacement: () => "context",
@@ -277,6 +282,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(fakeThis.addCompactionCostNotice).not.toHaveBeenCalled();
 		expect(fakeThis.footer.invalidate).toHaveBeenCalled();
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+		expect(fakeThis.fireDueScheduledMessages).toHaveBeenCalledTimes(1);
 	});
 
 	test("preserves steering behavior when flushing into an active agent run", async () => {

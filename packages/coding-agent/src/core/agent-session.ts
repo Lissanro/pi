@@ -385,6 +385,13 @@ export class AgentSession {
 	 * a failed continuation. `null` means the session had no entries yet.
 	 */
 	private _prefillRestorePoint: string | null | undefined = undefined;
+	/**
+	 * Trailing session entries (e.g. a compaction entry appended after the
+	 * partial assistant message) removed together with a captured prefill. They
+	 * are re-appended when the continuation is restored so the compaction is not
+	 * lost across a failed continue.
+	 */
+	private _prefillTrailingEntries: SessionEntry[] = [];
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -1364,6 +1371,7 @@ export class AgentSession {
 			this._flushPendingBashMessages();
 			this._pendingPrefill = undefined;
 			this._prefillRestorePoint = undefined;
+			this._prefillTrailingEntries = [];
 			await this._emitAgentSettled();
 		}
 	}
@@ -1405,6 +1413,7 @@ export class AgentSession {
 			} else {
 				this._pendingPrefill = undefined;
 				this._prefillRestorePoint = undefined;
+				this._prefillTrailingEntries = [];
 				// A non-continuable assistant message (e.g., a partial error on a
 				// chat provider) would make Agent.continue() throw. Remove it from
 				// the transcript and continue from the last user/tool-result
@@ -1450,9 +1459,11 @@ export class AgentSession {
 
 		if (msg.stopReason !== "error") {
 			// Continuation succeeded; the prefill has been replaced by the
-			// completed response, so clear the restore state.
+			// completed response, so clear the restore state. The trailing entries
+			// were kept on the leaf path by removeMessage during capture.
 			this._pendingPrefill = undefined;
 			this._prefillRestorePoint = undefined;
+			this._prefillTrailingEntries = [];
 		}
 
 		let retryPrefill: AgentMessage | undefined;
@@ -3235,6 +3246,7 @@ export class AgentSession {
 			this._retryAttempt = 0;
 			this._pendingPrefill = undefined;
 			this._prefillRestorePoint = undefined;
+			this._prefillTrailingEntries = [];
 			this._emit({
 				type: "auto_retry_end",
 				success: false,
@@ -3297,11 +3309,29 @@ export class AgentSession {
 	private _capturePrefill(message: AgentMessage): void {
 		this._pendingPrefill = message;
 		const branch = this.sessionManager.getBranch();
-		// The restore point is the parent of the message being removed, so a
-		// later branch() can cut off the failed continuation and re-append the
-		// original partial.
-		this._prefillRestorePoint = branch.length > 1 ? (branch[branch.length - 2]?.id ?? null) : null;
-		this.deleteLastMessages(1);
+		// The captured message is the last non-harness message on the leaf path.
+		// After a compaction, a compaction entry is appended after the partial, so
+		// the message is not necessarily the last entry. Find it: the restore
+		// point is its parent, and any trailing entries (e.g. the compaction
+		// entry) are removed with it and restored alongside it. Use removeMessage
+		// so trailing entries survive the capture (a successful continuation
+		// keeps them on the leaf path).
+		let targetIdx = -1;
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry.type !== "message") continue;
+			const msg = entry.message;
+			if (msg.role === "assistant" && (!msg.content || isHarnessMessage(msg))) continue;
+			targetIdx = i;
+			break;
+		}
+		const target = targetIdx >= 0 ? branch[targetIdx] : undefined;
+		this._prefillRestorePoint = target?.parentId ? target.parentId : null;
+		this._prefillTrailingEntries = targetIdx >= 0 ? branch.slice(targetIdx + 1) : [];
+		if (target) {
+			// deleteMessage() rebuilds agent state from the updated session log.
+			this.deleteMessage(target.id);
+		}
 		this._emit({ type: "transcript_changed" });
 	}
 
@@ -3316,7 +3346,15 @@ export class AgentSession {
 		} else {
 			this.sessionManager.resetLeaf();
 		}
-		this.sessionManager.appendMessage(prefill as Message);
+		const restoredMessageId = this.sessionManager.appendMessage(prefill as Message);
+		// Re-append trailing entries (e.g. a compaction entry) that were removed
+		// with the prefill so the restored transcript keeps them on the leaf path.
+		// If a trailing compaction's first kept entry was the removed prefill, its
+		// reference is remapped to the restored message so it stays in context.
+		if (this._prefillTrailingEntries.length > 0) {
+			this.sessionManager.appendTrailingEntries(this._prefillTrailingEntries, restoredMessageId);
+		}
+		this._prefillTrailingEntries = [];
 		const sessionContext = this.sessionManager.buildSessionContext();
 		this.agent.state.messages = sessionContext.messages;
 		this._emit({ type: "transcript_changed" });
