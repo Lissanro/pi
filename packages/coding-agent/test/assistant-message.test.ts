@@ -1,9 +1,13 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { setPadLinesToWidth } from "@earendil-works/pi-tui";
 import { describe, expect, test } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
+
+// These tests exercise the outputPad margins, which only apply when padLines is enabled.
+setPadLinesToWidth(true);
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";

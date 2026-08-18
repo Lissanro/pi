@@ -3,7 +3,7 @@ import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
-import { theme } from "../theme/theme.ts";
+import { isMessageBackground, theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
@@ -68,8 +68,8 @@ export class ToolExecutionComponent extends Container {
 		// Always create all shell variants. contentBox is used for default renderer-based composition.
 		// selfRenderContainer is used when the tool renders its own framing.
 		// contentText is reserved for generic fallback rendering when no tool definition exists.
-		this.contentBox = new Box(1, 1, (text: string) => theme.bg("toolPendingBg", text));
-		this.contentText = new Text("", 1, 1, (text: string) => theme.bg("toolPendingBg", text));
+		this.contentBox = new Box(1, 1, this.messageBg("toolPendingBg"));
+		this.contentText = new Text("", 1, 1, this.messageBg("toolPendingBg"));
 		this.selfRenderContainer = new Container();
 
 		if (this.hasRendererDefinition()) {
@@ -261,12 +261,19 @@ export class ToolExecutionComponent extends Container {
 		return super.render(width);
 	}
 
+	private messageBg(color: "toolPendingBg" | "toolErrorBg" | "toolSuccessBg"): ((text: string) => string) | undefined {
+		if (!isMessageBackground()) {
+			return undefined;
+		}
+		return (text: string) => theme.bg(color, text);
+	}
+
 	private updateDisplay(): void {
 		const bgFn = this.isPartial
-			? (text: string) => theme.bg("toolPendingBg", text)
+			? this.messageBg("toolPendingBg")
 			: this.result?.isError
-				? (text: string) => theme.bg("toolErrorBg", text)
-				: (text: string) => theme.bg("toolSuccessBg", text);
+				? this.messageBg("toolErrorBg")
+				: this.messageBg("toolSuccessBg");
 
 		let hasContent = false;
 		this.hideComponent = false;

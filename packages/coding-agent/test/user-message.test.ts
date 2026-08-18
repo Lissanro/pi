@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, setMessageBackground } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -11,6 +11,7 @@ const BG_RESET = "\x1b[49m";
 describe("UserMessageComponent", () => {
 	test("keeps user message height stable while moving closing OSC markers off line end", () => {
 		initTheme("dark");
+		setMessageBackground(true);
 
 		const component = new UserMessageComponent("hello");
 		const lines = component.render(20);

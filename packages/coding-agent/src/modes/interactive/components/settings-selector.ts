@@ -76,6 +76,8 @@ export interface SettingsConfig {
 	showHardwareCursor: boolean;
 	editorPaddingX: number;
 	outputPad: 0 | 1;
+	padLines: boolean;
+	messageBackground: boolean;
 	autocompleteMaxVisible: number;
 	quietStartup: boolean;
 	defaultProjectTrust: DefaultProjectTrust;
@@ -112,6 +114,8 @@ export interface SettingsCallbacks {
 	onShowHardwareCursorChange: (enabled: boolean) => void;
 	onEditorPaddingXChange: (padding: number) => void;
 	onOutputPadChange: (padding: 0 | 1) => void;
+	onPadLinesChange: (enabled: boolean) => void;
+	onMessageBackgroundChange: (enabled: boolean) => void;
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
 	onQuietStartupChange: (enabled: boolean) => void;
 	onDefaultProjectTrustChange: (defaultProjectTrust: DefaultProjectTrust) => void;
@@ -767,14 +771,26 @@ export class SettingsSelectorComponent extends Container {
 			values: ["0", "1", "2", "3"],
 		});
 
-		// Output padding toggle (insert after editor-padding)
-		const editorPaddingIndex = items.findIndex((item) => item.id === "editor-padding");
-		items.splice(editorPaddingIndex + 1, 0, {
-			id: "output-padding",
-			label: "Output padding",
-			description: "Horizontal padding for user messages, assistant messages, and thinking",
-			currentValue: String(config.outputPad),
-			values: ["0", "1"],
+		// Pad lines toggle (insert after output-padding)
+		const padLinesIndex = items.findIndex((item) => item.id === "output-padding");
+		items.splice(padLinesIndex + 1, 0, {
+			id: "pad-lines",
+			label: "Pad lines to width",
+			description:
+				"Fill lines to the terminal width with trailing spaces and margins (may pollute copy/paste selection)",
+			currentValue: config.padLines ? "true" : "false",
+			values: ["true", "false"],
+		});
+
+		// Message background toggle (insert after pad-lines)
+		const messageBackgroundIndex = items.findIndex((item) => item.id === "pad-lines");
+		items.splice(messageBackgroundIndex + 1, 0, {
+			id: "message-background",
+			label: "Message backgrounds",
+			description:
+				"Colored background on user messages and tool call fragments (requires padding to fill the width)",
+			currentValue: config.messageBackground ? "true" : "false",
+			values: ["true", "false"],
 		});
 
 		// Autocomplete max visible toggle (insert after output-padding)
@@ -891,6 +907,12 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "output-padding":
 						callbacks.onOutputPadChange(newValue === "0" ? 0 : 1);
+						break;
+					case "pad-lines":
+						callbacks.onPadLinesChange(newValue === "true");
+						break;
+					case "message-background":
+						callbacks.onMessageBackgroundChange(newValue === "true");
 						break;
 					case "autocomplete-max-visible":
 						callbacks.onAutocompleteMaxVisibleChange(parseInt(newValue, 10));

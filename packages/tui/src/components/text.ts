@@ -1,5 +1,5 @@
 import type { Component } from "../tui.ts";
-import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
+import { applyBackgroundToLine, isPadLinesToWidth, padLineToWidth, wrapTextWithAnsi } from "../utils.ts";
 
 /**
  * Text component - displays multi-line text with word wrapping
@@ -60,9 +60,18 @@ export class Text implements Component {
 		// Replace tabs with 3 spaces
 		const normalizedText = this.text.replace(/\t/g, "   ");
 
+		// Whether the traditional full-width line filling is enabled. When disabled
+		// (default) lines are wrapped at the full terminal width and written without
+		// outer margins or trailing padding, so copy/paste selection stays clean.
+		const padEnabled = isPadLinesToWidth();
+
 		// Reduce margins when necessary so content and padding fit within the available width.
-		const paddingX = Math.min(this.paddingX, Math.max(0, Math.floor((width - 1) / 2)));
-		const contentWidth = Math.max(1, width - paddingX * 2);
+		const paddingX = padEnabled
+			? Math.min(this.paddingX, Math.max(0, Math.floor((width - 1) / 2)))
+			: 0;
+
+		// Calculate content width (subtract left/right margins only when padding)
+		const contentWidth = padEnabled ? Math.max(1, width - paddingX * 2) : width;
 
 		// Wrap text (this preserves ANSI codes but does NOT pad)
 		const wrappedLines = wrapTextWithAnsi(normalizedText, contentWidth);
@@ -73,17 +82,16 @@ export class Text implements Component {
 		const contentLines: string[] = [];
 
 		for (const line of wrappedLines) {
-			// Add margins
-			const lineWithMargins = leftMargin + line + rightMargin;
-
 			// Apply background if specified (this also pads to full width)
 			if (this.customBgFn) {
+				const lineWithMargins = leftMargin + line + rightMargin;
 				contentLines.push(applyBackgroundToLine(lineWithMargins, width, this.customBgFn));
-			} else {
+			} else if (padEnabled) {
 				// No background - just pad to width with spaces
-				const visibleLen = visibleWidth(lineWithMargins);
-				const paddingNeeded = Math.max(0, width - visibleLen);
-				contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
+				contentLines.push(padLineToWidth(leftMargin + line + rightMargin, width));
+			} else {
+				// No padding: raw content, no margins, no trailing spaces
+				contentLines.push(line);
 			}
 		}
 

@@ -138,8 +138,10 @@ export interface Settings {
 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
 	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
-	editorPaddingX?: number; // Horizontal padding for input editor (default: 0)
-	outputPad?: 0 | 1; // Horizontal padding for chat message output (default: 1)
+	editorPaddingX?: number; // Horizontal padding for input editor (only applied when padLines is enabled)
+	outputPad?: 0 | 1; // Horizontal padding for chat message output (only applied when padLines is enabled)
+	padLines?: boolean; // Pad lines to the full terminal width with margins/trailing spaces (default: false)
+	messageBackground?: boolean; // Colored background for user messages and tool call fragments (default: false)
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
@@ -1342,6 +1344,26 @@ export class SettingsManager {
 	setOutputPad(padding: 0 | 1): void {
 		this.globalSettings.outputPad = padding;
 		this.markModified("outputPad");
+		this.save();
+	}
+
+	getPadLines(): boolean {
+		return this.settings.padLines ?? false;
+	}
+
+	setPadLines(enabled: boolean): void {
+		this.globalSettings.padLines = enabled;
+		this.markModified("padLines");
+		this.save();
+	}
+
+	getMessageBackground(): boolean {
+		return this.settings.messageBackground ?? false;
+	}
+
+	setMessageBackground(enabled: boolean): void {
+		this.globalSettings.messageBackground = enabled;
+		this.markModified("messageBackground");
 		this.save();
 	}
 

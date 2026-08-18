@@ -4,7 +4,7 @@ import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
-import type { Theme } from "../../modes/interactive/theme/theme.ts";
+import { isMessageBackground, type Theme } from "../../modes/interactive/theme/theme.ts";
 import { splitBom } from "../../utils/text.ts";
 import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
@@ -174,7 +174,8 @@ type EditCallRenderComponent = Box & {
 };
 
 function createEditCallRenderComponent(): EditCallRenderComponent {
-	return Object.assign(new Box(1, 1, (text: string) => text), {
+	// The background is set per-render in buildEditCallComponent; start transparent.
+	return Object.assign(new Box(1, 1, undefined), {
 		preview: undefined as EditPreview | undefined,
 		previewArgsKey: undefined as string | undefined,
 		previewPending: false,
@@ -259,7 +260,10 @@ function getEditHeaderBg(
 	preview: EditPreview | undefined,
 	settledError: boolean | undefined,
 	theme: Theme,
-): (text: string) => string {
+): ((text: string) => string) | undefined {
+	if (!isMessageBackground()) {
+		return undefined;
+	}
 	if (preview) {
 		if ("error" in preview) {
 			return (text: string) => theme.bg("toolErrorBg", text);

@@ -1039,6 +1039,32 @@ export function applyBackgroundToLine(line: string, width: number, bgFn: (text: 
 	return bgFn(withPadding);
 }
 
+// Whether rendered lines are padded to the full terminal width with trailing spaces and
+// outer margins. Disabled by default so lines keep only their own content and terminal
+// copy/paste selection is not polluted with trailing whitespace. Background filling
+// (applyBackgroundToLine) is unaffected: a background must always span the full width.
+let padLinesToWidth = false;
+
+export function setPadLinesToWidth(enabled: boolean): void {
+	padLinesToWidth = enabled;
+}
+
+export function isPadLinesToWidth(): boolean {
+	return padLinesToWidth;
+}
+
+/**
+ * Pad a line to exactly `width` visible columns with trailing spaces, unless
+ * padLinesToWidth is disabled (in which case the line is returned unchanged).
+ */
+export function padLineToWidth(line: string, width: number): string {
+	if (!padLinesToWidth) {
+		return line;
+	}
+	const paddingNeeded = Math.max(0, width - visibleWidth(line));
+	return line + " ".repeat(paddingNeeded);
+}
+
 /**
  * Truncate text to fit within a maximum visible width, adding ellipsis if needed.
  * Optionally pad with spaces to reach exactly maxWidth.

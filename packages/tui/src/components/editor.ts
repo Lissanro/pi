@@ -8,6 +8,7 @@ import {
 	cjkBreakRegex,
 	getGraphemeSegmenter,
 	getWordSegmenter,
+	isPadLinesToWidth,
 	isWhitespaceChar,
 	sliceByColumn,
 	visibleWidth,
@@ -481,7 +482,9 @@ export class Editor implements Component, Focusable {
 
 	render(width: number): string[] {
 		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
-		const paddingX = Math.min(this.paddingX, maxPadding);
+		// When full-width line padding is disabled (default), the editor ignores its
+		// paddingX: lines are written raw so copy/paste selection stays clean.
+		const paddingX = isPadLinesToWidth() ? Math.min(this.paddingX, maxPadding) : 0;
 		const contentWidth = Math.max(1, width - paddingX * 2);
 
 		// Layout width: with padding the cursor can overflow into it,
@@ -570,12 +573,17 @@ export class Editor implements Component, Focusable {
 				}
 			}
 
-			// Calculate padding based on actual visible width
-			const padding = " ".repeat(Math.max(0, contentWidth - lineVisibleWidth));
-			const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
+			if (isPadLinesToWidth()) {
+				// Calculate padding based on actual visible width
+				const padding = " ".repeat(Math.max(0, contentWidth - lineVisibleWidth));
+				const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
 
-			// Render the line (no side borders, just horizontal lines above and below)
-			result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
+				// Render the line (no side borders, just horizontal lines above and below)
+				result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
+			} else {
+				// No padding: raw content, no leading/trailing spaces
+				result.push(displayText);
+			}
 		}
 
 		// Render bottom border (with scroll indicator if more content below)
@@ -591,9 +599,13 @@ export class Editor implements Component, Focusable {
 		if (this.autocompleteState && this.autocompleteList) {
 			const autocompleteResult = this.autocompleteList.render(contentWidth);
 			for (const line of autocompleteResult) {
-				const lineWidth = visibleWidth(line);
-				const linePadding = " ".repeat(Math.max(0, contentWidth - lineWidth));
-				result.push(`${leftPadding}${line}${linePadding}${rightPadding}`);
+				if (isPadLinesToWidth()) {
+					const lineWidth = visibleWidth(line);
+					const linePadding = " ".repeat(Math.max(0, contentWidth - lineWidth));
+					result.push(`${leftPadding}${line}${linePadding}${rightPadding}`);
+				} else {
+					result.push(line);
+				}
 			}
 		}
 

@@ -6,6 +6,7 @@ import { Markdown, type MarkdownTheme } from "../src/components/markdown.ts";
 import { resetCapabilitiesCache, setCapabilities } from "../src/terminal-image.ts";
 import type { Component, TUI } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
+import { setPadLinesToWidth } from "../src/utils.ts";
 import { defaultMarkdownTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -25,6 +26,9 @@ function getCell(terminal: VirtualTerminal, row: number, col: number) {
 function stripAnsi(line: string): string {
 	return line.replace(/\x1b\[[0-9;]*m/g, "");
 }
+
+// These tests exercise the markdown renderer's full-width padded rendering (padLines enabled).
+setPadLinesToWidth(true);
 
 describe("Markdown component", () => {
 	describe("Transforms", () => {

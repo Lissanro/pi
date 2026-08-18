@@ -1,5 +1,5 @@
 import type { Component } from "../tui.ts";
-import { applyBackgroundToLine, visibleWidth } from "../utils.ts";
+import { applyBackgroundToLine, isPadLinesToWidth, padLineToWidth } from "../utils.ts";
 
 type RenderCache = {
 	childLines: string[];
@@ -76,7 +76,8 @@ export class Box implements Component {
 			return [];
 		}
 
-		const contentWidth = Math.max(1, width - this.paddingX * 2);
+		const padEnabled = isPadLinesToWidth();
+		const contentWidth = padEnabled ? Math.max(1, width - this.paddingX * 2) : width;
 		const leftPad = " ".repeat(this.paddingX);
 
 		// Render all children
@@ -84,7 +85,7 @@ export class Box implements Component {
 		for (const child of this.children) {
 			const lines = child.render(contentWidth);
 			for (const line of lines) {
-				childLines.push(leftPad + line);
+				childLines.push(padEnabled ? leftPad + line : line);
 			}
 		}
 
@@ -125,13 +126,10 @@ export class Box implements Component {
 	}
 
 	private applyBg(line: string, width: number): string {
-		const visLen = visibleWidth(line);
-		const padNeeded = Math.max(0, width - visLen);
-		const padded = line + " ".repeat(padNeeded);
-
 		if (this.bgFn) {
-			return applyBackgroundToLine(padded, width, this.bgFn);
+			// Background must span the full width, so pad unconditionally.
+			return applyBackgroundToLine(line, width, this.bgFn);
 		}
-		return padded;
+		return padLineToWidth(line, width);
 	}
 }

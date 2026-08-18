@@ -857,6 +857,25 @@ function setGlobalTheme(t: Theme): void {
 	(globalThis as Record<symbol, Theme>)[THEME_KEY_OLD] = t;
 }
 
+// Controls whether user messages and tool call fragments get a colored background.
+// When disabled (default), they render with a transparent background and no
+// full-width padding is applied, keeping terminal copy/paste clean.
+let messageBackgroundEnabled = false;
+export function setMessageBackground(enabled: boolean): void {
+	messageBackgroundEnabled = enabled;
+}
+export function isMessageBackground(): boolean {
+	return messageBackgroundEnabled;
+}
+
+/** Background function for custom/skill/compaction messages, or undefined when message backgrounds are disabled. */
+export function customMessageBg(): ((text: string) => string) | undefined {
+	if (!messageBackgroundEnabled) {
+		return undefined;
+	}
+	return (text: string) => theme.bg("customMessageBg", text);
+}
+
 let currentThemeName: string | undefined;
 let themeWatcher: fs.FSWatcher | undefined;
 let themeReloadTimer: NodeJS.Timeout | undefined;

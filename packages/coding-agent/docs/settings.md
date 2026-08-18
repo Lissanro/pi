@@ -61,8 +61,10 @@ Use `/trust` in interactive mode to save a project trust decision for future ses
 | `trackingId` | string | - | Analytics tracking identifier, generated when `enableAnalytics` is turned on |
 | `doubleEscapeAction` | string | `"tree"` | Action for double-escape: `"tree"`, `"fork"`, or `"none"` |
 | `treeFilterMode` | string | `"default"` | Default filter for `/tree`: `"default"`, `"no-tools"`, `"user-only"`, `"labeled-only"`, `"all"` |
-| `editorPaddingX` | number | `0` | Horizontal padding for input editor (0-3) |
-| `outputPad` | number | `1` | Horizontal padding for user messages, assistant messages, and thinking (0 or 1) |
+| `editorPaddingX` | number | `0` | Horizontal padding for input editor (0-3, only applied when `padLines` is enabled) |
+| `outputPad` | number | `1` | Horizontal padding for user messages, assistant messages, and thinking (0 or 1, only applied when `padLines` is enabled) |
+| `padLines` | boolean | `false` | Pad rendered lines to the full terminal width with outer margins and trailing spaces. Disabled by default so terminal copy/paste selection is not polluted with trailing whitespace; when enabled, `outputPad` and `editorPaddingX` take effect |
+| `messageBackground` | boolean | `false` | Apply a colored background to user messages and tool call fragments. Disabled by default (transparent background, no full-width padding); when enabled, these fragments are padded so the background fills the width |
 | `autocompleteMaxVisible` | number | `5` | Max visible items in autocomplete dropdown (3-20) |
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 | `tuiMode` | string | `"regular"` | Interactive TUI mode: `"regular"` or experimental `"fullscreen"`. Changes from `/settings` apply immediately; `--tui-mode` overrides this setting at startup |

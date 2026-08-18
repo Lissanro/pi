@@ -36,6 +36,7 @@ import {
 	ProcessTerminal,
 	Spacer,
 	setKeybindings,
+	setPadLinesToWidth,
 	Text,
 	TruncatedText,
 	type TUI,
@@ -165,6 +166,7 @@ import {
 	getMarkdownTheme,
 	getThemeByName,
 	onThemeChange,
+	setMessageBackground,
 	setRegisteredThemes,
 	stopThemeWatcher,
 	Theme,
@@ -771,6 +773,8 @@ export class InteractiveMode {
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 		this.outputPad = this.settingsManager.getOutputPad();
+		setPadLinesToWidth(this.settingsManager.getPadLines());
+		setMessageBackground(this.settingsManager.getMessageBackground());
 
 		// Register themes from resource loader and initialize
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
@@ -2147,6 +2151,8 @@ export class InteractiveMode {
 		this.footerDataProvider.setCwd(this.sessionManager.getCwd());
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 		this.outputPad = this.settingsManager.getOutputPad();
+		setPadLinesToWidth(this.settingsManager.getPadLines());
+		setMessageBackground(this.settingsManager.getMessageBackground());
 		this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
 		const clearOnShrink = this.settingsManager.getClearOnShrink();
 		this.ui.setClearOnShrink(clearOnShrink);
@@ -4808,6 +4814,8 @@ export class InteractiveMode {
 					defaultProjectTrust: this.settingsManager.getDefaultProjectTrust(),
 					editorPaddingX: this.settingsManager.getEditorPaddingX(),
 					outputPad: this.settingsManager.getOutputPad(),
+					padLines: this.settingsManager.getPadLines(),
+					messageBackground: this.settingsManager.getMessageBackground(),
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
 					quietStartup: this.settingsManager.getQuietStartup(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
@@ -4937,6 +4945,16 @@ export class InteractiveMode {
 						if (this.editor !== this.defaultEditor && this.editor.setPaddingX !== undefined) {
 							this.editor.setPaddingX(padding);
 						}
+					},
+					onPadLinesChange: (enabled) => {
+						this.settingsManager.setPadLines(enabled);
+						setPadLinesToWidth(enabled);
+						this.rebuildChatFromMessages();
+					},
+					onMessageBackgroundChange: (enabled) => {
+						this.settingsManager.setMessageBackground(enabled);
+						setMessageBackground(enabled);
+						this.rebuildChatFromMessages();
 					},
 					onOutputPadChange: (padding) => {
 						this.settingsManager.setOutputPad(padding);
@@ -6620,6 +6638,8 @@ export class InteractiveMode {
 			}
 			this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 			this.outputPad = this.settingsManager.getOutputPad();
+			setPadLinesToWidth(this.settingsManager.getPadLines());
+			setMessageBackground(this.settingsManager.getMessageBackground());
 			this.rebuildChatFromMessages();
 			chatRestoredBeforeSessionStart = true;
 		};

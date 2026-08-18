@@ -1,6 +1,9 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { visibleWidth, wrapTextWithAnsi } from "../src/utils.ts";
+import { setPadLinesToWidth, visibleWidth, wrapTextWithAnsi } from "../src/utils.ts";
+
+// These tests exercise the editor's full-width padded rendering (padLines enabled).
+setPadLinesToWidth(true);
 
 describe("wrapTextWithAnsi", () => {
 	describe("underline styling", () => {

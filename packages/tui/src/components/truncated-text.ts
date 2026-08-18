@@ -1,5 +1,5 @@
 import type { Component } from "../tui.ts";
-import { truncateToWidth, visibleWidth } from "../utils.ts";
+import { isPadLinesToWidth, padLineToWidth, truncateToWidth } from "../utils.ts";
 
 /**
  * Text component that truncates to fit viewport width
@@ -30,8 +30,10 @@ export class TruncatedText implements Component {
 			result.push(emptyLine);
 		}
 
+		const padEnabled = isPadLinesToWidth();
+
 		// Calculate available width after horizontal padding
-		const availableWidth = Math.max(1, width - this.paddingX * 2);
+		const availableWidth = padEnabled ? Math.max(1, width - this.paddingX * 2) : width;
 
 		// Take only the first line (stop at newline)
 		let singleLineText = this.text;
@@ -43,17 +45,15 @@ export class TruncatedText implements Component {
 		// Truncate text if needed (accounting for ANSI codes)
 		const displayText = truncateToWidth(singleLineText, availableWidth);
 
-		// Add horizontal padding
-		const leftPadding = " ".repeat(this.paddingX);
-		const rightPadding = " ".repeat(this.paddingX);
-		const lineWithPadding = leftPadding + displayText + rightPadding;
-
-		// Pad line to exactly width characters
-		const lineVisibleWidth = visibleWidth(lineWithPadding);
-		const paddingNeeded = Math.max(0, width - lineVisibleWidth);
-		const finalLine = lineWithPadding + " ".repeat(paddingNeeded);
-
-		result.push(finalLine);
+		if (padEnabled) {
+			// Add horizontal padding and pad to exactly width characters
+			const leftPadding = " ".repeat(this.paddingX);
+			const rightPadding = " ".repeat(this.paddingX);
+			result.push(padLineToWidth(leftPadding + displayText + rightPadding, width));
+		} else {
+			// No padding: raw content, no margins, no trailing spaces
+			result.push(displayText);
+		}
 
 		// Add vertical padding below
 		for (let i = 0; i < this.paddingY; i++) {

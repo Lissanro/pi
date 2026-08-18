@@ -2,7 +2,7 @@ import { Marked, type Token, Tokenizer, type TokenizerExtension, type Tokens } f
 import { renderLatex } from "../latex.ts";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.ts";
 import type { Component } from "../tui.ts";
-import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
+import { applyBackgroundToLine, isPadLinesToWidth, padLineToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
 
@@ -280,8 +280,13 @@ export class Markdown implements Component {
 			return this.cachedLines;
 		}
 
-		// Calculate available width for content (subtract horizontal padding)
-		const contentWidth = Math.max(1, width - this.paddingX * 2);
+		// Whether the traditional full-width line filling is enabled. When disabled
+		// (default) lines are wrapped at the full terminal width and written without
+		// outer margins or trailing padding, so copy/paste selection stays clean.
+		const padEnabled = isPadLinesToWidth();
+
+		// Calculate available width for content (subtract horizontal padding only when padding)
+		const contentWidth = padEnabled ? Math.max(1, width - this.paddingX * 2) : width;
 		const text = this.options.transform?.(this.text, contentWidth) ?? this.text;
 
 		// Don't render anything if there's no actual text
@@ -337,15 +342,15 @@ export class Markdown implements Component {
 				continue;
 			}
 
-			const lineWithMargins = leftMargin + line + rightMargin;
-
 			if (bgFn) {
+				const lineWithMargins = leftMargin + line + rightMargin;
 				contentLines.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
-			} else {
+			} else if (padEnabled) {
 				// No background - just pad to width
-				const visibleLen = visibleWidth(lineWithMargins);
-				const paddingNeeded = Math.max(0, width - visibleLen);
-				contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
+				contentLines.push(padLineToWidth(leftMargin + line + rightMargin, width));
+			} else {
+				// No padding: raw content, no margins, no trailing spaces
+				contentLines.push(line);
 			}
 		}
 

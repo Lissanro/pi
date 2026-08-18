@@ -139,6 +139,8 @@ export { TuiMainScreen, type TuiMainScreenRenderState } from "./tui-main-screen.
 // Utilities
 export {
 	getOsc8LinkAtColumn,
+	isPadLinesToWidth,
+	setPadLinesToWidth,
 	sliceByColumn,
 	stripTerminalSequences,
 	truncateToWidth,

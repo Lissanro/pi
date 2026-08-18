@@ -5,7 +5,7 @@ import { type AutocompleteProvider, CombinedAutocompleteProvider } from "../src/
 import { Editor, wordWrapLine } from "../src/components/editor.ts";
 import type { TUI } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
-import { visibleWidth } from "../src/utils.ts";
+import { setPadLinesToWidth, visibleWidth } from "../src/utils.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -38,6 +38,9 @@ async function flushAutocomplete(): Promise<void> {
 	await Promise.resolve();
 	await new Promise((resolve) => setImmediate(resolve));
 }
+
+// These tests exercise the editor's full-width padded rendering (padLines enabled).
+setPadLinesToWidth(true);
 
 describe("Editor component", () => {
 	describe("Prompt history navigation", () => {

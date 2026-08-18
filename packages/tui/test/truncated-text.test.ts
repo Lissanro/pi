@@ -2,10 +2,13 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import { Chalk } from "chalk";
 import { TruncatedText } from "../src/components/truncated-text.ts";
-import { visibleWidth } from "../src/utils.ts";
+import { setPadLinesToWidth, visibleWidth } from "../src/utils.ts";
 
 // Force full color in CI so ANSI assertions are deterministic
 const chalk = new Chalk({ level: 3 });
+
+// These tests exercise the full-width padded rendering (padLines enabled).
+setPadLinesToWidth(true);
 
 describe("TruncatedText component", () => {
 	it("pads output lines to exactly match width", () => {
