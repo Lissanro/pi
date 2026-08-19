@@ -318,15 +318,20 @@ export class Markdown implements Component {
 			}
 		}
 
-		// Wrap lines (NO padding, NO background yet)
+		// Wrap lines (NO padding, NO background yet). When padding is disabled, message
+		// content is written unwrapped so the terminal itself reflows lines - this keeps
+		// copy/paste selection free of fake newlines. Tables are the exception: they have
+		// internal cell wrapping the terminal cannot redo, so they keep the real width.
 		const wrappedLines: string[] = [];
 		for (const line of renderedLines) {
 			if (isImageLine(line)) {
 				wrappedLines.push(line);
-			} else {
+			} else if (padEnabled) {
 				for (const wrappedLine of wrapTextWithAnsi(line, contentWidth)) {
 					wrappedLines.push(wrappedLine);
 				}
+			} else {
+				wrappedLines.push(line);
 			}
 		}
 
@@ -596,9 +601,14 @@ export class Markdown implements Component {
 
 				for (const quoteLine of renderedQuoteLines) {
 					const styledLine = applyQuoteStyle(quoteLine);
-					const wrappedLines = wrapTextWithAnsi(styledLine, quoteContentWidth);
-					for (const wrappedLine of wrappedLines) {
-						lines.push(this.theme.quoteBorder("│ ") + wrappedLine);
+					if (isPadLinesToWidth()) {
+						const wrappedLines = wrapTextWithAnsi(styledLine, quoteContentWidth);
+						for (const wrappedLine of wrappedLines) {
+							lines.push(this.theme.quoteBorder("│ ") + wrappedLine);
+						}
+					} else {
+						// No wrapping when padding disabled: keep the border prefix, let the terminal reflow.
+						lines.push(this.theme.quoteBorder("│ ") + styledLine);
 					}
 				}
 				if (nextTokenType && nextTokenType !== "space") {
@@ -790,9 +800,16 @@ export class Markdown implements Component {
 
 				const itemLines = this.renderToken(itemToken, itemWidth, undefined, styleContext);
 				for (const line of itemLines) {
-					for (const wrappedLine of wrapTextWithAnsi(line, itemWidth)) {
+					if (isPadLinesToWidth()) {
+						for (const wrappedLine of wrapTextWithAnsi(line, itemWidth)) {
+							const linePrefix = renderedAnyLine ? continuationPrefix : firstPrefix;
+							lines.push(linePrefix + wrappedLine);
+							renderedAnyLine = true;
+						}
+					} else {
+						// No wrapping when padding disabled: prefix bullets/numbers, let the terminal reflow.
 						const linePrefix = renderedAnyLine ? continuationPrefix : firstPrefix;
-						lines.push(linePrefix + wrappedLine);
+						lines.push(linePrefix + line);
 						renderedAnyLine = true;
 					}
 				}

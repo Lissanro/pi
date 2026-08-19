@@ -48,4 +48,55 @@ describe("padLines (default off)", () => {
 		assert.strictEqual(visibleWidth(lines[0]), 50);
 		assert.ok(lines[0].startsWith(" hello"));
 	});
+
+	it("Markdown paragraph stays unwrapped by default (no fake newlines)", () => {
+		const long = "This is a very long single paragraph that stays on one logical line when padding is disabled.";
+		const md = new Markdown(long, 1, 1, theme);
+		const lines = md.render(20);
+
+		// Content line holds the whole paragraph on a single line, no wrapping at width 20.
+		const content = lines.filter((line) => line.trim() !== "");
+		assert.strictEqual(content.length, 1);
+		assert.strictEqual(content[0], long);
+	});
+
+	it("Markdown paragraph wraps when padLines is enabled", () => {
+		setPadLinesToWidth(true);
+		const long = "This is a very long single paragraph that stays on one logical line when padding is disabled.";
+		const md = new Markdown(long, 1, 1, theme);
+		const lines = md.render(20);
+
+		const content = lines.filter((line) => line.trim() !== "");
+		assert.ok(content.length > 1, "paragraph should wrap when padLines is enabled");
+	});
+
+	it("list stays unwrapped by default, keeping the bullet", () => {
+		const md = new Markdown("- one two three four five six seven eight nine ten eleven twelve", 1, 1, theme);
+		const lines = md.render(20);
+
+		const content = lines.filter((line) => line.trim() !== "");
+		assert.strictEqual(content.length, 1);
+		assert.ok(content[0].includes("one"));
+		assert.ok(content[0].includes("twelve"));
+	});
+
+	it("blockquote stays unwrapped by default, keeping the border prefix", () => {
+		const md = new Markdown("> quoted long text that stays unwrapped across many words here", 1, 1, theme);
+		const lines = md.render(20);
+
+		const content = lines.filter((line) => line.trim() !== "");
+		assert.strictEqual(content.length, 1);
+		assert.ok(content[0].includes("│ "));
+		assert.ok(content[0].includes("here"));
+	});
+
+	it("table keeps the real terminal width by default", () => {
+		const md = new Markdown("| a | b |\n|---|---|\n| 1 | 2 |", 1, 1, theme);
+		const lines = md.render(20);
+
+		// Table borders are intact, sized to the real width.
+		assert.ok(lines.some((line) => line.includes("┌─")));
+		assert.ok(lines.some((line) => line.includes("│ 1 │ 2 │")));
+		assert.ok(lines.some((line) => line.includes("└─")));
+	});
 });
