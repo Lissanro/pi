@@ -1,5 +1,11 @@
 import type { Component } from "../tui.ts";
-import { applyBackgroundToLine, isPadLinesToWidth, padLineToWidth, wrapTextWithAnsi } from "../utils.ts";
+import {
+	applyBackgroundToLine,
+	isPadLinesToWidth,
+	padLineToWidth,
+	shouldWrapLinesToWidth,
+	wrapTextWithAnsi,
+} from "../utils.ts";
 
 /**
  * Text component - displays multi-line text with word wrapping
@@ -64,6 +70,7 @@ export class Text implements Component {
 		// (default) lines are wrapped at the full terminal width and written without
 		// outer margins or trailing padding, so copy/paste selection stays clean.
 		const padEnabled = isPadLinesToWidth();
+		const wrapEnabled = shouldWrapLinesToWidth();
 
 		// Reduce margins when necessary so content and padding fit within the available width.
 		const paddingX = padEnabled
@@ -73,8 +80,9 @@ export class Text implements Component {
 		// Calculate content width (subtract left/right margins only when padding)
 		const contentWidth = padEnabled ? Math.max(1, width - paddingX * 2) : width;
 
-		// Wrap text (this preserves ANSI codes but does NOT pad)
-		const wrappedLines = wrapTextWithAnsi(normalizedText, contentWidth);
+		// Wrap text (this preserves ANSI codes but does NOT pad). When wrapping is
+		// disabled, keep the text raw so the terminal reflows it and copy stays clean.
+		const wrappedLines = wrapEnabled ? wrapTextWithAnsi(normalizedText, contentWidth) : normalizedText.split("\n");
 
 		// Add margins and background to each line
 		const leftMargin = " ".repeat(paddingX);

@@ -164,4 +164,23 @@ describe("padLines (default off)", () => {
 		assert.ok(lines[lines.length - 1].includes("\x1b[45m"));
 		assert.ok(!lines[1].includes("\x1b[45m"));
 	});
+
+	it("Text stays unwrapped by default (no fake newlines in tool content)", () => {
+		const text = new Text(LONG, 1, 1);
+		const lines = text.render(20);
+
+		// Single content line, no wrapping at width 20.
+		const content = lines.filter((line) => line.trim() !== "");
+		assert.strictEqual(content.length, 1);
+		assert.strictEqual(content[0], LONG);
+	});
+
+	it("Text wraps when wrapLines is enabled", () => {
+		setWrapLinesToWidth(true);
+		const text = new Text(LONG, 1, 1);
+		const lines = text.render(20);
+
+		const content = lines.filter((line) => line.trim() !== "");
+		assert.ok(content.length > 1, "Text should wrap when wrapLines is enabled");
+	});
 });
