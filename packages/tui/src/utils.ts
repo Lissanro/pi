@@ -1053,6 +1053,24 @@ export function isPadLinesToWidth(): boolean {
 	return padLinesToWidth;
 }
 
+// Controls whether lines are wrapped with newlines at the terminal width. Separate from
+// padLinesToWidth: wrapping can be enabled without padding. Enabling padLinesToWidth
+// forces wrapping on, since padded lines must fit within the terminal width.
+let wrapLinesToWidth = false;
+
+export function setWrapLinesToWidth(enabled: boolean): void {
+	wrapLinesToWidth = enabled;
+}
+
+export function isWrapLinesToWidth(): boolean {
+	return wrapLinesToWidth;
+}
+
+/** Whether lines should be wrapped at the terminal width (padLines forces it on). */
+export function shouldWrapLinesToWidth(): boolean {
+	return padLinesToWidth || wrapLinesToWidth;
+}
+
 /**
  * Pad a line to exactly `width` visible columns with trailing spaces, unless
  * padLinesToWidth is disabled (in which case the line is returned unchanged).

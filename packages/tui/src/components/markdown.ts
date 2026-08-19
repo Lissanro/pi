@@ -2,11 +2,23 @@ import { Marked, type Token, Tokenizer, type TokenizerExtension, type Tokens } f
 import { renderLatex } from "../latex.ts";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.ts";
 import type { Component } from "../tui.ts";
-import { applyBackgroundToLine, isPadLinesToWidth, padLineToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
+import {
+	applyBackgroundToLine,
+	isPadLinesToWidth,
+	padLineToWidth,
+	shouldWrapLinesToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "../utils.ts";
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
 
 class StrictStrikethroughTokenizer extends Tokenizer {
+	/** Disable indented (leading-space) code blocks so stray indentation never becomes a code block. */
+	override code(): undefined {
+		return undefined;
+	}
+
 	override del(src: string): Tokens.Del | undefined {
 		const match = STRICT_STRIKETHROUGH_REGEX.exec(src);
 		if (!match) {
@@ -284,6 +296,7 @@ export class Markdown implements Component {
 		// (default) lines are wrapped at the full terminal width and written without
 		// outer margins or trailing padding, so copy/paste selection stays clean.
 		const padEnabled = isPadLinesToWidth();
+		const wrapEnabled = shouldWrapLinesToWidth();
 
 		// Calculate available width for content (subtract horizontal padding only when padding)
 		const contentWidth = padEnabled ? Math.max(1, width - this.paddingX * 2) : width;
@@ -326,7 +339,7 @@ export class Markdown implements Component {
 		for (const line of renderedLines) {
 			if (isImageLine(line)) {
 				wrappedLines.push(line);
-			} else if (padEnabled) {
+			} else if (wrapEnabled) {
 				for (const wrappedLine of wrapTextWithAnsi(line, contentWidth)) {
 					wrappedLines.push(wrappedLine);
 				}
@@ -528,7 +541,7 @@ export class Markdown implements Component {
 			}
 
 			case "code": {
-				const indent = this.theme.codeBlockIndent ?? "  ";
+				const indent = this.theme.codeBlockIndent ?? "";
 				lines.push(this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
 				if (this.theme.highlightCode) {
 					const highlightedLines = this.theme.highlightCode(token.text, token.lang);
@@ -601,7 +614,7 @@ export class Markdown implements Component {
 
 				for (const quoteLine of renderedQuoteLines) {
 					const styledLine = applyQuoteStyle(quoteLine);
-					if (isPadLinesToWidth()) {
+					if (shouldWrapLinesToWidth()) {
 						const wrappedLines = wrapTextWithAnsi(styledLine, quoteContentWidth);
 						for (const wrappedLine of wrappedLines) {
 							lines.push(this.theme.quoteBorder("│ ") + wrappedLine);
@@ -800,7 +813,7 @@ export class Markdown implements Component {
 
 				const itemLines = this.renderToken(itemToken, itemWidth, undefined, styleContext);
 				for (const line of itemLines) {
-					if (isPadLinesToWidth()) {
+					if (shouldWrapLinesToWidth()) {
 						for (const wrappedLine of wrapTextWithAnsi(line, itemWidth)) {
 							const linePrefix = renderedAnyLine ? continuationPrefix : firstPrefix;
 							lines.push(linePrefix + wrappedLine);

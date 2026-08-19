@@ -37,6 +37,7 @@ import {
 	Spacer,
 	setKeybindings,
 	setPadLinesToWidth,
+	setWrapLinesToWidth,
 	Text,
 	TruncatedText,
 	type TUI,
@@ -774,6 +775,7 @@ export class InteractiveMode {
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 		this.outputPad = this.settingsManager.getOutputPad();
 		setPadLinesToWidth(this.settingsManager.getPadLines());
+		setWrapLinesToWidth(this.settingsManager.getWrapLines());
 		setMessageBackground(this.settingsManager.getMessageBackground());
 
 		// Register themes from resource loader and initialize
@@ -2152,6 +2154,7 @@ export class InteractiveMode {
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 		this.outputPad = this.settingsManager.getOutputPad();
 		setPadLinesToWidth(this.settingsManager.getPadLines());
+		setWrapLinesToWidth(this.settingsManager.getWrapLines());
 		setMessageBackground(this.settingsManager.getMessageBackground());
 		this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
 		const clearOnShrink = this.settingsManager.getClearOnShrink();
@@ -4815,6 +4818,7 @@ export class InteractiveMode {
 					editorPaddingX: this.settingsManager.getEditorPaddingX(),
 					outputPad: this.settingsManager.getOutputPad(),
 					padLines: this.settingsManager.getPadLines(),
+					wrapLines: this.settingsManager.getWrapLines(),
 					messageBackground: this.settingsManager.getMessageBackground(),
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
 					quietStartup: this.settingsManager.getQuietStartup(),
@@ -4949,6 +4953,12 @@ export class InteractiveMode {
 					onPadLinesChange: (enabled) => {
 						this.settingsManager.setPadLines(enabled);
 						setPadLinesToWidth(enabled);
+						setWrapLinesToWidth(enabled);
+						this.rebuildChatFromMessages();
+					},
+					onWrapLinesChange: (enabled) => {
+						this.settingsManager.setWrapLines(enabled);
+						setWrapLinesToWidth(enabled);
 						this.rebuildChatFromMessages();
 					},
 					onMessageBackgroundChange: (enabled) => {
@@ -6639,6 +6649,7 @@ export class InteractiveMode {
 			this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 			this.outputPad = this.settingsManager.getOutputPad();
 			setPadLinesToWidth(this.settingsManager.getPadLines());
+			setWrapLinesToWidth(this.settingsManager.getWrapLines());
 			setMessageBackground(this.settingsManager.getMessageBackground());
 			this.rebuildChatFromMessages();
 			chatRestoredBeforeSessionStart = true;

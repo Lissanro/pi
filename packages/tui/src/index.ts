@@ -140,7 +140,10 @@ export { TuiMainScreen, type TuiMainScreenRenderState } from "./tui-main-screen.
 export {
 	getOsc8LinkAtColumn,
 	isPadLinesToWidth,
+	isWrapLinesToWidth,
 	setPadLinesToWidth,
+	setWrapLinesToWidth,
+	shouldWrapLinesToWidth,
 	sliceByColumn,
 	stripTerminalSequences,
 	truncateToWidth,

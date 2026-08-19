@@ -2,14 +2,25 @@ import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import { Markdown } from "../src/components/markdown.ts";
 import { Text } from "../src/components/text.ts";
-import { isPadLinesToWidth, setPadLinesToWidth, visibleWidth } from "../src/utils.ts";
+import {
+	isPadLinesToWidth,
+	isWrapLinesToWidth,
+	setPadLinesToWidth,
+	setWrapLinesToWidth,
+	shouldWrapLinesToWidth,
+	visibleWidth,
+} from "../src/utils.ts";
 import { defaultMarkdownTheme } from "./test-themes.ts";
 
 const theme = defaultMarkdownTheme;
 
+// Text long enough to wrap at a 20-column width.
+const LONG = "word word word word word word word word word word word word word word word";
+
 afterEach(() => {
 	// Restore the default (disabled) state for isolation.
 	setPadLinesToWidth(false);
+	setWrapLinesToWidth(false);
 });
 
 describe("padLines (default off)", () => {
@@ -98,5 +109,44 @@ describe("padLines (default off)", () => {
 		assert.ok(lines.some((line) => line.includes("┌─")));
 		assert.ok(lines.some((line) => line.includes("│ 1 │ 2 │")));
 		assert.ok(lines.some((line) => line.includes("└─")));
+	});
+
+	it("wrapLines is disabled by default", () => {
+		assert.strictEqual(isWrapLinesToWidth(), false);
+		assert.strictEqual(shouldWrapLinesToWidth(), false);
+	});
+
+	it("wrapLines wraps content at full width without padding", () => {
+		setWrapLinesToWidth(true);
+		const md = new Markdown(LONG, 1, 1, theme);
+		const lines = md.render(20);
+
+		const content = lines.filter((line) => line.trim() !== "");
+		assert.ok(content.length > 1, "wrapLines should wrap content");
+		// No outer margins or trailing padding: content starts at column 0.
+		assert.strictEqual(content[0].trimStart().length, content[0].length);
+	});
+
+	it("padLines forces wrapLines on", () => {
+		setPadLinesToWidth(true);
+		assert.strictEqual(shouldWrapLinesToWidth(), true);
+	});
+
+	it("code blocks render verbatim with no leading indent", () => {
+		const md = new Markdown("```js\nconst x = 1;\n```\n", 0, 0, theme);
+		const lines = md.render(40);
+
+		const content = lines.filter((line) => line.trim() !== "");
+		assert.ok(content.some((line) => line.includes("const x = 1;")));
+	});
+
+	it("leading spaces do not become code blocks", () => {
+		const md = new Markdown("    plain indented text\n    still plain\n", 0, 0, theme);
+		const lines = md.render(40);
+		const joined = lines.join("\n");
+
+		// No triple-backtick fence is added around indented text.
+		assert.ok(!joined.includes("```"), "leading spaces must not create code blocks");
+		assert.ok(joined.includes("plain indented text"));
 	});
 });

@@ -70,7 +70,7 @@ export interface ThinkingBudgetsSettings {
 export type MermaidRenderingMode = "off" | "final" | "streaming";
 
 export interface MarkdownSettings {
-	codeBlockIndent?: string; // default: "  "
+	codeBlockIndent?: string; // default: "" (code blocks render verbatim, no leading indent)
 	mermaid?: MermaidRenderingMode; // default: "streaming"
 }
 
@@ -141,6 +141,7 @@ export interface Settings {
 	editorPaddingX?: number; // Horizontal padding for input editor (only applied when padLines is enabled)
 	outputPad?: 0 | 1; // Horizontal padding for chat message output (only applied when padLines is enabled)
 	padLines?: boolean; // Pad lines to the full terminal width with margins/trailing spaces (default: false)
+	wrapLines?: boolean; // Wrap lines with newlines at the terminal width (default: false; padLines forces it on)
 	messageBackground?: boolean; // Colored background for user messages and tool call fragments (default: false)
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
@@ -1357,6 +1358,16 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getWrapLines(): boolean {
+		return this.settings.wrapLines ?? false;
+	}
+
+	setWrapLines(enabled: boolean): void {
+		this.globalSettings.wrapLines = enabled;
+		this.markModified("wrapLines");
+		this.save();
+	}
+
 	getMessageBackground(): boolean {
 		return this.settings.messageBackground ?? false;
 	}
@@ -1378,7 +1389,7 @@ export class SettingsManager {
 	}
 
 	getCodeBlockIndent(): string {
-		return this.settings.markdown?.codeBlockIndent ?? "  ";
+		return this.settings.markdown?.codeBlockIndent ?? "";
 	}
 
 	getMermaidRenderingMode(): MermaidRenderingMode {

@@ -77,6 +77,7 @@ export interface SettingsConfig {
 	editorPaddingX: number;
 	outputPad: 0 | 1;
 	padLines: boolean;
+	wrapLines: boolean;
 	messageBackground: boolean;
 	autocompleteMaxVisible: number;
 	quietStartup: boolean;
@@ -115,6 +116,7 @@ export interface SettingsCallbacks {
 	onEditorPaddingXChange: (padding: number) => void;
 	onOutputPadChange: (padding: 0 | 1) => void;
 	onPadLinesChange: (enabled: boolean) => void;
+	onWrapLinesChange: (enabled: boolean) => void;
 	onMessageBackgroundChange: (enabled: boolean) => void;
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
 	onQuietStartupChange: (enabled: boolean) => void;
@@ -782,8 +784,18 @@ export class SettingsSelectorComponent extends Container {
 			values: ["true", "false"],
 		});
 
-		// Message background toggle (insert after pad-lines)
-		const messageBackgroundIndex = items.findIndex((item) => item.id === "pad-lines");
+		// Wrap lines toggle (insert after pad-lines)
+		const wrapLinesIndex = items.findIndex((item) => item.id === "pad-lines");
+		items.splice(wrapLinesIndex + 1, 0, {
+			id: "wrap-lines",
+			label: "Wrap lines",
+			description: "Wrap lines with newlines at the terminal width (padLines forces this on)",
+			currentValue: config.wrapLines ? "true" : "false",
+			values: ["true", "false"],
+		});
+
+		// Message background toggle (insert after wrap-lines)
+		const messageBackgroundIndex = items.findIndex((item) => item.id === "wrap-lines");
 		items.splice(messageBackgroundIndex + 1, 0, {
 			id: "message-background",
 			label: "Message backgrounds",
@@ -910,6 +922,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "pad-lines":
 						callbacks.onPadLinesChange(newValue === "true");
+						break;
+					case "wrap-lines":
+						callbacks.onWrapLinesChange(newValue === "true");
 						break;
 					case "message-background":
 						callbacks.onMessageBackgroundChange(newValue === "true");

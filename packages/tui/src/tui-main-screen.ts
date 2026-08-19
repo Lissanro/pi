@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
 import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
-import { visibleWidth } from "./utils.ts";
+import { shouldWrapLinesToWidth, visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
@@ -444,7 +444,9 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			}
 
 			buffer += "\x1b[2K"; // Clear current line
-			if (!isImage && visibleWidth(line) > width) {
+			// When line wrapping is disabled, message content is written unwrapped so the
+			// terminal itself may reflow long lines - allow lines wider than the terminal.
+			if (!isImage && visibleWidth(line) > width && shouldWrapLinesToWidth()) {
 				// Log all lines to crash file for debugging
 				const crashLogPath = path.join(this.logDirectory, "pi-crash.log");
 				const crashData = [
