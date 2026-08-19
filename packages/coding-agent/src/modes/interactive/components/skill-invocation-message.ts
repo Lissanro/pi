@@ -1,6 +1,6 @@
 import { Box, Markdown, type MarkdownTheme, Text } from "@earendil-works/pi-tui";
 import type { ParsedSkillBlock } from "../../../core/agent-session.ts";
-import { customMessageBg, getMarkdownTheme, theme } from "../theme/theme.ts";
+import { customMessageBg, customMessageSeparatorBg, getMarkdownTheme, theme } from "../theme/theme.ts";
 import { keyText } from "./keybinding-hints.ts";
 
 /**
@@ -15,6 +15,7 @@ export class SkillInvocationMessageComponent extends Box {
 
 	constructor(skillBlock: ParsedSkillBlock, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
 		super(1, 1, customMessageBg());
+		this.setSeparatorBg(customMessageSeparatorBg());
 		this.skillBlock = skillBlock;
 		this.markdownTheme = markdownTheme;
 		this.updateDisplay();

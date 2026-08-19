@@ -1,6 +1,6 @@
 import { Box, Container, Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
-import { getMarkdownTheme, isMessageBackground, theme } from "../theme/theme.ts";
+import { getMarkdownTheme, isMessageBackground, isMessageSeparator, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -38,7 +38,9 @@ export class UserMessageComponent extends Container {
 	private rebuild(): void {
 		this.clear();
 		const bgFn = isMessageBackground() ? (content: string) => theme.bg("userMessageBg", content) : undefined;
+		const separatorBg = isMessageSeparator() ? (content: string) => theme.bg("userMessageBg", content) : undefined;
 		const contentBox = new Box(this.outputPad, 1, bgFn);
+		contentBox.setSeparatorBg(separatorBg);
 		contentBox.addChild(
 			new Markdown(
 				this.text,

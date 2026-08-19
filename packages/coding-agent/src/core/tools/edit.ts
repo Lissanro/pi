@@ -4,7 +4,7 @@ import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
-import { isMessageBackground, type Theme } from "../../modes/interactive/theme/theme.ts";
+import { isMessageBackground, isMessageSeparator, type Theme } from "../../modes/interactive/theme/theme.ts";
 import { splitBom } from "../../utils/text.ts";
 import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
@@ -264,6 +264,15 @@ function getEditHeaderBg(
 	if (!isMessageBackground()) {
 		return undefined;
 	}
+	return getEditHeaderBgColor(preview, settledError, theme);
+}
+
+/** The background color for the edit header, regardless of the messageBackground setting. */
+function getEditHeaderBgColor(
+	preview: EditPreview | undefined,
+	settledError: boolean | undefined,
+	theme: Theme,
+): (text: string) => string {
 	if (preview) {
 		if ("error" in preview) {
 			return (text: string) => theme.bg("toolErrorBg", text);
@@ -276,6 +285,18 @@ function getEditHeaderBg(
 	return (text: string) => theme.bg("toolPendingBg", text);
 }
 
+/** Separator background for the first/last padding lines of the edit block. */
+function getEditSeparatorBg(
+	preview: EditPreview | undefined,
+	settledError: boolean | undefined,
+	theme: Theme,
+): ((text: string) => string) | undefined {
+	if (!isMessageSeparator()) {
+		return undefined;
+	}
+	return getEditHeaderBgColor(preview, settledError, theme);
+}
+
 function buildEditCallComponent(
 	component: EditCallRenderComponent,
 	args: RenderableEditArgs | undefined,
@@ -283,6 +304,7 @@ function buildEditCallComponent(
 	cwd: string,
 ): EditCallRenderComponent {
 	component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
+	component.setSeparatorBg(getEditSeparatorBg(component.preview, component.settledError, theme));
 	component.clear();
 	component.addChild(new Text(formatEditCall(args, theme, cwd), 0, 0));
 

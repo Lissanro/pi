@@ -3,7 +3,7 @@ import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
-import { isMessageBackground, theme } from "../theme/theme.ts";
+import { isMessageBackground, isMessageSeparator, theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
@@ -268,6 +268,16 @@ export class ToolExecutionComponent extends Container {
 		return (text: string) => theme.bg(color, text);
 	}
 
+	/** Separator background for the first/last padding lines, gated on the messageSeparator setting. */
+	private separatorBg(
+		color: "toolPendingBg" | "toolErrorBg" | "toolSuccessBg",
+	): ((text: string) => string) | undefined {
+		if (!isMessageSeparator()) {
+			return undefined;
+		}
+		return (text: string) => theme.bg(color, text);
+	}
+
 	private updateDisplay(): void {
 		const bgFn = this.isPartial
 			? this.messageBg("toolPendingBg")
@@ -281,6 +291,11 @@ export class ToolExecutionComponent extends Container {
 			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
 			if (renderContainer instanceof Box) {
 				renderContainer.setBgFn(bgFn);
+				renderContainer.setSeparatorBg(
+					this.separatorBg(
+						this.isPartial ? "toolPendingBg" : this.result?.isError ? "toolErrorBg" : "toolSuccessBg",
+					),
+				);
 			}
 			renderContainer.clear();
 

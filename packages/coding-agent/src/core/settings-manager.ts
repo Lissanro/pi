@@ -143,6 +143,7 @@ export interface Settings {
 	padLines?: boolean; // Pad lines to the full terminal width with margins/trailing spaces (default: false)
 	wrapLines?: boolean; // Wrap lines with newlines at the terminal width (default: false; padLines forces it on)
 	messageBackground?: boolean; // Colored background for user messages and tool call fragments (default: false)
+	messageSeparator?: boolean; // Full-width background on the first/last line of each message/tool block (default: true)
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
@@ -1375,6 +1376,16 @@ export class SettingsManager {
 	setMessageBackground(enabled: boolean): void {
 		this.globalSettings.messageBackground = enabled;
 		this.markModified("messageBackground");
+		this.save();
+	}
+
+	getMessageSeparator(): boolean {
+		return this.settings.messageSeparator ?? true;
+	}
+
+	setMessageSeparator(enabled: boolean): void {
+		this.globalSettings.messageSeparator = enabled;
+		this.markModified("messageSeparator");
 		this.save();
 	}
 

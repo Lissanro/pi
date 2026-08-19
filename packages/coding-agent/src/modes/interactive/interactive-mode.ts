@@ -168,6 +168,7 @@ import {
 	getThemeByName,
 	onThemeChange,
 	setMessageBackground,
+	setMessageSeparator,
 	setRegisteredThemes,
 	stopThemeWatcher,
 	Theme,
@@ -777,6 +778,7 @@ export class InteractiveMode {
 		setPadLinesToWidth(this.settingsManager.getPadLines());
 		setWrapLinesToWidth(this.settingsManager.getWrapLines());
 		setMessageBackground(this.settingsManager.getMessageBackground());
+		setMessageSeparator(this.settingsManager.getMessageSeparator());
 
 		// Register themes from resource loader and initialize
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
@@ -2156,6 +2158,7 @@ export class InteractiveMode {
 		setPadLinesToWidth(this.settingsManager.getPadLines());
 		setWrapLinesToWidth(this.settingsManager.getWrapLines());
 		setMessageBackground(this.settingsManager.getMessageBackground());
+		setMessageSeparator(this.settingsManager.getMessageSeparator());
 		this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
 		const clearOnShrink = this.settingsManager.getClearOnShrink();
 		this.ui.setClearOnShrink(clearOnShrink);
@@ -4820,6 +4823,7 @@ export class InteractiveMode {
 					padLines: this.settingsManager.getPadLines(),
 					wrapLines: this.settingsManager.getWrapLines(),
 					messageBackground: this.settingsManager.getMessageBackground(),
+					messageSeparator: this.settingsManager.getMessageSeparator(),
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
 					quietStartup: this.settingsManager.getQuietStartup(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
@@ -4964,6 +4968,11 @@ export class InteractiveMode {
 					onMessageBackgroundChange: (enabled) => {
 						this.settingsManager.setMessageBackground(enabled);
 						setMessageBackground(enabled);
+						this.rebuildChatFromMessages();
+					},
+					onMessageSeparatorChange: (enabled) => {
+						this.settingsManager.setMessageSeparator(enabled);
+						setMessageSeparator(enabled);
 						this.rebuildChatFromMessages();
 					},
 					onOutputPadChange: (padding) => {
@@ -6651,6 +6660,7 @@ export class InteractiveMode {
 			setPadLinesToWidth(this.settingsManager.getPadLines());
 			setWrapLinesToWidth(this.settingsManager.getWrapLines());
 			setMessageBackground(this.settingsManager.getMessageBackground());
+			setMessageSeparator(this.settingsManager.getMessageSeparator());
 			this.rebuildChatFromMessages();
 			chatRestoredBeforeSessionStart = true;
 		};

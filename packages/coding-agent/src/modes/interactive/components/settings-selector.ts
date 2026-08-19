@@ -79,6 +79,7 @@ export interface SettingsConfig {
 	padLines: boolean;
 	wrapLines: boolean;
 	messageBackground: boolean;
+	messageSeparator: boolean;
 	autocompleteMaxVisible: number;
 	quietStartup: boolean;
 	defaultProjectTrust: DefaultProjectTrust;
@@ -118,6 +119,7 @@ export interface SettingsCallbacks {
 	onPadLinesChange: (enabled: boolean) => void;
 	onWrapLinesChange: (enabled: boolean) => void;
 	onMessageBackgroundChange: (enabled: boolean) => void;
+	onMessageSeparatorChange: (enabled: boolean) => void;
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
 	onQuietStartupChange: (enabled: boolean) => void;
 	onDefaultProjectTrustChange: (defaultProjectTrust: DefaultProjectTrust) => void;
@@ -805,6 +807,17 @@ export class SettingsSelectorComponent extends Container {
 			values: ["true", "false"],
 		});
 
+		// Message separator toggle (insert after message-background)
+		const messageSeparatorIndex = items.findIndex((item) => item.id === "message-background");
+		items.splice(messageSeparatorIndex + 1, 0, {
+			id: "message-separator",
+			label: "Message separators",
+			description:
+				"Full-width background on the first and last line of each message/tool block as a visual separator",
+			currentValue: config.messageSeparator ? "true" : "false",
+			values: ["true", "false"],
+		});
+
 		// Autocomplete max visible toggle (insert after output-padding)
 		const outputPaddingIndex = items.findIndex((item) => item.id === "output-padding");
 		items.splice(outputPaddingIndex + 1, 0, {
@@ -928,6 +941,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "message-background":
 						callbacks.onMessageBackgroundChange(newValue === "true");
+						break;
+					case "message-separator":
+						callbacks.onMessageSeparatorChange(newValue === "true");
 						break;
 					case "autocomplete-max-visible":
 						callbacks.onAutocompleteMaxVisibleChange(parseInt(newValue, 10));

@@ -66,6 +66,7 @@ Use `/trust` in interactive mode to save a project trust decision for future ses
 | `padLines` | boolean | `false` | Pad rendered lines to the full terminal width with outer margins and trailing spaces. Disabled by default so terminal copy/paste selection is not polluted with trailing whitespace; when enabled, `outputPad` and `editorPaddingX` take effect. Forces `wrapLines` on |
 | `wrapLines` | boolean | `false` | Wrap lines with newlines at the terminal width. Independent of `padLines`; when both are off, message content is written unwrapped so the terminal reflows lines itself, keeping copy/paste free of fake newlines |
 | `messageBackground` | boolean | `false` | Apply a colored background to user messages and tool call fragments. Disabled by default (transparent background, no full-width padding); when enabled, these fragments are padded so the background fills the width |
+| `messageSeparator` | boolean | `true` | Full-width background on the first and last line of each message/tool block as a visual separator, even when `messageBackground` is off |
 | `autocompleteMaxVisible` | number | `5` | Max visible items in autocomplete dropdown (3-20) |
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 | `tuiMode` | string | `"regular"` | Interactive TUI mode: `"regular"` or experimental `"fullscreen"`. Changes from `/settings` apply immediately; `--tui-mode` overrides this setting at startup |

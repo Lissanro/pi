@@ -2,7 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import { Box, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
 import { type CompactionSummaryMessage, convertToLlm } from "../../../core/messages.ts";
-import { customMessageBg, getMarkdownTheme, theme } from "../theme/theme.ts";
+import { customMessageBg, customMessageSeparatorBg, getMarkdownTheme, theme } from "../theme/theme.ts";
 import { keyText } from "./keybinding-hints.ts";
 
 function roleLabel(role: string): string {
@@ -74,6 +74,7 @@ export class CompactionSummaryMessageComponent extends Box {
 		contextMessages?: AgentMessage[],
 	) {
 		super(1, 1, customMessageBg());
+		this.setSeparatorBg(customMessageSeparatorBg());
 		this.message = message;
 		this.markdownTheme = markdownTheme;
 		this.contextMessages = contextMessages;

@@ -5,6 +5,7 @@ type RenderCache = {
 	childLines: string[];
 	width: number;
 	bgSample: string | undefined;
+	separatorBgSample: string | undefined;
 	lines: string[];
 };
 
@@ -16,6 +17,8 @@ export class Box implements Component {
 	private paddingX: number;
 	private paddingY: number;
 	private bgFn?: (text: string) => string;
+	// Background applied only to the top/bottom padding lines, used as a visual separator.
+	private separatorBgFn?: (text: string) => string;
 
 	// Cache for rendered output
 	private cache?: RenderCache;
@@ -49,16 +52,28 @@ export class Box implements Component {
 		// Don't invalidate here - we'll detect bgFn changes by sampling output
 	}
 
+	/** Set a background applied only to the first/last padding lines (visual separator). */
+	setSeparatorBg(bgFn?: (text: string) => string): void {
+		this.separatorBgFn = bgFn;
+		this.invalidateCache();
+	}
+
 	private invalidateCache(): void {
 		this.cache = undefined;
 	}
 
-	private matchCache(width: number, childLines: string[], bgSample: string | undefined): boolean {
+	private matchCache(
+		width: number,
+		childLines: string[],
+		bgSample: string | undefined,
+		separatorBgSample: string | undefined,
+	): boolean {
 		const cache = this.cache;
 		return (
 			!!cache &&
 			cache.width === width &&
 			cache.bgSample === bgSample &&
+			cache.separatorBgSample === separatorBgSample &&
 			cache.childLines.length === childLines.length &&
 			cache.childLines.every((line, i) => line === childLines[i])
 		);
@@ -95,9 +110,10 @@ export class Box implements Component {
 
 		// Check if bgFn output changed by sampling
 		const bgSample = this.bgFn ? this.bgFn("test") : undefined;
+		const separatorBgSample = this.separatorBgFn ? this.separatorBgFn("test") : undefined;
 
 		// Check cache validity
-		if (this.matchCache(width, childLines, bgSample)) {
+		if (this.matchCache(width, childLines, bgSample, separatorBgSample)) {
 			return this.cache!.lines;
 		}
 
@@ -106,7 +122,7 @@ export class Box implements Component {
 
 		// Top padding
 		for (let i = 0; i < this.paddingY; i++) {
-			result.push(this.applyBg("", width));
+			result.push(this.applySeparatorBg("", width));
 		}
 
 		// Content
@@ -116,11 +132,11 @@ export class Box implements Component {
 
 		// Bottom padding
 		for (let i = 0; i < this.paddingY; i++) {
-			result.push(this.applyBg("", width));
+			result.push(this.applySeparatorBg("", width));
 		}
 
 		// Update cache
-		this.cache = { childLines, width, bgSample, lines: result };
+		this.cache = { childLines, width, bgSample, separatorBgSample, lines: result };
 
 		return result;
 	}
@@ -131,5 +147,12 @@ export class Box implements Component {
 			return applyBackgroundToLine(line, width, this.bgFn);
 		}
 		return padLineToWidth(line, width);
+	}
+
+	private applySeparatorBg(line: string, width: number): string {
+		if (this.separatorBgFn) {
+			return applyBackgroundToLine(line, width, this.separatorBgFn);
+		}
+		return this.applyBg(line, width);
 	}
 }

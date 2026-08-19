@@ -876,6 +876,24 @@ export function customMessageBg(): ((text: string) => string) | undefined {
 	return (text: string) => theme.bg("customMessageBg", text);
 }
 
+// Controls whether the first and last empty line of a message/tool block keeps a
+// full-width background as a visual separator, even when message backgrounds are off.
+let messageSeparatorEnabled = true;
+export function setMessageSeparator(enabled: boolean): void {
+	messageSeparatorEnabled = enabled;
+}
+export function isMessageSeparator(): boolean {
+	return messageSeparatorEnabled;
+}
+
+/** Separator background for custom/skill/compaction messages, or undefined when disabled. */
+export function customMessageSeparatorBg(): ((text: string) => string) | undefined {
+	if (!messageSeparatorEnabled) {
+		return undefined;
+	}
+	return (text: string) => theme.bg("customMessageBg", text);
+}
+
 let currentThemeName: string | undefined;
 let themeWatcher: fs.FSWatcher | undefined;
 let themeReloadTimer: NodeJS.Timeout | undefined;

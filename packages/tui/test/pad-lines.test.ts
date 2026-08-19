@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
+import { Box } from "../src/components/box.ts";
 import { Markdown } from "../src/components/markdown.ts";
 import { Text } from "../src/components/text.ts";
 import {
@@ -148,5 +149,19 @@ describe("padLines (default off)", () => {
 		// No triple-backtick fence is added around indented text.
 		assert.ok(!joined.includes("```"), "leading spaces must not create code blocks");
 		assert.ok(joined.includes("plain indented text"));
+	});
+
+	it("Box separator background colors only the first and last padding lines", () => {
+		const bg = (text: string) => `\x1b[45m${text}\x1b[49m`;
+		const box = new Box(1, 1, undefined);
+		box.setSeparatorBg(bg);
+		box.addChild(new Text("content", 0, 0));
+
+		const lines = box.render(20);
+
+		// First and last lines carry the separator background; the content line does not.
+		assert.ok(lines[0].includes("\x1b[45m"));
+		assert.ok(lines[lines.length - 1].includes("\x1b[45m"));
+		assert.ok(!lines[1].includes("\x1b[45m"));
 	});
 });
