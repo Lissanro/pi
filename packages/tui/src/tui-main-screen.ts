@@ -177,7 +177,53 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		return this.deleteKittyImages(ids);
 	}
 
-	protected doRender(): void {
+	private lineRows(line: string, width: number): number {
+		if (isImageLine(line)) return 1;
+		return Math.max(1, Math.ceil(visibleWidth(line) / width));
+	}
+
+	/**
+	 * Start row (terminal) and total rows for a rendered line array. With line wrapping
+	 * disabled (the default), wide lines reflow in the terminal, so each logical line
+	 * maps to one or more terminal rows. Image lines occupy their reserved rows (see
+	 * getKittyImageReservedRows) and their blank placeholder lines do not add rows.
+	 */
+	private rowLayout(lines: string[], width: number): { offsets: number[]; totalRows: number } {
+		let totalRows = 0;
+		const offsets = new Array<number>(lines.length);
+		let i = 0;
+		while (i < lines.length) {
+			offsets[i] = totalRows;
+			if (isImageLine(lines[i])) {
+				const reservedRows = this.getKittyImageReservedRows(lines, i);
+				totalRows += reservedRows;
+				for (let k = 1; k < reservedRows && i + k < lines.length; k++) {
+					offsets[i + k] = totalRows;
+				}
+				i += reservedRows;
+			} else {
+				totalRows += this.lineRows(lines[i], width);
+				i += 1;
+			}
+		}
+		return { offsets, totalRows };
+	}
+
+	/**
+	 * Whether the terminal offset of any line in the common prefix differs between the
+	 * two renderings. A shift means the previous differential position bookkeeping is
+	 * invalid, so a full re-render is required. Appends and end-deletions leave the
+	 * common prefix offsets unchanged and stay on the differential path.
+	 */
+	private rowLayoutChanged(newOffsets: number[], prevOffsets: number[]): boolean {
+		const min = Math.min(newOffsets.length, prevOffsets.length);
+		for (let i = 0; i < min; i++) {
+			if (newOffsets[i] !== prevOffsets[i]) return true;
+		}
+		return false;
+	}
+
+	protected override doRender(): void {
 		if (this.stopped) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
@@ -206,6 +252,11 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		newLines = this.applyLineResets(newLines);
 
+		// Terminal-row layout of the new and previous renderings. With line wrapping
+		// disabled (the default), wide lines reflow in the terminal into multiple rows.
+		const newLayout = this.rowLayout(newLines, width);
+		const prevLayout = this.rowLayout(this.previousLines, width);
+
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean): void => {
 			this.fullRedrawCount += 1;
@@ -233,17 +284,17 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			}
 			buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
-			this.cursorRow = Math.max(0, newLines.length - 1);
+			this.cursorRow = Math.max(0, newLayout.totalRows - 1);
 			this.hardwareCursorRow = this.cursorRow;
 			// Reset max lines when clearing, otherwise track growth
 			if (clear) {
-				this.maxLinesRendered = newLines.length;
+				this.maxLinesRendered = newLayout.totalRows;
 			} else {
-				this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
+				this.maxLinesRendered = Math.max(this.maxLinesRendered, newLayout.totalRows);
 			}
-			const bufferLength = Math.max(height, newLines.length);
+			const bufferLength = Math.max(height, newLayout.totalRows);
 			this.previousViewportTop = Math.max(0, bufferLength - height);
-			this.positionHardwareCursor(cursorPos, newLines.length);
+			this.positionHardwareCursor(cursorPos, newLayout);
 			this.previousLines = newLines;
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
@@ -255,7 +306,6 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			if (!debugRedraw) return;
 			const logPath = path.join(this.logDirectory, "pi-debug.log");
 			const msg = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${newLines.length}, height=${height})\n`;
-			fs.mkdirSync(path.dirname(logPath), { recursive: true });
 			fs.appendFileSync(logPath, msg);
 		};
 
@@ -291,6 +341,15 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			return;
 		}
 
+		// When line wrapping is disabled (default), wide lines reflow in the terminal
+		// into multiple rows. If any line's row count changed, the previous differential
+		// position bookkeeping is invalid (lines have shifted), so re-render everything.
+		if (this.rowLayoutChanged(newLayout.offsets, prevLayout.offsets)) {
+			logRedraw("line wrapping layout changed");
+			fullRender(true);
+			return;
+		}
+
 		// Find first and last changed lines
 		let firstChanged = -1;
 		let lastChanged = -1;
@@ -322,7 +381,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		// No changes - but still need to update hardware cursor position if it moved
 		if (firstChanged === -1) {
-			this.positionHardwareCursor(cursorPos, newLines.length);
+			this.positionHardwareCursor(cursorPos, newLayout);
 			this.previousViewportTop = prevViewportTop;
 			this.previousHeight = height;
 			return;
@@ -330,11 +389,11 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		// All changes are in deleted lines (nothing to render, just clear)
 		if (firstChanged >= newLines.length) {
-			if (this.previousLines.length > newLines.length) {
+			if (prevLayout.totalRows > newLayout.totalRows) {
 				let buffer = "\x1b[?2026h";
 				buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
 				// Move to end of new content (clamp to 0 for empty content)
-				const targetRow = Math.max(0, newLines.length - 1);
+				const targetRow = Math.max(0, newLayout.totalRows - 1);
 				if (targetRow < prevViewportTop) {
 					logRedraw(`deleted lines moved viewport up (${targetRow} < ${prevViewportTop})`);
 					fullRender(true);
@@ -344,22 +403,22 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				if (lineDiff > 0) buffer += `\x1b[${lineDiff}B`;
 				else if (lineDiff < 0) buffer += `\x1b[${-lineDiff}A`;
 				buffer += "\r";
-				// Clear extra lines without scrolling
-				const extraLines = this.previousLines.length - newLines.length;
-				if (extraLines > height) {
-					logRedraw(`extraLines > height (${extraLines} > ${height})`);
+				// Clear extra rows without scrolling
+				const extraRows = prevLayout.totalRows - newLayout.totalRows;
+				if (extraRows > height) {
+					logRedraw(`extraRows > height (${extraRows} > ${height})`);
 					fullRender(true);
 					return;
 				}
-				const clearStartOffset = newLines.length === 0 ? 0 : 1;
-				if (extraLines > 0 && clearStartOffset > 0) {
+				const clearStartOffset = newLayout.totalRows === 0 ? 0 : 1;
+				if (extraRows > 0 && clearStartOffset > 0) {
 					buffer += `\x1b[${clearStartOffset}B`;
 				}
-				for (let i = 0; i < extraLines; i++) {
+				for (let i = 0; i < extraRows; i++) {
 					buffer += "\r\x1b[2K";
-					if (i < extraLines - 1) buffer += "\x1b[1B";
+					if (i < extraRows - 1) buffer += "\x1b[1B";
 				}
-				const moveBack = Math.max(0, extraLines - 1 + clearStartOffset);
+				const moveBack = Math.max(0, extraRows - 1 + clearStartOffset);
 				if (moveBack > 0) {
 					buffer += `\x1b[${moveBack}A`;
 				}
@@ -368,7 +427,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				this.cursorRow = targetRow;
 				this.hardwareCursorRow = targetRow;
 			}
-			this.positionHardwareCursor(cursorPos, newLines.length);
+			this.positionHardwareCursor(cursorPos, newLayout);
 			this.previousLines = newLines;
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
@@ -378,9 +437,11 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		}
 
 		// Differential rendering can only touch what was actually visible.
-		// If the first changed line is above the previous viewport, we need a full redraw.
-		if (firstChanged < prevViewportTop) {
-			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
+		// If the first changed line's terminal row is above the previous viewport, we need
+		// a full redraw. (offsets are terminal rows, so compare against prevViewportTop.)
+		const firstChangedRow = newLayout.offsets[firstChanged];
+		if (firstChangedRow < prevViewportTop) {
+			logRedraw(`firstChanged < viewportTop (${firstChangedRow} < ${prevViewportTop})`);
 			fullRender(true);
 			return;
 		}
@@ -390,7 +451,9 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		let buffer = "\x1b[?2026h"; // Begin synchronized output
 		buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
 		const prevViewportBottom = prevViewportTop + height - 1;
-		const moveTargetRow = appendStart ? firstChanged - 1 : firstChanged;
+		// Terminal row where the first changed logical line starts (appendStart targets
+		// the last previous row so the \r\n below advances onto the new content).
+		const moveTargetRow = appendStart ? prevLayout.totalRows - 1 : newLayout.offsets[firstChanged];
 		if (moveTargetRow > prevViewportBottom) {
 			const currentScreenRow = Math.max(0, Math.min(height - 1, hardwareCursorRow - prevViewportTop));
 			const moveToBottom = height - 1 - currentScreenRow;
@@ -443,7 +506,15 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				continue;
 			}
 
-			buffer += "\x1b[2K"; // Clear current line
+			// Clear all terminal rows this line occupies. When line wrapping is disabled a
+			// wide line wraps to several rows in the terminal, so every wrapped row must be
+			// cleared to avoid stale fragments when the line is shorter than before.
+			const lineRows = this.lineRows(line, width);
+			buffer += "\x1b[2K";
+			for (let r = 1; r < lineRows; r++) {
+				buffer += "\r\n\x1b[2K";
+			}
+			if (lineRows > 1) buffer += `\x1b[${lineRows - 1}A`;
 			// When line wrapping is disabled, message content is written unwrapped so the
 			// terminal itself may reflow long lines - allow lines wider than the terminal.
 			if (!isImage && visibleWidth(line) > width && shouldWrapLinesToWidth()) {
@@ -477,23 +548,19 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			buffer += line;
 		}
 
-		// Track where cursor ended up after rendering
-		let finalCursorRow = renderEnd;
+		// Track where cursor ended up after rendering. In the stable-layout differential
+		// path the cursor ends on the last terminal row of the last changed line: the row
+		// just before the start of the next line (or the content end if it is the last).
+		const finalCursorRow =
+			renderEnd + 1 < newLayout.offsets.length ? newLayout.offsets[renderEnd + 1] - 1 : newLayout.totalRows - 1;
 
-		// If we had more lines before, clear them and move cursor back
-		if (this.previousLines.length > newLines.length) {
-			// Move to end of new content first if we stopped before it
-			if (renderEnd < newLines.length - 1) {
-				const moveDown = newLines.length - 1 - renderEnd;
-				buffer += `\x1b[${moveDown}B`;
-				finalCursorRow = newLines.length - 1;
-			}
-			const extraLines = this.previousLines.length - newLines.length;
-			for (let i = newLines.length; i < this.previousLines.length; i++) {
+		// If the previous content spanned more terminal rows, clear the extra rows.
+		if (prevLayout.totalRows > newLayout.totalRows) {
+			const extraRows = prevLayout.totalRows - newLayout.totalRows;
+			for (let i = 0; i < extraRows; i++) {
 				buffer += "\r\n\x1b[2K";
 			}
-			// Move cursor back to end of new content
-			buffer += `\x1b[${extraLines}A`;
+			buffer += `\x1b[${extraRows}A`;
 		}
 
 		buffer += "\x1b[?2026l"; // End synchronized output
@@ -533,14 +600,14 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Track cursor position for next render
 		// cursorRow tracks end of content (for viewport calculation)
 		// hardwareCursorRow tracks actual terminal cursor position (for movement)
-		this.cursorRow = Math.max(0, newLines.length - 1);
+		this.cursorRow = Math.max(0, newLayout.totalRows - 1);
 		this.hardwareCursorRow = finalCursorRow;
 		// Track terminal's working area (grows but doesn't shrink unless cleared)
-		this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
+		this.maxLinesRendered = Math.max(this.maxLinesRendered, newLayout.totalRows);
 		this.previousViewportTop = Math.max(prevViewportTop, finalCursorRow - height + 1);
 
 		// Position hardware cursor for IME
-		this.positionHardwareCursor(cursorPos, newLines.length);
+		this.positionHardwareCursor(cursorPos, newLayout);
 
 		this.previousLines = newLines;
 		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
@@ -551,17 +618,25 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	/**
 	 * Position the hardware cursor for IME candidate window.
 	 * @param cursorPos The cursor position extracted from rendered output, or null
-	 * @param totalLines Total number of rendered lines
+	 * @param layout Terminal-row layout of the rendered lines
 	 */
-	private positionHardwareCursor(cursorPos: { row: number; col: number } | null, totalLines: number): void {
-		if (!cursorPos || totalLines <= 0) {
+	private positionHardwareCursor(
+		cursorPos: { row: number; col: number } | null,
+		layout: { offsets: number[]; totalRows: number },
+	): void {
+		if (!cursorPos || layout.totalRows <= 0) {
 			this.terminal.hideCursor();
 			return;
 		}
 
-		// Clamp cursor position to valid range
-		const targetRow = Math.max(0, Math.min(cursorPos.row, totalLines - 1));
-		const targetCol = Math.max(0, cursorPos.col);
+		// The cursor position is logical (line index + column). Convert to the actual
+		// terminal row/column, accounting for wrapped (multi-row) lines.
+		const width = this.terminal.columns;
+		const logicalRow = Math.max(0, Math.min(cursorPos.row, layout.offsets.length - 1));
+		const wrappedRow = Math.floor(cursorPos.col / width);
+		const wrappedCol = cursorPos.col % width;
+		const targetRow = Math.max(0, Math.min(layout.offsets[logicalRow] + wrappedRow, layout.totalRows - 1));
+		const targetCol = Math.max(0, wrappedCol);
 
 		// Move cursor from current position to target
 		const rowDelta = targetRow - this.hardwareCursorRow;
