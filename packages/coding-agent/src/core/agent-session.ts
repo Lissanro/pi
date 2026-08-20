@@ -1595,9 +1595,8 @@ export class AgentSession {
 			// Build messages array (custom message if any, then user message)
 			messages = [];
 
-			const framePrefix = this.settingsManager.getIncomingMessagePrefix();
-			const framedText = framePrefix !== undefined ? framePrefix + expandedText : expandedText;
-			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: framedText }];
+			// Add user message
+			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
@@ -1763,9 +1762,7 @@ export class AgentSession {
 	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
-		const framePrefix = this.settingsManager.getIncomingMessagePrefix();
-		const framedText = framePrefix !== undefined ? framePrefix + text : text;
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text: framedText }];
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
@@ -1782,9 +1779,7 @@ export class AgentSession {
 	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
 		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
-		const framePrefix = this.settingsManager.getIncomingMessagePrefix();
-		const framedText = framePrefix !== undefined ? framePrefix + text : text;
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text: framedText }];
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
@@ -2172,7 +2167,6 @@ export class AgentSession {
 	private syncQueueModesFromSettings(): void {
 		this.agent.steeringMode = this.settingsManager.getSteeringMode();
 		this.agent.followUpMode = this.settingsManager.getFollowUpMode();
-		this.agent.incomingMessagePrefix = this.settingsManager.getIncomingMessagePrefix();
 	}
 
 	/**

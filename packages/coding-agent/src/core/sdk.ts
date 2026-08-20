@@ -262,9 +262,27 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	let agent: Agent;
 
-	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
+	// Create convertToLlm wrapper that:
+	// 1. Prepends incomingMessagePrefix to user messages (applied at send time, not in stored messages)
+	// 2. Calls convertToLlm to transform custom roles
+	// 3. Optionally blocks images
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-		const converted = convertToLlm(messages);
+		// Apply incoming message prefix to user messages at conversion time
+		// (keeps stored messages clean for UI rendering)
+		const framePrefix = settingsManager.getIncomingMessagePrefix();
+		const messagesWithPrefix =
+			framePrefix !== undefined
+				? messages.map((msg) => {
+						if (msg.role === "user" && Array.isArray(msg.content)) {
+							const newContent = msg.content.map((c) =>
+								c.type === "text" ? { type: "text" as const, text: framePrefix + c.text } : c,
+							);
+							return { ...msg, content: newContent };
+						}
+						return msg;
+					})
+				: messages;
+		const converted = convertToLlm(messagesWithPrefix);
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
 			return converted;
@@ -308,7 +326,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			thinkingLevel,
 			tools: [],
 		},
-		incomingMessagePrefix: settingsManager.getIncomingMessagePrefix(),
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, options) => {
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();

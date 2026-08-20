@@ -5,12 +5,25 @@ import { type CompactionSummaryMessage, convertToLlm } from "../../../core/messa
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { keyText } from "./keybinding-hints.ts";
 
+function roleLabel(role: string): string {
+	switch (role) {
+		case "user":
+			return "INCOMING";
+		case "assistant":
+			return "OUTGOING";
+		case "toolResult":
+			return "TOOL";
+		default:
+			return role.toUpperCase();
+	}
+}
+
 function formatContextMessages(messages: Message[]): string {
 	return messages
 		.map((m, index) => {
-			const role = m.role.toUpperCase();
+			const label = roleLabel(m.role);
 			const text = messageToText(m);
-			return `**[${index + 1}] ${role}**\n${text}`;
+			return `**[${index + 1}] ${label}**\n${text}`;
 		})
 		.join("\n\n");
 }

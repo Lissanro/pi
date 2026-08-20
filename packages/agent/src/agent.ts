@@ -565,8 +565,7 @@ export class Agent {
 			return [input];
 		}
 
-		const text = this._incomingMessagePrefix !== undefined ? this._incomingMessagePrefix + input : input;
-		const content: Array<TextContent | ImageContent> = [{ type: "text", text }];
+		const content: Array<TextContent | ImageContent> = [{ type: "text", text: input }];
 		if (images && images.length > 0) {
 			content.push(...images);
 		}
