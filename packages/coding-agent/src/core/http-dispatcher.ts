@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import * as undici from "undici";
 
-export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 300_000;
+export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 7_200_000; // 2 hours
 // Node's 250ms default can terminate valid connection attempts on high-latency routes.
 const DEFAULT_AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS = 2_000;
 
