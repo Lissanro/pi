@@ -6,7 +6,7 @@ import { Text } from "../src/components/text.ts";
 import { VStack } from "../src/components/v-stack.ts";
 import { renderLayoutFrame } from "../src/layout.ts";
 import { encodeKitty, registerKittyImageMetadata } from "../src/terminal-image.ts";
-import { stripTerminalSequences } from "../src/utils.ts";
+import { setWrapLinesToWidth, stripTerminalSequences } from "../src/utils.ts";
 
 function visibleLines(lines: string[]): string[] {
 	return lines.map((line) => stripTerminalSequences(line).trimEnd());
@@ -271,16 +271,23 @@ describe("viewport layout", () => {
 	});
 
 	it("updates reserved scrollbar layout at runtime", () => {
-		const scrollView = new ScrollView(new Text("123456", 0, 0), { scrollbar: "always" });
-		const render = () => renderLayoutFrame(new HStack([scrollView], { align: "start" }), 6, 2, () => {});
-		const always = render();
-		assert.deepStrictEqual(visibleLines(always.lines), ["12345", "6"]);
-		assert.strictEqual(always.root.children[0]?.rect.width, 6);
-		assert.strictEqual(always.root.children[0]?.children[0]?.rect.width, 5);
+		// This test needs the text to wrap at the content width so the scroll view has
+		// two rows of content. Wrapping is disabled by default, so enable it explicitly.
+		setWrapLinesToWidth(true);
+		try {
+			const scrollView = new ScrollView(new Text("123456", 0, 0), { scrollbar: "always" });
+			const render = () => renderLayoutFrame(new HStack([scrollView], { align: "start" }), 6, 2, () => {});
+			const always = render();
+			assert.deepStrictEqual(visibleLines(always.lines), ["12345", "6"]);
+			assert.strictEqual(always.root.children[0]?.rect.width, 6);
+			assert.strictEqual(always.root.children[0]?.children[0]?.rect.width, 5);
 
-		scrollView.setScrollbar("hidden");
-		assert.strictEqual(render().root.children[0]?.children[0]?.rect.width, 6);
-		assert.strictEqual(scrollView.isScrollbarVisible, false);
+			scrollView.setScrollbar("hidden");
+			assert.strictEqual(render().root.children[0]?.children[0]?.rect.width, 6);
+			assert.strictEqual(scrollView.isScrollbarVisible, false);
+		} finally {
+			setWrapLinesToWidth(false);
+		}
 	});
 
 	it("measures nested scroll content from constrained child geometry", () => {

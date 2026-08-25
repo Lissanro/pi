@@ -73,9 +73,7 @@ export class Text implements Component {
 		const wrapEnabled = shouldWrapLinesToWidth();
 
 		// Reduce margins when necessary so content and padding fit within the available width.
-		const paddingX = padEnabled
-			? Math.min(this.paddingX, Math.max(0, Math.floor((width - 1) / 2)))
-			: 0;
+		const paddingX = padEnabled ? Math.min(this.paddingX, Math.max(0, Math.floor((width - 1) / 2))) : 0;
 
 		// Calculate content width (subtract left/right margins only when padding)
 		const contentWidth = padEnabled ? Math.max(1, width - paddingX * 2) : width;

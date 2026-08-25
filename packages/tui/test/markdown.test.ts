@@ -935,7 +935,9 @@ A=
 			const markdown = new Markdown(source, 0, 0, defaultMarkdownTheme);
 			const lines = markdown.render(80).map((line) => stripAnsi(line).trimEnd());
 
-			assert.deepStrictEqual(lines, ["Escaped $x-y$.", "", "```text", "  $\\mathbb{C}^3$", "```"]);
+			// Code block content renders verbatim with no indent (codeBlockIndent defaults
+			// to empty).
+			assert.deepStrictEqual(lines, ["Escaped $x-y$.", "", "```text", "$\\mathbb{C}^3$", "```"]);
 		});
 
 		it("allows LaTeX rendering to be disabled", () => {
