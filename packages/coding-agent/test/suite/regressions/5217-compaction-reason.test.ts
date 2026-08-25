@@ -38,7 +38,7 @@ function seedCompactableSession(harness: Harness): void {
 }
 
 function summaryStreamFn(harness: Harness, summary: string): void {
-	harness.session.agent.streamFn = (model) => {
+	harness.session.agent.streamFunction = (model) => {
 		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() => {
 			const message: AssistantMessage = {

@@ -419,6 +419,7 @@ describe("Agent.continue() with faux provider", () => {
 			faux.setResponses([fauxAssistantMessage("HELLO WORLD")]);
 			const model = faux.getModel();
 			const agent = new Agent({
+				streamFn: streamSimple,
 				initialState: {
 					systemPrompt: "You are a helpful assistant. Follow instructions exactly.",
 					model,
@@ -469,6 +470,7 @@ describe("Agent.continue() with faux provider", () => {
 			faux.setResponses([fauxAssistantMessage("HELLO WORLD")]);
 			const model = faux.getModel();
 			const agent = new Agent({
+				streamFn: streamSimple,
 				initialState: {
 					systemPrompt: "You are a helpful assistant. Follow instructions exactly.",
 					model,

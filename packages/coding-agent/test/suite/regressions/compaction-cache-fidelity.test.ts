@@ -45,11 +45,8 @@ function seedPairs(harness: Harness, pairs: number): void {
 }
 
 /** Capture the summarization request context and return a canned summary. */
-function captureSummarizationRequest(
-	harness: Harness,
-	onCapture: (context: Context) => void,
-): void {
-	harness.session.agent.streamFunction = (model, context: Context, _options: SimpleStreamOptions) => {
+function captureSummarizationRequest(harness: Harness, onCapture: (context: Context) => void): void {
+	harness.session.agent.streamFunction = (_model, context: Context, _options?: SimpleStreamOptions) => {
 		onCapture(context);
 		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() => {
@@ -71,22 +68,36 @@ describe("compaction cache fidelity", () => {
 		harnesses.push(harness);
 		const now = Date.now();
 		// Two pairs to be summarized by the PRIOR compaction.
-		harness.sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "old user 0" }], timestamp: now - 6000 });
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "old user 0" }],
+			timestamp: now - 6000,
+		});
 		const a0 = fauxAssistantMessage("old assistant 0", { stopReason: "stop", timestamp: now - 5000 });
 		a0.usage = createUsage(10);
 		harness.sessionManager.appendMessage(a0);
 		// Kept tail that survives the PRIOR compaction.
-		harness.sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "kept user" }], timestamp: now - 3000 });
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "kept user" }],
+			timestamp: now - 3000,
+		});
 		const aKept = fauxAssistantMessage("kept assistant", { stopReason: "stop", timestamp: now - 2000 });
 		aKept.usage = createUsage(10);
 		harness.sessionManager.appendMessage(aKept);
 		const firstKeptEntryId = harness.sessionManager.getEntries().at(-1)!.id;
 		harness.sessionManager.appendCompaction("prior summary", firstKeptEntryId, 100, undefined, false);
-		harness.sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "new user" }], timestamp: now - 500 });
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "new user" }],
+			timestamp: now - 500,
+		});
 		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 
 		const agent = harness.session.agent;
-		const transformed = agent.transformContext ? await agent.transformContext(agent.state.messages, undefined) : agent.state.messages;
+		const transformed = agent.transformContext
+			? await agent.transformContext(agent.state.messages, undefined)
+			: agent.state.messages;
 		const expectedFirst = (await agent.convertToLlm(transformed))[0];
 
 		let captured: Context | undefined;

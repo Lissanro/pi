@@ -36,7 +36,7 @@ describe("AgentSession continue with prefill", () => {
 		let capturedReturnPrefill: boolean | undefined;
 		let capturedContextMessages: Message[] | undefined;
 		const prefillText = getMessageText(prefill!);
-		harness.session.agent.streamFn = ((_model, context, options) => {
+		harness.session.agent.streamFunction = ((_model, context, options) => {
 			capturedReturnPrefill = options?.returnPrefill;
 			capturedContextMessages = context.messages;
 			const stream = new EventStream<AssistantMessageEvent, AssistantMessage>(

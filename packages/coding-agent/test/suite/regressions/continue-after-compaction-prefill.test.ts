@@ -75,7 +75,7 @@ describe("continue after compaction preserves the compaction entry", () => {
 		harnesses.push(harness);
 		seedSessionWithPartial(harness);
 
-		harness.session.agent.streamFn = () => {
+		harness.session.agent.streamFunction = () => {
 			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				stream.push({ type: "done", reason: "stop", message: fauxAssistantMessage("compact summary") });
@@ -95,7 +95,7 @@ describe("continue after compaction preserves the compaction entry", () => {
 		seedSessionWithPartial(harness);
 
 		// Compaction produces a summary.
-		harness.session.agent.streamFn = () => {
+		harness.session.agent.streamFunction = () => {
 			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				stream.push({ type: "done", reason: "stop", message: fauxAssistantMessage("compact summary") });
@@ -107,7 +107,7 @@ describe("continue after compaction preserves the compaction entry", () => {
 
 		// Continue: the partial is captured as a prefill, the provider echoes it
 		// and appends new tokens.
-		harness.session.agent.streamFn = () => {
+		harness.session.agent.streamFunction = () => {
 			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				stream.push({
@@ -133,7 +133,7 @@ describe("continue after compaction preserves the compaction entry", () => {
 		harnesses.push(harness);
 		seedSessionWithPartial(harness);
 
-		harness.session.agent.streamFn = () => {
+		harness.session.agent.streamFunction = () => {
 			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				stream.push({ type: "done", reason: "stop", message: fauxAssistantMessage("compact summary") });
@@ -145,7 +145,7 @@ describe("continue after compaction preserves the compaction entry", () => {
 
 		// The prefill echo does not match (simulating a failed prefill
 		// continuation): the provider returns an error message.
-		harness.session.agent.streamFn = (model) => {
+		harness.session.agent.streamFunction = (model) => {
 			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				const error: AssistantMessage = {

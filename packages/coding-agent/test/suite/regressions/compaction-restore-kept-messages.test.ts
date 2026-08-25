@@ -4,9 +4,14 @@
  * transcript) silently loses messages after a compaction error or abort.
  */
 
-import { type AssistantMessage, createAssistantMessageEventStream, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	fauxAssistantMessage,
+	type StopReason,
+} from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createHarness, type Harness } from "../harness.ts";
+import { createHarness, getMessageText, type Harness } from "../harness.ts";
 
 function createUsage(totalTokens: number) {
 	return {
@@ -67,7 +72,9 @@ function useScriptedStreamFn(harness: Harness, script: AssistantMessage[]): void
 			if (response.stopReason === "error" || response.stopReason === "aborted") {
 				stream.push({ type: "error", reason: response.stopReason, error: response });
 			} else {
-				stream.push({ type: "done", reason: response.stopReason, message: response });
+				// Scripted messages always use a completed stop reason (never "pending").
+				const reason = response.stopReason as Extract<StopReason, "stop" | "length" | "toolUse" | "deferred">;
+				stream.push({ type: "done", reason, message: response });
 			}
 		});
 		return stream;
@@ -76,14 +83,7 @@ function useScriptedStreamFn(harness: Harness, script: AssistantMessage[]): void
 }
 
 function transcriptTexts(harness: Harness): string[] {
-	return harness.session.messages
-		.map((m) =>
-			m.content
-				.filter((c) => c.type === "text")
-				.map((c) => c.text)
-				.join(""),
-		)
-		.filter((t) => t.length > 0);
+	return harness.session.messages.map((m) => getMessageText(m)).filter((t) => t.length > 0);
 }
 
 describe("AgentSession substring /copy matching", () => {

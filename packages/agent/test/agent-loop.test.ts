@@ -1705,7 +1705,11 @@ describe("harness message handling", () => {
 			model: createModel(),
 			convertToLlm: identityConverter,
 		};
-		expect(() => agentLoopContinue(context, config)).toThrow("Cannot continue from message role: assistant");
+		expect(() =>
+			agentLoopContinue(context, config, undefined, () => {
+				throw new Error("streamFn must not be called");
+			}),
+		).toThrow("Cannot continue from message role: assistant");
 	});
 
 	it("agentLoopContinue throws when only harness messages remain after stripping", () => {
@@ -1719,7 +1723,11 @@ describe("harness message handling", () => {
 			model: createModel(),
 			convertToLlm: identityConverter,
 		};
-		expect(() => agentLoopContinue(context, config)).toThrow("Cannot continue: no messages in context");
+		expect(() =>
+			agentLoopContinue(context, config, undefined, () => {
+				throw new Error("streamFn must not be called");
+			}),
+		).toThrow("Cannot continue: no messages in context");
 	});
 });
 
@@ -1801,7 +1809,11 @@ describe("agentLoopContinue prefill continuation", () => {
 			model: createCompletionsModel(),
 			convertToLlm: identityConverter,
 		};
-		expect(() => agentLoopContinue(context, config)).toThrow("Cannot continue from message role: assistant");
+		expect(() =>
+			agentLoopContinue(context, config, undefined, () => {
+				throw new Error("streamFn must not be called");
+			}),
+		).toThrow("Cannot continue from message role: assistant");
 	});
 
 	it("continues an assistant message with a tool call when returnPrefill is set", async () => {
@@ -1867,8 +1879,10 @@ describe("agentLoopContinue prefill continuation", () => {
 			convertToLlm: identityConverter,
 			returnPrefill: true,
 		};
-		expect(() => agentLoopContinue(context, config)).toThrow(
-			"Continuation is only supported for openai-completions providers",
-		);
+		expect(() =>
+			agentLoopContinue(context, config, undefined, () => {
+				throw new Error("streamFn must not be called");
+			}),
+		).toThrow("Continuation is only supported for openai-completions providers");
 	});
 });
