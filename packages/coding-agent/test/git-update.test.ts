@@ -226,7 +226,6 @@ describe("DefaultPackageManager git update", () => {
 			expect(getFileContent(installedDir, "extension.ts")).toBe("// v2-new");
 		});
 
-
 		it("should handle complete history rewrite", async () => {
 			setupRemoteAndInstall();
 

@@ -4,11 +4,7 @@
  * transcript) silently loses messages after a compaction error or abort.
  */
 
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	fauxAssistantMessage,
-} from "@earendil-works/pi-ai";
+import { type AssistantMessage, createAssistantMessageEventStream, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarness, type Harness } from "../harness.ts";
 
@@ -81,7 +77,12 @@ function useScriptedStreamFn(harness: Harness, script: AssistantMessage[]): void
 
 function transcriptTexts(harness: Harness): string[] {
 	return harness.session.messages
-		.map((m) => m.content.filter((c) => c.type === "text").map((c) => c.text).join(""))
+		.map((m) =>
+			m.content
+				.filter((c) => c.type === "text")
+				.map((c) => c.text)
+				.join(""),
+		)
 		.filter((t) => t.length > 0);
 }
 

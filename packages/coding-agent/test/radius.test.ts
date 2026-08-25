@@ -74,7 +74,6 @@ describe("Radius provider", () => {
 				status: 200,
 				headers: { "content-type": "application/json" },
 			}),
-
 		);
 		const modelsStore = new InMemoryModelsStore();
 		const credentials = AuthStorage.inMemory({

@@ -10,12 +10,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import {
-	agentLoop,
-	agentLoopContinue,
-	isHarnessMessage,
-	stripTrailingHarnessMessages,
-} from "../src/agent-loop.ts";
+import { agentLoop, agentLoopContinue, isHarnessMessage, stripTrailingHarnessMessages } from "../src/agent-loop.ts";
 import { setDefaultStreamFn } from "../src/index.ts";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, StreamFn } from "../src/types.ts";
 

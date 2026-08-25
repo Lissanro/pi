@@ -48,7 +48,8 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "compact",
 		description: "Manually compact the session context",
-		argumentHint: "[N msgs] [K|M tokens] [--keep-tokens N] [--keep-messages N] [text]  e.g. /compact 10 20K (shortest wins)",
+		argumentHint:
+			"[N msgs] [K|M tokens] [--keep-tokens N] [--keep-messages N] [text]  e.g. /compact 10 20K (shortest wins)",
 	},
 	{ name: "continue", description: "Continue the current session without adding a message" },
 	{
