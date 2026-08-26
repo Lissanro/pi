@@ -1,43 +1,49 @@
-<p align="center">
-  <a href="https://pi.dev">
-    <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
-  </a>
-</p>
-<p align="center">
-  <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
-  <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square" /></a>
-</p>
+# Pi Crystal
 
-> New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Pi Crystal is a fork of the Pi agent harness ([earendil-works/pi](https://github.com/earendil-works/pi)). It grew out of running Pi against local models (llama-server) in long iterative sessions, and the changes reflect that: copying multiline text out of the terminal stays free of whitespace padding, compaction keeps the provider KV cache valid as much as possible, and every message in the session, including thinking blocks, can be edited, forked, or continued at will.
 
-# Pi Agent Harness
+## Slash commands
 
-This is the home of the Pi agent harness project including our self extensible coding agent.
+- `/edit [N | substring]` loads messages into the editor as `<pi_edit>` blocks (an XML-like form that preserves reasoning blocks and tool calls; inner tags need no escaping, the parser figures out the structure around them, so copying and pasting stays easy). Sending the blocks rewrites history without calling the model.
+- `/copy [N | substring | text]` copies the last message, an indexed message, every message matching a substring, or arbitrary typed text.
+- `/delete [N | substring]` deletes the last N messages, or the single message matching a substring. Also, when targeting message with tool call, it deletes the tool call output first while leaving the message intact - this is useful when some tool call produced way too long output, and it is faster to stop, delete long output and provide the model short summary or guidance how to avoid too long output while still having the command it ran in context.
+- `/fork [N | substring]` branches the session from any message, user or assistant.
+- `/continue` resumes generation without adding a user message. It can also continue a partial assistant message (prefill continuation), even mid-thought, on supported OpenAI-completions providers: currently [llama.cpp-f3zz1k-prefill](https://github.com/Lissanro/llama.cpp-f3zz1k-prefill), which adds the prefill API and also resumes interrupted tool calls.
+- `/schedule` sends a message later: with no parameters it fires after the current task completes; it can also fire after N messages, after a duration (`1h 30m`), at a local time, or as a delayed continue or edit+continue. `-N` cancels.
+- `/compact` compacts the session. Parameters set the budget as the number of recent messages to keep or as tokens (`10`, `20K`, `1M`; when both apply, the smaller budget wins), plus optional free-text focus for the summary.
 
-* **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
-* **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
-* **[@earendil-works/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
+## Continuation and resilience
 
-To learn more about Pi:
+Retries are unlimited by default for prompts, /continue, /compact, and auto-compaction, with exponential backoff capped at 30 seconds, so when the model server goes down Pi Crystal keeps retrying and continues the turn once it is back, local or remote. When the server dies mid-stream, prefill continuation of the interrupted response takes priority over queued steering messages, and with [llama.cpp-f3zz1k-prefill](https://github.com/Lissanro/llama.cpp-f3zz1k-prefill) an echo check verifies the provider actually continued the same text before trusting it.
 
-* [Visit pi.dev](https://pi.dev), the project website with demos
-* [Read the documentation](https://pi.dev/docs/latest), but you can also ask the agent to explain itself
+## Compaction
 
-## All Packages
+The summarization request carries exactly what the chat contains - system prompt plus unaltered history, with any previous summary in its natural position - minus only the preserved tail, plus the instruction at the end, so provider KV caches stay valid across compactions. The summary becomes a normal user/assistant message pair at the cut point, followed by the kept messages. Ctrl+O on a compaction summary shows the full model-visible context, and a failed or cancelled compaction restores the kept messages.
 
-| Package | Description |
-|---------|-------------|
-| **[@earendil-works/pi-telemetry](packages/telemetry)** | Vendor-neutral telemetry contracts, reference adapter, conformance tests, and typed schemas |
-| **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
-| **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
-| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
-| **[@earendil-works/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
+## Rendering
 
-For Slack/chat automation and workflows see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).
+Rendered lines carry only their own content: no padding by default and no inserted line breaks, so copying multiline text with the mouse produces exactly what was written, and code blocks render verbatim. The upstream look is one setting away: `padLines` (full-width padding), `wrapLines` (wrap with newlines at the terminal width), `messageBackground`, and `messageSeparator`.
+
+## Framing and providers
+
+The default system prompt is a factual reference: a tool inventory and the documentation locations. Compaction and summary prompts use neutral direction labels (INCOMING/OUTGOING/TOOL). The `incomingMessagePrefix` setting prepends text to each user message when it is sent to the model; the session file keeps the typed text.
+
+Cloud providers work by default exactly as upstream (same API keys and /login flows). To hide them from the model list for a local-only setup, set `PI_DISABLE_CLOUD_PROVIDERS=1`. The retry backoff cap is `retry.maxBackoffMs` (default 30000, i.e. 30 seconds).
+
+## About
+
+Pi Crystal started as a personal project for myself and my wife, tuned for long sessions on local models. When some people on Reddit showed interest in /edit and the other slash commands, I decided to share it. You are welcome to use the code for any purpose, including upstreaming any parts into Pi itself if you find them useful. Issues and pull requests are welcome.
+
+---
+
+# Pi Crystal Agent Harness
+
+* [Read the documentation](https://pi.dev/docs/latest) - most of it still applies to Pi Crystal, except the fork features described above; you can also ask the agent to explain itself
+* [Visit pi.dev](https://pi.dev) - website of the project Pi Crystal is forked from, big thanks to the original author for making Pi open source
 
 ## Permissions & Containerization
 
-Pi does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it.
+Pi Crystal, just like the mainline Pi, does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it.
 
 If you need stronger boundaries, containerize or sandbox Pi. See [packages/coding-agent/docs/containerization.md](packages/coding-agent/docs/containerization.md) for three patterns:
 
@@ -47,7 +53,7 @@ If you need stronger boundaries, containerize or sandbox Pi. See [packages/codin
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules (for both humans and agents).  Longer term plans for Pi can also be found in [RFCs](https://rfc.earendil.com/keyword/pi/).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules.
 
 ## Development
 
@@ -59,19 +65,6 @@ npm run check         # Lint, format, and type check
 ./test.sh            # Run tests (skips LLM-dependent tests without API keys)
 ./pi-test.sh         # Run pi from sources (can be run from any directory)
 ```
-
-## Building standalone binaries from release source
-
-GitHub releases include a versioned source archive covered by the release's `SHA256SUMS` file. Extract it and run the same build script used for the official standalone binaries:
-
-```bash
-VERSION="<release-version>"
-tar -xzf "pi-${VERSION}-source.tar.gz"
-cd "pi-${VERSION}"
-./scripts/build-binaries.sh --offline-model-data --platform linux-x64 --out "$PWD/out"
-```
-
-The source archive includes the generated provider model data used for the release. `--offline-model-data` builds with that snapshot instead of refreshing it from live provider catalogs. The script still installs dependencies, builds the monorepo, compiles the Bun executable, and stages its runtime assets. Package maintainers who provide dependencies separately can pass `--skip-install --skip-deps`.
 
 ## Supply-chain hardening
 
@@ -106,9 +99,3 @@ I regularly publish my own `pi-mono` work sessions here:
 ## License
 
 MIT
-
-<p align="center">
-  <a href="https://pi.dev">pi.dev</a> domain graciously donated by
-  <br /><br />
-  <a href="https://exe.dev"><img src="packages/coding-agent/docs/images/exy.png" alt="Exy mascot" width="48" /><br />exe.dev</a>
-</p>
