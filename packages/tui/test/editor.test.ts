@@ -5,7 +5,7 @@ import { type AutocompleteProvider, CombinedAutocompleteProvider } from "../src/
 import { Editor, wordWrapLine } from "../src/components/editor.ts";
 import type { TUI } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
-import { setPadLinesToWidth, visibleWidth } from "../src/utils.ts";
+import { setPadLinesToWidth, setWrapLinesToWidth, visibleWidth } from "../src/utils.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -41,6 +41,46 @@ async function flushAutocomplete(): Promise<void> {
 
 // These tests exercise the editor's full-width padded rendering (padLines enabled).
 setPadLinesToWidth(true);
+
+describe("Editor wrapLines rendering", () => {
+	const longText = "a long line that exceeds the thirty column terminal width";
+
+	it("renders a long line as one line when wrapLines is off (default)", () => {
+		setPadLinesToWidth(false);
+		setWrapLinesToWidth(false);
+		try {
+			const editor = new Editor(createTestTUI(30, 24), defaultEditorTheme);
+			editor.setText(longText);
+			const rendered = editor.render(30).map(stripVTControlCharacters);
+			const line = rendered.find((l) => l.includes("a long line"));
+			assert.ok(line, "content line rendered");
+			assert.ok(
+				line.includes("terminal width"),
+				`one layout line carries the full text so the terminal reflows it, got: ${line}`,
+			);
+		} finally {
+			setPadLinesToWidth(true);
+		}
+	});
+
+	it("word-wraps a long line when wrapLines is on", () => {
+		setPadLinesToWidth(false);
+		setWrapLinesToWidth(true);
+		try {
+			const editor = new Editor(createTestTUI(30, 24), defaultEditorTheme);
+			editor.setText(longText);
+			const rendered = editor.render(30).map(stripVTControlCharacters);
+			const firstLine = rendered.find((l) => l.includes("a long line"));
+			assert.ok(firstLine, "content line rendered");
+			assert.ok(!firstLine.includes("terminal width"), `first chunk does not hold the full text: ${firstLine}`);
+			const continuation = rendered.find((l) => l.includes("terminal width") && !l.includes("a long line"));
+			assert.ok(continuation, "a continuation line holds the rest of the text");
+		} finally {
+			setWrapLinesToWidth(false);
+			setPadLinesToWidth(true);
+		}
+	});
+});
 
 describe("Editor component", () => {
 	describe("Prompt history navigation", () => {

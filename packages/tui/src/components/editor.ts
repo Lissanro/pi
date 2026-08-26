@@ -10,6 +10,7 @@ import {
 	getWordSegmenter,
 	isPadLinesToWidth,
 	isWhitespaceChar,
+	shouldWrapLinesToWidth,
 	sliceByColumn,
 	visibleWidth,
 } from "../utils.ts";
@@ -933,7 +934,10 @@ export class Editor implements Component, Focusable {
 			const isCurrentLine = i === this.state.cursorLine;
 			const lineVisibleWidth = visibleWidth(line);
 
-			if (lineVisibleWidth <= contentWidth) {
+			// When line wrapping is disabled (the default), each logical line stays one
+			// layout line and the terminal reflows it, so copied text keeps its real
+			// line breaks instead of the editor's word-wrap points.
+			if (lineVisibleWidth <= contentWidth || !shouldWrapLinesToWidth()) {
 				// Line fits in one layout line
 				if (isCurrentLine) {
 					layoutLines.push({
@@ -1762,7 +1766,9 @@ export class Editor implements Component, Focusable {
 			if (line.length === 0) {
 				// Empty line still takes one visual line
 				visualLines.push({ logicalLine: i, startCol: 0, length: 0 });
-			} else if (lineVisWidth <= width) {
+				// With wrapping disabled the terminal reflows long lines; vertical
+				// navigation treats each logical line as one visual line.
+			} else if (lineVisWidth <= width || !shouldWrapLinesToWidth()) {
 				visualLines.push({ logicalLine: i, startCol: 0, length: line.length });
 			} else {
 				// Line needs wrapping - use word-aware wrapping
