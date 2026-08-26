@@ -197,6 +197,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/reload` | Reload keybindings, extensions, skills, prompts, themes, and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display version history |
+| `/heartbeat <spec> [message]` | Schedule recurring wake-ups; with message on following lines, no message runs bare continue; -N cancels last N, no args lists |
 | `/quit` | Quit pi |
 
 ### Keyboard Shortcuts
@@ -613,6 +614,7 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
 | `--verbose` | Force verbose startup |
 | `-a`, `--approve` | Trust project-local files for this run |
 | `-na`, `--no-approve` | Ignore project-local files for this run |
+| `--heartbeat <spec>` | Preset a recurring wake-up heartbeat at startup (repeatable; e.g. 3h or 15:23) |
 | `--` | Stop option parsing; remaining arguments are prompts or `@file` inputs |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |

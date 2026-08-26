@@ -59,6 +59,12 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		argumentHint: "[-N|N|duration e.g. 1h 30m|[YYYY-MM-DD ]HH:MM[:SS]]",
 	},
 	{
+		name: "heartbeat",
+		description:
+			"Send the message below repeatedly, or continue with no message: every duration (e.g. 3h), or daily at a local time (HH:MM[:SS]). Use -N to cancel the last N heartbeats; no arguments lists them",
+		argumentHint: "[-N|duration e.g. 3h|HH:MM[:SS]]",
+	},
+	{
 		name: "delete",
 		description: "Delete the last message (or N messages: /delete N, or unique match: /delete substring)",
 		argumentHint: "[count|substring]",

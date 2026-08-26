@@ -330,6 +330,24 @@ export interface ScheduledMessage {
 	isEdit?: boolean;
 }
 
+/** Recurring wake-up schedule: a fixed interval, or daily at a local time. */
+export type HeartbeatSchedule =
+	| { type: "interval"; intervalMs: number }
+	| { type: "daily"; hh: number; mm: number; ss: number };
+
+/** A recurring heartbeat entry, kept separate from one-shot scheduled messages. */
+export interface HeartbeatEntry {
+	id: number;
+	text: string;
+	/** Fixed interval in ms, or null for daily-at beats. */
+	intervalMs: number | null;
+	/** Daily local time, or null for interval beats. */
+	dailyAt: { hh: number; mm: number; ss: number } | null;
+	timer?: ReturnType<typeof setTimeout>;
+	/** No message payload; run a bare continue when the beat fires. */
+	isContinue?: boolean;
+}
+
 /**
  * Parse the schedule specification from the first line of a /schedule command.
  * Supported forms: empty (continue when the current task completes), a
@@ -394,6 +412,51 @@ export function parseScheduleWhen(spec: string): ScheduledTrigger | undefined {
 		totalMs += value * (unit === "s" ? 1000 : unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : 86_400_000);
 	}
 	return totalMs > 0 ? { type: "time", at: Date.now() + totalMs } : undefined;
+}
+
+/**
+ * Parse a heartbeat specification from the first line of a /heartbeat command
+ * or a --heartbeat CLI value. Supported forms: sleep(1)-style durations summed
+ * over tokens ("3h", "1h 30m", "5.5m"; units s/m/h/d), and a date-less local
+ * time "HH:MM[:SS]" for daily beats. Absolute dates are rejected (they would be
+ * one-shot, which /schedule already covers). Returns undefined when invalid.
+ */
+export function parseHeartbeatSpec(spec: string): HeartbeatSchedule | undefined {
+	const trimmed = spec.trim();
+	// Date-less local time HH:MM[:SS] - daily at that time. Reject any leading date.
+	const timeMatch = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{1,2}))?$/);
+	if (timeMatch) {
+		const hh = Number.parseInt(timeMatch[1], 10);
+		const mm = Number.parseInt(timeMatch[2], 10);
+		const ss = timeMatch[3] ? Number.parseInt(timeMatch[3], 10) : 0;
+		if (hh > 23 || mm > 59 || ss > 59) return undefined;
+		return { type: "daily", hh, mm, ss };
+	}
+	// sleep(1)-style durations; multiple tokens are summed ("3h", "1h 30m").
+	let totalMs = 0;
+	for (const token of trimmed.split(/\s+/)) {
+		const durationMatch = token.match(/^(\d+(?:\.\d+)?)([smhd])$/);
+		if (!durationMatch) return undefined;
+		const value = Number.parseFloat(durationMatch[1]);
+		const unit = durationMatch[2];
+		totalMs += value * (unit === "s" ? 1000 : unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : 86_400_000);
+	}
+	return totalMs > 0 ? { type: "interval", intervalMs: totalMs } : undefined;
+}
+
+/** Format a millisecond duration as a compact "1h 30m"-style string. */
+function formatDuration(ms: number): string {
+	const totalSeconds = Math.round(ms / 1000);
+	const days = Math.floor(totalSeconds / 86_400);
+	const hours = Math.floor((totalSeconds % 86_400) / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+	const parts: string[] = [];
+	if (days > 0) parts.push(`${days}d`);
+	if (hours > 0) parts.push(`${hours}h`);
+	if (minutes > 0) parts.push(`${minutes}m`);
+	if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+	return parts.join(" ");
 }
 
 function formatScheduledTime(at: number): string {
@@ -505,6 +568,8 @@ export interface InteractiveModeOptions {
 	initialImages?: ImageContent[];
 	/** Additional messages to send after the initial message */
 	initialMessages?: string[];
+	/** Heartbeat specs preset at launch (bare-continue beats, from --heartbeat). */
+	heartbeatSpecs?: string[];
 	/** Force verbose startup (overrides quietStartup setting) */
 	verbose?: boolean;
 	/** TUI layout mode. */
@@ -676,6 +741,10 @@ export class InteractiveMode {
 	// Deferred continue / edit+continue actions waiting for the session to settle.
 	private deferredScheduledActions: ScheduledMessage[] = [];
 	private nextScheduleId = 1;
+
+	// Recurring heartbeats (/heartbeat)
+	private heartbeats: HeartbeatEntry[] = [];
+	private nextHeartbeatId = 1;
 
 	// Shutdown state
 	private shutdownRequested = false;
@@ -1342,6 +1411,11 @@ export class InteractiveMode {
 					this.showError(errorMessage);
 				}
 			}
+		}
+
+		// CLI-preset heartbeats (message-less bare-continue beats).
+		for (const spec of this.options.heartbeatSpecs ?? []) {
+			this.scheduleHeartbeat(spec, "");
 		}
 
 		// Main interactive loop
@@ -2221,6 +2295,7 @@ export class InteractiveMode {
 		this.pendingMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
 		this.clearScheduledMessages();
+		this.clearHeartbeats();
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.pendingTools.clear();
@@ -3304,6 +3379,12 @@ export class InteractiveMode {
 				const arg = text === "/schedule" ? "" : text.slice(9);
 				this.editor.setText("");
 				await this.handleScheduleCommand(arg);
+				return;
+			}
+			if (text === "/heartbeat" || (text.startsWith("/heartbeat") && /^\s/.test(text.slice(10)))) {
+				const arg = text === "/heartbeat" ? "" : text.slice(10);
+				this.editor.setText("");
+				await this.handleHeartbeatCommand(arg);
 				return;
 			}
 			if (text === "/quit") {
@@ -5603,6 +5684,189 @@ export class InteractiveMode {
 		this.pendingCompactionContinue = false;
 	}
 
+	/**
+	 * Queue a recurring heartbeat. The first line carries the heartbeat spec
+	 * (a sleep(1)-style duration "3h" / "1h 30m", or a date-less local time
+	 * "15:23"/"15:23:45" for daily beats); the message to send goes on the
+	 * following line(s); with no message the beat runs a bare continue.
+	 */
+	private async handleHeartbeatCommand(arg: string): Promise<void> {
+		const newlineIndex = arg.indexOf("\n");
+		const spec = (newlineIndex === -1 ? arg : arg.slice(0, newlineIndex)).trim();
+		const payload = newlineIndex === -1 ? "" : arg.slice(newlineIndex + 1).trim();
+
+		// Negative count cancels heartbeats (removes the last N).
+		if (/^-\d+$/.test(spec)) {
+			this.cancelHeartbeats(Number.parseInt(spec, 10) * -1);
+			return;
+		}
+
+		// No arguments and no message lists active heartbeats.
+		if (spec === "") {
+			this.listHeartbeats();
+			return;
+		}
+
+		this.scheduleHeartbeat(spec, payload);
+	}
+
+	/** Schedule a heartbeat from a spec string and message text. */
+	private scheduleHeartbeat(spec: string, text: string): void {
+		const schedule = parseHeartbeatSpec(spec);
+		if (!schedule) {
+			this.showStatus(
+				"Usage: /heartbeat [duration e.g. 3h | HH:MM[:SS]] with the message on the following line(s); no message = continue",
+			);
+			return;
+		}
+		const entry: HeartbeatEntry = {
+			id: this.nextHeartbeatId++,
+			text,
+			intervalMs: schedule.type === "interval" ? schedule.intervalMs : null,
+			dailyAt: schedule.type === "daily" ? { hh: schedule.hh, mm: schedule.mm, ss: schedule.ss } : null,
+			isContinue: text === "",
+		};
+		this.armHeartbeat(entry);
+		this.heartbeats.push(entry);
+		this.showStatus(`Scheduled heartbeat ${this.heartbeatDescription(entry)}`);
+	}
+
+	/** Remove the last N heartbeats, keeping the rest if any. */
+	private cancelHeartbeats(count: number): void {
+		if (count <= 0) {
+			this.showStatus("Usage: /heartbeat -N to cancel the last N heartbeats");
+			return;
+		}
+		let removed = 0;
+		while (removed < count && this.heartbeats.length > 0) {
+			const entry = this.heartbeats.pop();
+			if (entry?.timer) clearTimeout(entry.timer);
+			removed++;
+		}
+		if (removed === 0) {
+			this.showStatus("No heartbeats to cancel");
+			return;
+		}
+		this.showStatus(`Cancelled ${removed} heartbeat${removed === 1 ? "" : "s"}`);
+	}
+
+	/** List active heartbeats in status (id, spec, next fire time). */
+	private listHeartbeats(): void {
+		if (this.heartbeats.length === 0) {
+			this.showStatus("No active heartbeats");
+			return;
+		}
+		for (const entry of this.heartbeats) {
+			this.showStatus(
+				`Heartbeat ${entry.id}: ${this.heartbeatDescription(entry)} (next ${this.nextHeartbeatFireTime(entry)})`,
+			);
+		}
+	}
+
+	/** Text description of a heartbeat entry's schedule. */
+	private heartbeatDescription(entry: HeartbeatEntry): string {
+		if (entry.intervalMs !== null) {
+			return `every ${formatDuration(entry.intervalMs)}`;
+		}
+		if (entry.dailyAt) {
+			const { hh, mm, ss } = entry.dailyAt;
+			const time = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}${ss ? `:${String(ss).padStart(2, "0")}` : ""}`;
+			return `daily at ${time}`;
+		}
+		return "?";
+	}
+
+	/** Next fire time for a heartbeat entry, formatted as a local time. */
+	private nextHeartbeatFireTime(entry: HeartbeatEntry): string {
+		if (entry.intervalMs !== null) {
+			return formatScheduledTime(Date.now() + entry.intervalMs);
+		}
+		if (entry.dailyAt) {
+			const now = new Date();
+			const at = new Date(
+				now.getFullYear(),
+				now.getMonth(),
+				now.getDate(),
+				entry.dailyAt.hh,
+				entry.dailyAt.mm,
+				entry.dailyAt.ss,
+			).getTime();
+			return formatScheduledTime(at <= now.getTime() ? at + 86_400_000 : at);
+		}
+		return "?";
+	}
+
+	/** Arm (or re-arm) a heartbeat's timer from its original schedule. */
+	private armHeartbeat(entry: HeartbeatEntry): void {
+		if (entry.timer) clearTimeout(entry.timer);
+		if (entry.intervalMs !== null) {
+			entry.timer = setTimeout(() => this.fireHeartbeat(entry.id), entry.intervalMs);
+			return;
+		}
+		if (entry.dailyAt) {
+			const now = new Date();
+			let at = new Date(
+				now.getFullYear(),
+				now.getMonth(),
+				now.getDate(),
+				entry.dailyAt.hh,
+				entry.dailyAt.mm,
+				entry.dailyAt.ss,
+			).getTime();
+			if (at <= now.getTime()) {
+				at = new Date(
+					now.getFullYear(),
+					now.getMonth(),
+					now.getDate() + 1,
+					entry.dailyAt.hh,
+					entry.dailyAt.mm,
+					entry.dailyAt.ss,
+				).getTime();
+			}
+			entry.timer = setTimeout(() => this.fireHeartbeat(entry.id), Math.max(at - now.getTime(), 0));
+		}
+	}
+
+	/**
+	 * Fire a heartbeat. When the session is Working (streaming) or compacting
+	 * the beat is skipped entirely - deliver nothing, just re-arm the next one.
+	 * Otherwise deliver like a scheduled message (session.prompt), or run a bare
+	 * continue for message-less beats. Then re-arm from the original schedule.
+	 */
+	private fireHeartbeat(id: number): void {
+		const index = this.heartbeats.findIndex((entry) => entry.id === id);
+		if (index === -1) return;
+		const entry = this.heartbeats[index];
+
+		// Skip while Working or compacting: do not deliver anything, just re-arm.
+		if (this.session.isStreaming || this.session.isCompacting) {
+			this.armHeartbeat(entry);
+			return;
+		}
+
+		if (entry.isContinue) {
+			// Bare continue, reusing the /schedule defer-or-run action path.
+			this.deferOrRunScheduledAction({
+				id: entry.id,
+				text: "",
+				when: { type: "time", at: Date.now() },
+				isContinue: true,
+			});
+		} else {
+			this.deliverScheduledMessage(entry.text);
+		}
+
+		this.armHeartbeat(entry);
+	}
+
+	/** Clear all heartbeats (session shutdown/restart). */
+	private clearHeartbeats(): void {
+		for (const entry of this.heartbeats) {
+			if (entry.timer) clearTimeout(entry.timer);
+		}
+		this.heartbeats = [];
+	}
+
 	private showUserMessageSelector(): void {
 		const forkableMessages = this.session.getForkableMessages();
 
@@ -7328,6 +7592,7 @@ export class InteractiveMode {
 			this.ui.terminal.setProgress(false);
 		}
 		this.clearScheduledMessages();
+		this.clearHeartbeats();
 		this.clearStatusIndicator();
 		this.themeController.disableAutoSync();
 		this.clearExtensionTerminalInputListeners();

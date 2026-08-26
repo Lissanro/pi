@@ -933,6 +933,7 @@ export async function main(args: string[], options?: MainOptions) {
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,
+			heartbeatSpecs: parsed.heartbeat,
 			verbose: parsed.verbose,
 			tuiMode: parsed.tuiMode,
 			initialThemeSetting: parsed.useTheme,
