@@ -197,7 +197,8 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/reload` | Reload keybindings, extensions, skills, prompts, themes, and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display version history |
-| `/heartbeat <spec> [message]` | Schedule recurring wake-ups; with message on following lines, no message runs bare continue; -N cancels last N, no args lists |
+| `/schedule <spec> [message]` | Schedule a one-shot message or continue; `list` lists, `-N` cancels last N, `cancel <id>` cancels one |
+| `/heartbeat <spec> [message]` | Schedule recurring wake-ups; `list` or no args lists, `-N` cancels last N, `cancel <id>` cancels one |
 | `/quit` | Quit pi |
 
 ### Keyboard Shortcuts

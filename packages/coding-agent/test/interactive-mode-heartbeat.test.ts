@@ -47,6 +47,7 @@ type HeartbeatCommandContext = {
 	session: { isStreaming: boolean; isCompacting: boolean };
 	armHeartbeat: (entry: HeartbeatEntry) => void;
 	cancelHeartbeats: (count: number) => void;
+	cancelHeartbeatById: (id: number) => void;
 	listHeartbeats: () => void;
 	scheduleHeartbeat: (spec: string, text: string) => void;
 	deferOrRunScheduledAction: (entry: HeartbeatEntry & { when: { type: "time"; at: number } }) => void;
@@ -58,6 +59,7 @@ type HeartbeatCommandContext = {
 const heartbeatPrototype = InteractiveMode.prototype as unknown as {
 	handleHeartbeatCommand: (this: HeartbeatCommandContext, arg: string) => Promise<void>;
 	cancelHeartbeats: (this: HeartbeatCommandContext, count: number) => void;
+	cancelHeartbeatById: (this: HeartbeatCommandContext, id: number) => void;
 	listHeartbeats: (this: HeartbeatCommandContext) => void;
 	scheduleHeartbeat: (this: HeartbeatCommandContext, spec: string, text: string) => void;
 	armHeartbeat: (this: HeartbeatCommandContext, entry: HeartbeatEntry) => void;
@@ -76,6 +78,7 @@ describe("InteractiveMode /heartbeat command dispatch", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat: vi.fn(),
 			cancelHeartbeats,
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction: vi.fn(),
@@ -97,6 +100,7 @@ describe("InteractiveMode /heartbeat command dispatch", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat: vi.fn(),
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats,
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction: vi.fn(),
@@ -118,6 +122,7 @@ describe("InteractiveMode /heartbeat command dispatch", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat: vi.fn(),
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat,
 			deferOrRunScheduledAction: vi.fn(),
@@ -127,6 +132,52 @@ describe("InteractiveMode /heartbeat command dispatch", () => {
 		};
 		await heartbeatPrototype.handleHeartbeatCommand.call(context, "3h\ncheck the queue");
 		expect(scheduleHeartbeat).toHaveBeenCalledWith("3h", "check the queue");
+	});
+
+	it("lists active heartbeats for the list and l specs", async () => {
+		for (const spec of ["list", "l", "LIST"]) {
+			const listHeartbeats = vi.fn();
+			const context: HeartbeatCommandContext = {
+				showStatus: vi.fn(),
+				heartbeats: [],
+				nextHeartbeatId: 1,
+				session: { isStreaming: false, isCompacting: false },
+				armHeartbeat: vi.fn(),
+				cancelHeartbeats: vi.fn(),
+				cancelHeartbeatById: vi.fn(),
+				listHeartbeats,
+				scheduleHeartbeat: vi.fn(),
+				deferOrRunScheduledAction: vi.fn(),
+				deliverScheduledMessage: vi.fn(),
+				heartbeatDescription: heartbeatPrototype.heartbeatDescription,
+				nextHeartbeatFireTime: heartbeatPrototype.nextHeartbeatFireTime as (entry: HeartbeatEntry) => string,
+			};
+			await heartbeatPrototype.handleHeartbeatCommand.call(context, spec);
+			expect(listHeartbeats).toHaveBeenCalled();
+			expect(context.scheduleHeartbeat).not.toHaveBeenCalled();
+		}
+	});
+
+	it("cancels a heartbeat by id for a cancel <id> spec", async () => {
+		const cancelHeartbeatById = vi.fn();
+		const context: HeartbeatCommandContext = {
+			showStatus: vi.fn(),
+			heartbeats: [],
+			nextHeartbeatId: 1,
+			session: { isStreaming: false, isCompacting: false },
+			armHeartbeat: vi.fn(),
+			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById,
+			listHeartbeats: vi.fn(),
+			scheduleHeartbeat: vi.fn(),
+			deferOrRunScheduledAction: vi.fn(),
+			deliverScheduledMessage: vi.fn(),
+			heartbeatDescription: heartbeatPrototype.heartbeatDescription,
+			nextHeartbeatFireTime: heartbeatPrototype.nextHeartbeatFireTime as (entry: HeartbeatEntry) => string,
+		};
+		await heartbeatPrototype.handleHeartbeatCommand.call(context, "cancel 2");
+		expect(cancelHeartbeatById).toHaveBeenCalledWith(2);
+		expect(context.scheduleHeartbeat).not.toHaveBeenCalled();
 	});
 });
 
@@ -142,6 +193,7 @@ describe("InteractiveMode heartbeat scheduling", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat,
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction: vi.fn(),
@@ -167,6 +219,7 @@ describe("InteractiveMode heartbeat scheduling", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat: vi.fn(),
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction: vi.fn(),
@@ -190,6 +243,7 @@ describe("InteractiveMode heartbeat scheduling", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat: vi.fn(),
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction: vi.fn(),
@@ -200,7 +254,7 @@ describe("InteractiveMode heartbeat scheduling", () => {
 		heartbeatPrototype.scheduleHeartbeat.call(context, "2026-08-08 15:23", "wake");
 		expect(context.heartbeats).toHaveLength(0);
 		expect(showStatus).toHaveBeenCalledWith(
-			"Usage: /heartbeat [duration e.g. 3h | HH:MM[:SS]] with the message on the following line(s); no message = continue",
+			"Usage: /heartbeat [list | cancel <id> | -N | duration e.g. 3h | HH:MM[:SS]] with the message on the following line(s); no message = continue",
 		);
 	});
 });
@@ -215,6 +269,7 @@ describe("InteractiveMode heartbeat cancellation and listing", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat: vi.fn(),
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction: vi.fn(),
@@ -236,6 +291,7 @@ describe("InteractiveMode heartbeat cancellation and listing", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat: vi.fn(),
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction: vi.fn(),
@@ -247,6 +303,50 @@ describe("InteractiveMode heartbeat cancellation and listing", () => {
 		expect(showStatus).toHaveBeenCalledWith("No heartbeats to cancel");
 	});
 
+	it("cancels a heartbeat by id", () => {
+		const showStatus = vi.fn();
+		const context: HeartbeatCommandContext = {
+			showStatus,
+			heartbeats: [{ id: 1, text: "", intervalMs: 1000, dailyAt: null, isContinue: true }],
+			nextHeartbeatId: 1,
+			session: { isStreaming: false, isCompacting: false },
+			armHeartbeat: vi.fn(),
+			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
+			listHeartbeats: vi.fn(),
+			scheduleHeartbeat: vi.fn(),
+			deferOrRunScheduledAction: vi.fn(),
+			deliverScheduledMessage: vi.fn(),
+			heartbeatDescription: heartbeatPrototype.heartbeatDescription,
+			nextHeartbeatFireTime: heartbeatPrototype.nextHeartbeatFireTime as (entry: HeartbeatEntry) => string,
+		};
+		heartbeatPrototype.cancelHeartbeatById.call(context, 1);
+		expect(context.heartbeats).toHaveLength(0);
+		expect(showStatus).toHaveBeenCalledWith("Cancelled heartbeat 1");
+	});
+
+	it("shows status when cancelling an unknown heartbeat id", () => {
+		const showStatus = vi.fn();
+		const context: HeartbeatCommandContext = {
+			showStatus,
+			heartbeats: [],
+			nextHeartbeatId: 1,
+			session: { isStreaming: false, isCompacting: false },
+			armHeartbeat: vi.fn(),
+			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
+			listHeartbeats: vi.fn(),
+			scheduleHeartbeat: vi.fn(),
+			deferOrRunScheduledAction: vi.fn(),
+			deliverScheduledMessage: vi.fn(),
+			heartbeatDescription: heartbeatPrototype.heartbeatDescription,
+			nextHeartbeatFireTime: heartbeatPrototype.nextHeartbeatFireTime as (entry: HeartbeatEntry) => string,
+		};
+		heartbeatPrototype.cancelHeartbeatById.call(context, 99);
+		expect(context.heartbeats).toHaveLength(0);
+		expect(showStatus).toHaveBeenCalledWith("No heartbeat with id 99");
+	});
+
 	it("lists active heartbeats with schedule and next fire time", () => {
 		const showStatus = vi.fn();
 		const context: HeartbeatCommandContext = {
@@ -256,6 +356,7 @@ describe("InteractiveMode heartbeat cancellation and listing", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat: vi.fn(),
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction: vi.fn(),
@@ -266,7 +367,7 @@ describe("InteractiveMode heartbeat cancellation and listing", () => {
 		heartbeatPrototype.listHeartbeats.call(context);
 		expect(showStatus).toHaveBeenCalled();
 		const message = showStatus.mock.calls[0][0] as string;
-		expect(message).toMatch(/^Heartbeat 1: every 1s \(next /);
+		expect(message).toMatch(/^Active heartbeats:\n {2}1: every 1s - continue \(next /);
 	});
 });
 
@@ -283,6 +384,7 @@ describe("InteractiveMode heartbeat firing", () => {
 			session: { isStreaming: true, isCompacting: false },
 			armHeartbeat,
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction,
@@ -308,6 +410,7 @@ describe("InteractiveMode heartbeat firing", () => {
 			session: { isStreaming: false, isCompacting: true },
 			armHeartbeat,
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction,
@@ -333,6 +436,7 @@ describe("InteractiveMode heartbeat firing", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat,
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction,
@@ -358,6 +462,7 @@ describe("InteractiveMode heartbeat firing", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat,
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction,
@@ -380,6 +485,7 @@ describe("InteractiveMode heartbeat firing", () => {
 			session: { isStreaming: false, isCompacting: false },
 			armHeartbeat,
 			cancelHeartbeats: vi.fn(),
+			cancelHeartbeatById: vi.fn(),
 			listHeartbeats: vi.fn(),
 			scheduleHeartbeat: vi.fn(),
 			deferOrRunScheduledAction: vi.fn(),

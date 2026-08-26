@@ -1,5 +1,9 @@
-import { describe, expect, test } from "vitest";
-import { parseScheduleWhen } from "../src/modes/interactive/interactive-mode.ts";
+import { describe, expect, test, vi } from "vitest";
+import {
+	InteractiveMode,
+	parseScheduleWhen,
+	type ScheduledMessage,
+} from "../src/modes/interactive/interactive-mode.ts";
 
 describe("parseScheduleWhen", () => {
 	test("empty spec schedules for when the current task completes", () => {
@@ -143,5 +147,182 @@ describe("parseScheduleWhen", () => {
 		expect(parseScheduleWhen("5x")).toBeUndefined();
 		expect(parseScheduleWhen("1h tomorrow")).toBeUndefined();
 		expect(parseScheduleWhen("hello world")).toBeUndefined();
+	});
+});
+
+type ScheduleCommandContext = {
+	showStatus: (message: string) => void;
+	scheduledMessages: ScheduledMessage[];
+	nextScheduleId: number;
+	session: { isIdle: boolean };
+	cancelScheduledMessages: (count: number) => void;
+	cancelScheduledMessageById: (id: number) => void;
+	listScheduledMessages: () => void;
+	scheduledMessageDescription: (entry: ScheduledMessage) => string;
+	quotedListText: (text: string) => string;
+	deliverScheduledEntry: (entry: ScheduledMessage) => void;
+};
+
+const schedulePrototype = InteractiveMode.prototype as unknown as {
+	handleScheduleCommand: (this: ScheduleCommandContext, arg: string) => Promise<void>;
+	listScheduledMessages: (this: ScheduleCommandContext) => void;
+	cancelScheduledMessageById: (this: ScheduleCommandContext, id: number) => void;
+	scheduledMessageDescription: (this: ScheduleCommandContext, entry: ScheduledMessage) => string;
+	quotedListText: (this: ScheduleCommandContext, text: string) => string;
+};
+
+describe("InteractiveMode /schedule command dispatch", () => {
+	test("cancels the last N scheduled messages for a -N spec", async () => {
+		const cancelScheduledMessages = vi.fn();
+		const context: ScheduleCommandContext = {
+			showStatus: vi.fn(),
+			scheduledMessages: [],
+			nextScheduleId: 1,
+			session: { isIdle: true },
+			cancelScheduledMessages,
+			cancelScheduledMessageById: vi.fn(),
+			listScheduledMessages: vi.fn(),
+			scheduledMessageDescription: schedulePrototype.scheduledMessageDescription as (
+				entry: ScheduledMessage,
+			) => string,
+			quotedListText: schedulePrototype.quotedListText as (text: string) => string,
+			deliverScheduledEntry: vi.fn(),
+		};
+		await schedulePrototype.handleScheduleCommand.call(context, "-2");
+		expect(cancelScheduledMessages).toHaveBeenCalledWith(2);
+	});
+
+	test("lists scheduled messages for the list and l specs", async () => {
+		for (const spec of ["list", "l", "LIST"]) {
+			const listScheduledMessages = vi.fn();
+			const context: ScheduleCommandContext = {
+				showStatus: vi.fn(),
+				scheduledMessages: [],
+				nextScheduleId: 1,
+				session: { isIdle: true },
+				cancelScheduledMessages: vi.fn(),
+				cancelScheduledMessageById: vi.fn(),
+				listScheduledMessages,
+				scheduledMessageDescription: schedulePrototype.scheduledMessageDescription as (
+					entry: ScheduledMessage,
+				) => string,
+				quotedListText: schedulePrototype.quotedListText as (text: string) => string,
+				deliverScheduledEntry: vi.fn(),
+			};
+			await schedulePrototype.handleScheduleCommand.call(context, spec);
+			expect(listScheduledMessages).toHaveBeenCalled();
+		}
+	});
+
+	test("cancels a scheduled message by id for a cancel <id> spec", async () => {
+		const cancelScheduledMessageById = vi.fn();
+		const context: ScheduleCommandContext = {
+			showStatus: vi.fn(),
+			scheduledMessages: [],
+			nextScheduleId: 1,
+			session: { isIdle: true },
+			cancelScheduledMessages: vi.fn(),
+			cancelScheduledMessageById,
+			listScheduledMessages: vi.fn(),
+			scheduledMessageDescription: schedulePrototype.scheduledMessageDescription as (
+				entry: ScheduledMessage,
+			) => string,
+			quotedListText: schedulePrototype.quotedListText as (text: string) => string,
+			deliverScheduledEntry: vi.fn(),
+		};
+		await schedulePrototype.handleScheduleCommand.call(context, "cancel 3");
+		expect(cancelScheduledMessageById).toHaveBeenCalledWith(3);
+	});
+});
+
+describe("InteractiveMode scheduled message listing and id cancellation", () => {
+	test("lists no scheduled messages", () => {
+		const showStatus = vi.fn();
+		const context: ScheduleCommandContext = {
+			showStatus,
+			scheduledMessages: [],
+			nextScheduleId: 1,
+			session: { isIdle: true },
+			cancelScheduledMessages: vi.fn(),
+			cancelScheduledMessageById: vi.fn(),
+			listScheduledMessages: vi.fn(),
+			scheduledMessageDescription: schedulePrototype.scheduledMessageDescription as (
+				entry: ScheduledMessage,
+			) => string,
+			quotedListText: schedulePrototype.quotedListText as (text: string) => string,
+			deliverScheduledEntry: vi.fn(),
+		};
+		schedulePrototype.listScheduledMessages.call(context);
+		expect(showStatus).toHaveBeenCalledWith("No scheduled messages");
+	});
+
+	test("lists scheduled messages with id, action, and trigger", () => {
+		const showStatus = vi.fn();
+		const context: ScheduleCommandContext = {
+			showStatus,
+			scheduledMessages: [
+				{ id: 1, text: "", when: { type: "settled" }, isContinue: true },
+				{ id: 2, text: "check", when: { type: "time", at: Date.now() + 60_000 } },
+			],
+			nextScheduleId: 3,
+			session: { isIdle: true },
+			cancelScheduledMessages: vi.fn(),
+			cancelScheduledMessageById: vi.fn(),
+			listScheduledMessages: vi.fn(),
+			scheduledMessageDescription: schedulePrototype.scheduledMessageDescription as (
+				entry: ScheduledMessage,
+			) => string,
+			quotedListText: schedulePrototype.quotedListText as (text: string) => string,
+			deliverScheduledEntry: vi.fn(),
+		};
+		schedulePrototype.listScheduledMessages.call(context);
+		expect(showStatus).toHaveBeenCalled();
+		const message = showStatus.mock.calls[0][0] as string;
+		expect(message).toContain("Scheduled messages:");
+		expect(message).toContain("1: continue when the current task completes");
+		expect(message).toContain('2: message "check" for ');
+	});
+
+	test("cancels a scheduled message by id", () => {
+		const showStatus = vi.fn();
+		const entry: ScheduledMessage = { id: 1, text: "", when: { type: "settled" }, isContinue: true };
+		const context: ScheduleCommandContext = {
+			showStatus,
+			scheduledMessages: [entry],
+			nextScheduleId: 2,
+			session: { isIdle: true },
+			cancelScheduledMessages: vi.fn(),
+			cancelScheduledMessageById: vi.fn(),
+			listScheduledMessages: vi.fn(),
+			scheduledMessageDescription: schedulePrototype.scheduledMessageDescription as (
+				entry: ScheduledMessage,
+			) => string,
+			quotedListText: schedulePrototype.quotedListText as (text: string) => string,
+			deliverScheduledEntry: vi.fn(),
+		};
+		schedulePrototype.cancelScheduledMessageById.call(context, 1);
+		expect(context.scheduledMessages).toHaveLength(0);
+		expect(showStatus).toHaveBeenCalledWith("Cancelled scheduled message 1");
+	});
+
+	test("shows status when cancelling an unknown scheduled message id", () => {
+		const showStatus = vi.fn();
+		const context: ScheduleCommandContext = {
+			showStatus,
+			scheduledMessages: [],
+			nextScheduleId: 1,
+			session: { isIdle: true },
+			cancelScheduledMessages: vi.fn(),
+			cancelScheduledMessageById: vi.fn(),
+			listScheduledMessages: vi.fn(),
+			scheduledMessageDescription: schedulePrototype.scheduledMessageDescription as (
+				entry: ScheduledMessage,
+			) => string,
+			quotedListText: schedulePrototype.quotedListText as (text: string) => string,
+			deliverScheduledEntry: vi.fn(),
+		};
+		schedulePrototype.cancelScheduledMessageById.call(context, 99);
+		expect(context.scheduledMessages).toHaveLength(0);
+		expect(showStatus).toHaveBeenCalledWith("No scheduled message with id 99");
 	});
 });

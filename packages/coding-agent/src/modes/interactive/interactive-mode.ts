@@ -5509,10 +5509,21 @@ export class InteractiveMode {
 			return;
 		}
 
+		if (/^(?:list|l)$/i.test(spec)) {
+			this.listScheduledMessages();
+			return;
+		}
+
+		const cancelMatch = spec.match(/^cancel\s+(\d+)$/i);
+		if (cancelMatch) {
+			this.cancelScheduledMessageById(Number.parseInt(cancelMatch[1], 10));
+			return;
+		}
+
 		const when = parseScheduleWhen(spec);
 		if (!when) {
 			this.showStatus(
-				"Usage: /schedule [-N | N | duration e.g. 1h 30m | [YYYY-MM-DD ]HH:MM[:SS]] with the message on the following line(s); no message = continue",
+				"Usage: /schedule [-N | cancel <id> | list | N | duration e.g. 1h 30m | [YYYY-MM-DD ]HH:MM[:SS]] with the message on the following line(s); no message = continue",
 			);
 			return;
 		}
@@ -5566,6 +5577,51 @@ export class InteractiveMode {
 			return;
 		}
 		this.showStatus(`Cancelled ${removed} scheduled ${removed === 1 ? "message" : "messages"}`);
+	}
+
+	/** List active scheduled messages in status (id, action, trigger). */
+	private listScheduledMessages(): void {
+		if (this.scheduledMessages.length === 0) {
+			this.showStatus("No scheduled messages");
+			return;
+		}
+		const lines = this.scheduledMessages.map((entry) => `  ${entry.id}: ${this.scheduledMessageDescription(entry)}`);
+		this.showStatus(`Scheduled messages:\n${lines.join("\n")}`);
+	}
+
+	/** Cancel one scheduled message by the id shown by /schedule list. */
+	private cancelScheduledMessageById(id: number): void {
+		const index = this.scheduledMessages.findIndex((entry) => entry.id === id);
+		if (index === -1) {
+			this.showStatus(`No scheduled message with id ${id}`);
+			return;
+		}
+		const [entry] = this.scheduledMessages.splice(index, 1);
+		if (entry.timer) clearTimeout(entry.timer);
+		this.showStatus(`Cancelled scheduled message ${id}`);
+	}
+
+	/** Action and trigger summary for a scheduled message entry. */
+	private scheduledMessageDescription(entry: ScheduledMessage): string {
+		const action = entry.isEdit
+			? "edit and continue"
+			: entry.isContinue
+				? "continue"
+				: `message ${this.quotedListText(entry.text)}`;
+		const when =
+			entry.when.type === "messages"
+				? `after ${entry.when.remaining} message${entry.when.remaining === 1 ? "" : "s"}`
+				: entry.when.type === "time"
+					? `for ${formatScheduledTime(entry.when.at)}`
+					: "when the current task completes";
+		return `${action} ${when}`;
+	}
+
+	/** Compact one-line rendering of a message payload for list output. */
+	private quotedListText(text: string): string {
+		const flat = text.replace(/\s+/g, " ").trim();
+		const visible = flat.length > 40 ? `${flat.slice(0, 37)}...` : flat;
+		return `"${visible}"`;
 	}
 
 	private fireScheduledMessage(id: number): void {
@@ -5701,9 +5757,15 @@ export class InteractiveMode {
 			return;
 		}
 
-		// No arguments and no message lists active heartbeats.
-		if (spec === "") {
+		// No arguments, `list`, or `l` lists active heartbeats.
+		if (spec === "" || /^(?:list|l)$/i.test(spec)) {
 			this.listHeartbeats();
+			return;
+		}
+
+		const cancelMatch = spec.match(/^cancel\s+(\d+)$/i);
+		if (cancelMatch) {
+			this.cancelHeartbeatById(Number.parseInt(cancelMatch[1], 10));
 			return;
 		}
 
@@ -5715,7 +5777,7 @@ export class InteractiveMode {
 		const schedule = parseHeartbeatSpec(spec);
 		if (!schedule) {
 			this.showStatus(
-				"Usage: /heartbeat [duration e.g. 3h | HH:MM[:SS]] with the message on the following line(s); no message = continue",
+				"Usage: /heartbeat [list | cancel <id> | -N | duration e.g. 3h | HH:MM[:SS]] with the message on the following line(s); no message = continue",
 			);
 			return;
 		}
@@ -5750,17 +5812,29 @@ export class InteractiveMode {
 		this.showStatus(`Cancelled ${removed} heartbeat${removed === 1 ? "" : "s"}`);
 	}
 
-	/** List active heartbeats in status (id, spec, next fire time). */
+	/** Cancel one heartbeat by the id shown by /heartbeat list. */
+	private cancelHeartbeatById(id: number): void {
+		const index = this.heartbeats.findIndex((entry) => entry.id === id);
+		if (index === -1) {
+			this.showStatus(`No heartbeat with id ${id}`);
+			return;
+		}
+		const [entry] = this.heartbeats.splice(index, 1);
+		if (entry.timer) clearTimeout(entry.timer);
+		this.showStatus(`Cancelled heartbeat ${id}`);
+	}
+
+	/** List active heartbeats in status (id, spec, action, next fire time). */
 	private listHeartbeats(): void {
 		if (this.heartbeats.length === 0) {
 			this.showStatus("No active heartbeats");
 			return;
 		}
-		for (const entry of this.heartbeats) {
-			this.showStatus(
-				`Heartbeat ${entry.id}: ${this.heartbeatDescription(entry)} (next ${this.nextHeartbeatFireTime(entry)})`,
-			);
-		}
+		const lines = this.heartbeats.map((entry) => {
+			const action = entry.isContinue ? "continue" : `message ${this.quotedListText(entry.text)}`;
+			return `  ${entry.id}: ${this.heartbeatDescription(entry)} - ${action} (next ${this.nextHeartbeatFireTime(entry)})`;
+		});
+		this.showStatus(`Active heartbeats:\n${lines.join("\n")}`);
 	}
 
 	/** Text description of a heartbeat entry's schedule. */
