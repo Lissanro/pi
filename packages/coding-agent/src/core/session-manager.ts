@@ -71,6 +71,9 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	summary: string;
 	firstKeptEntryId: string;
 	tokensBefore: number;
+	/** Exact token count of the summary from the model's tokenizer, when known.
+	 * Used by the summaries-block limit; falls back to a chars/4 estimate when absent. */
+	summaryTokens?: number;
 	/** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
 	details?: T;
 	/** Usage from the LLM call(s) that generated this summary, if available */
@@ -331,11 +334,12 @@ export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEnt
 export const DEFAULT_SUMMARY_BLOCK_MAX_TOKENS = 16384;
 
 /**
- * Estimate the token count of a compaction summary for the summaries-block limit.
- * Mirrors estimateTokens() in compaction.ts for the compactionSummary role.
+ * Token count of a compaction summary for the summaries-block limit. Prefers the
+ * exact count recorded from the model's tokenizer; falls back to the chars/4
+ * estimate (mirroring estimateTokens() in compaction.ts) when it is unknown.
  */
 function estimateCompactionSummaryTokens(entry: CompactionEntry): number {
-	return Math.ceil(entry.summary.length / 4);
+	return entry.summaryTokens ?? Math.ceil(entry.summary.length / 4);
 }
 
 /**
@@ -1162,6 +1166,7 @@ export class SessionManager {
 		details?: T,
 		fromHook?: boolean,
 		usage?: Usage,
+		summaryTokens?: number,
 	): string {
 		const entry: CompactionEntry<T> = {
 			type: "compaction",
@@ -1174,6 +1179,7 @@ export class SessionManager {
 			details,
 			usage,
 			fromHook,
+			summaryTokens,
 		};
 		this._appendEntry(entry);
 		return entry.id;
@@ -1350,6 +1356,7 @@ export class SessionManager {
 						tokensBefore: e.tokensBefore,
 						details: e.details,
 						fromHook: e.fromHook,
+						summaryTokens: e.summaryTokens,
 					};
 					this._appendEntry(entry);
 					id = entry.id;

@@ -80,6 +80,10 @@ On repeated compactions, each new compaction summarizes only the messages being 
 
 The summarization request stays byte-identical to the normal chat prefix (system prompt plus the summaries block and the messages being cut, minus the preserved tail) so the provider KV cache is reused; only the summarization instruction is appended at the end.
 
+### Token counting
+
+Compaction token counts use the model's own tokenizer when the server exposes it: each generated summary is counted via the server's `POST /tokenize` endpoint and the result is stored on the `CompactionEntry` (`summaryTokens`), and the full post-compaction context (system prompt + summaries + kept messages) is tokenized so the footer shows the real context size immediately after compaction (the provider's own usage report only arrives with the next assistant response). For servers without `/tokenize` (OpenAI, Anthropic, most hosted APIs) the counts fall back to a chars/4 estimate and the footer shows `?` (unknown) until that next response.
+
 ### Split Turns
 
 A "turn" starts with a user message and includes all assistant responses and tool calls until the next user message. Normally, compaction cuts at turn boundaries.

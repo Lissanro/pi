@@ -5,6 +5,7 @@ import {
 	buildSessionContext,
 	type CompactionEntry,
 	type CustomEntry,
+	filterSummariesToBlockLimit,
 	type ModelChangeEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
@@ -48,6 +49,16 @@ function compaction(id: string, parentId: string | null, summary: string, firstK
 		firstKeptEntryId,
 		tokensBefore: 1000,
 	};
+}
+
+function compactionWithTokens(
+	id: string,
+	parentId: string | null,
+	summary: string,
+	firstKeptEntryId: string,
+	summaryTokens: number,
+): CompactionEntry {
+	return { ...compaction(id, parentId, summary, firstKeptEntryId), summaryTokens };
 }
 
 function branchSummary(id: string, parentId: string | null, summary: string, fromId: string): BranchSummaryEntry {
@@ -341,5 +352,38 @@ describe("buildSessionContext", () => {
 			// Should only get the orphan since parent chain is broken
 			expect(ctx.messages).toHaveLength(1);
 		});
+	});
+});
+
+describe("filterSummariesToBlockLimit", () => {
+	it("uses summaryTokens (model tokenizer) over the chars/4 estimate", () => {
+		// A 40-char summary is ~10 tokens by chars/4, but its real tokenizer count
+		// is 1000. The limit of 500 must drop it only by real count, keeping the
+		// small second summary (real count 10).
+		const first = compactionWithTokens("1", null, "f".repeat(40), "x", 1000);
+		const second = compactionWithTokens("2", "1", "s".repeat(40), "x", 10);
+		// limit 500: 1000 + 10 = 1010 > 500 -> drop oldest (first), keep second (10 <= 500)
+		expect(filterSummariesToBlockLimit([first, second], 500).map((c) => c.id)).toEqual(["2"]);
+		// By chars/4 (10 + 10 = 20) both would fit a limit of 500 - so real count matters.
+		expect(filterSummariesToBlockLimit([first, second], 5000).map((c) => c.id)).toEqual(["1", "2"]);
+	});
+
+	it("falls back to chars/4 when summaryTokens is absent", () => {
+		// 400 chars ~ 100 tokens by estimate. Limit 50 drops the first, keeps the
+		// most recent (a 40-char summary ~ 10 tokens) even though its real count is
+		// unknown.
+		const first = compaction("1", null, "f".repeat(400), "x");
+		const second = compaction("2", "1", "s".repeat(40), "x");
+		expect(filterSummariesToBlockLimit([first, second], 50).map((c) => c.id)).toEqual(["2"]);
+	});
+
+	it("always keeps at least the most recent summary", () => {
+		// A single summary larger than the limit is still kept.
+		const only = compactionWithTokens("1", null, "f".repeat(40), "x", 5000);
+		expect(filterSummariesToBlockLimit([only], 100).map((c) => c.id)).toEqual(["1"]);
+		// limit 0 keeps only the most recent.
+		const a = compactionWithTokens("a", null, "a", "x", 10);
+		const b = compactionWithTokens("b", "a", "b", "x", 10);
+		expect(filterSummariesToBlockLimit([a, b], 0).map((c) => c.id)).toEqual(["b"]);
 	});
 });

@@ -104,7 +104,8 @@ export class FooterComponent implements Component {
 		}
 
 		// Calculate context usage from session (handles compaction correctly).
-		// After compaction, tokens are unknown until the next LLM response.
+		// After compaction the count comes from the /tokenize count when the server
+		// exposes it, otherwise it is "?" until the next LLM response reports usage.
 		const contextUsage = this.session.getContextUsage();
 		const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
 		const contextPercentValue = contextUsage?.percent ?? 0;

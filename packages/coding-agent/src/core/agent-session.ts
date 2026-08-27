@@ -26,7 +26,7 @@ import {
 	stripTrailingHarnessMessages,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText } from "@earendil-works/pi-ai";
+import { contentText, countTokens } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -368,6 +368,13 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	/**
+	 * Exact-ish token count of the post-compaction context (system prompt +
+	 * summaries + kept messages) from the model's /tokenize endpoint, when
+	 * available. Shown in the footer until the next assistant response reports
+	 * real usage. Undefined when the server has no /tokenize (footer shows "?").
+	 */
+	private _postCompactionContextTokens: number | undefined = undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -2243,6 +2250,87 @@ export class AgentSession {
 	}
 
 	/**
+	 * Record a finished compaction with real token counts.
+	 *
+	 * Tokenizes the summary (for the summaries-block limit) and the full
+	 * post-compaction context (for the footer) via the model's `/tokenize`
+	 * endpoint when available, appends the compaction entry, and rebuilds the
+	 * context. All tokenization is best-effort: any failure leaves the counts
+	 * undefined so the chars/4 estimate and the footer "?" remain the fallback.
+	 */
+	private async _finalizeCompaction(
+		summary: string,
+		firstKeptEntryId: string,
+		tokensBefore: number,
+		details: unknown,
+		fromExtension: boolean,
+		usage: Usage | undefined,
+		signal?: AbortSignal,
+	): Promise<{ newEntries: SessionEntry[]; estimatedTokensAfter: number }> {
+		type RequestAuth = {
+			model: Model<any>;
+			apiKey?: string;
+			headers?: Record<string, string>;
+			env?: Record<string, string>;
+		};
+		let auth: RequestAuth | undefined;
+		if (this.model) {
+			try {
+				auth = await this._getSummarizationRequestAuth(this.model);
+			} catch {
+				auth = undefined;
+			}
+		}
+
+		let summaryTokens: number | undefined;
+		if (auth) {
+			summaryTokens = await countTokens(auth.model, {
+				text: summary,
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				env: auth.env,
+				signal,
+			});
+		}
+
+		this.sessionManager.appendCompaction(
+			summary,
+			firstKeptEntryId,
+			tokensBefore,
+			details,
+			fromExtension,
+			usage,
+			summaryTokens,
+		);
+		const newEntries = this.sessionManager.getEntries();
+		const sessionContext = this.sessionManager.buildSessionContext();
+		this.agent.state.messages = sessionContext.messages;
+		const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
+
+		let contextTokens: number | undefined;
+		if (auth) {
+			try {
+				const llmMessages = await this.agent.convertToLlm(sessionContext.messages);
+				const fullText = [this.agent.state.systemPrompt, ...llmMessages.map((m) => contentText(m.content))].join(
+					"\n",
+				);
+				contextTokens = await countTokens(auth.model, {
+					text: fullText,
+					apiKey: auth.apiKey,
+					headers: auth.headers,
+					env: auth.env,
+					signal,
+				});
+			} catch {
+				contextTokens = undefined;
+			}
+		}
+		this._postCompactionContextTokens = contextTokens;
+
+		return { newEntries, estimatedTokensAfter };
+	}
+
+	/**
 	 * Manually compact the session context.
 	 *
 	 * This is the manual entry point used by `/compact`, RPC, and extensions. It is
@@ -2347,11 +2435,15 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
+			const { newEntries, estimatedTokensAfter } = await this._finalizeCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+				this._compactionAbortController.signal,
+			);
 
 			// Get the saved compaction entry for the extension event
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -2673,11 +2765,15 @@ export class AgentSession {
 				return false;
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
+			const { newEntries, estimatedTokensAfter } = await this._finalizeCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+				this._autoCompactionAbortController.signal,
+			);
 
 			// Get the saved compaction entry for the extension event
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -3859,6 +3955,16 @@ export class AgentSession {
 			}
 
 			if (!hasPostCompactionUsage) {
+				// Right after compaction there is no post-compaction usage yet. If the
+				// model server exposed /tokenize we recorded an exact-ish count of the
+				// new context; show it until the next assistant response reports usage.
+				if (this._postCompactionContextTokens !== undefined && this._postCompactionContextTokens > 0) {
+					return {
+						tokens: this._postCompactionContextTokens,
+						contextWindow,
+						percent: (this._postCompactionContextTokens / contextWindow) * 100,
+					};
+				}
 				return { tokens: null, contextWindow, percent: null };
 			}
 		}
