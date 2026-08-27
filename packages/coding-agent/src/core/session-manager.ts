@@ -322,6 +322,48 @@ export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEnt
 	return null;
 }
 
+/**
+ * Default maximum total tokens allowed for the compaction summaries block in the
+ * post-compaction prefix. A generous limit lets many summaries coexist in the
+ * context (each one preserves older history without re-summarization loss); 0
+ * selects the pre-feature behavior of keeping only the most recent summary.
+ */
+export const DEFAULT_SUMMARY_BLOCK_MAX_TOKENS = 16384;
+
+/**
+ * Estimate the token count of a compaction summary for the summaries-block limit.
+ * Mirrors estimateTokens() in compaction.ts for the compactionSummary role.
+ */
+function estimateCompactionSummaryTokens(entry: CompactionEntry): number {
+	return Math.ceil(entry.summary.length / 4);
+}
+
+/**
+ * Filter compaction entries to fit the summaries-block token limit.
+ *
+ * The summaries are kept oldest-first. When their combined estimated tokens exceed
+ * `maxTokens`, the OLDEST summaries are dropped until the block fits, always
+ * preserving at least the most recent summary. A limit of 0 keeps only the most
+ * recent summary (the pre-feature single-summary behavior). `undefined`/`null`
+ * keeps all summaries (no limit).
+ */
+export function filterSummariesToBlockLimit(
+	compactions: CompactionEntry[],
+	maxTokens: number | undefined,
+): CompactionEntry[] {
+	if (maxTokens == null) return compactions;
+	if (compactions.length === 0) return compactions;
+	if (maxTokens <= 0) return [compactions[compactions.length - 1]];
+	const kept = compactions.slice();
+	const sizes = kept.map(estimateCompactionSummaryTokens);
+	let total = sizes.reduce((a, b) => a + b, 0);
+	while (total > maxTokens && kept.length > 1) {
+		total -= sizes.shift()!;
+		kept.shift();
+	}
+	return kept;
+}
+
 function buildEntryIndex(entries: SessionEntry[], byId?: Map<string, SessionEntry>): Map<string, SessionEntry> {
 	if (byId) return byId;
 	const index = new Map<string, SessionEntry>();
@@ -407,59 +449,58 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	return [];
 }
 
+export interface BuildContextOptions {
+	/** Maximum total tokens allowed for the summaries block in the prefix; 0 keeps
+	 * only the most recent summary, undefined keeps all. Applied to every
+	 * compaction summary so the LLM view and TUI stay consistent. */
+	summaryBlockMaxTokens?: number;
+}
+
 /**
  * Build the active, compaction-aware session entry list.
  *
- * This follows the current leaf path. If the path contains compaction entries,
- * the latest compaction is represented by the compaction entry itself, followed
- * by the kept entries starting at firstKeptEntryId and all entries after the
- * compaction entry. Older summarized entries are omitted.
+ * This follows the current leaf path. When the path contains compaction entries,
+ * ALL of them are represented (oldest first) as the summaries block, followed by
+ * the entries kept verbatim starting at the latest compaction's firstKeptEntryId
+ * and everything after it. Summarized entries older than the latest kept range
+ * are omitted (they live only inside the summaries).
  */
 export function buildContextEntries(
 	entries: SessionEntry[],
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
+	options?: BuildContextOptions,
 ): SessionEntry[] {
 	const path = buildSessionPath(entries, leafId, byId);
-	let compaction: CompactionEntry | null = null;
-
+	const compactions: CompactionEntry[] = [];
 	for (const entry of path) {
 		if (entry.type === "compaction") {
-			compaction = entry;
+			compactions.push(entry);
 		}
 	}
-
-	if (!compaction) {
+	if (compactions.length === 0) {
 		return path;
 	}
 
-	const compactionIdx = path.findIndex((entry) => entry.id === compaction.id);
-	if (compactionIdx < 0) {
-		return path;
+	const latestCompaction = compactions[compactions.length - 1];
+	const visibleCompactions = filterSummariesToBlockLimit(compactions, options?.summaryBlockMaxTokens);
+
+	let keptStart = path.findIndex((entry) => entry.id === latestCompaction.firstKeptEntryId);
+	if (keptStart < 0) {
+		// Corrupt/missing firstKeptEntryId: keep everything after the first
+		// compaction so no verbatim history is lost.
+		keptStart = 0;
 	}
 
-	// Entries kept verbatim after the previous compaction (the kept range),
-	// from firstKeptEntryId up to (but not including) the compaction entry.
-	const keptRangeIds = new Set<string>();
-	let foundFirstKept = false;
-	for (let i = 0; i < compactionIdx; i++) {
-		const entry = path[i];
-		if (entry.id === compaction.firstKeptEntryId) {
-			foundFirstKept = true;
-		}
-		if (foundFirstKept) {
-			keptRangeIds.add(entry.id);
-		}
-	}
-
-	const contextEntries: SessionEntry[] = [];
-	contextEntries.push(compaction);
-	for (let i = 0; i < compactionIdx; i++) {
-		if (keptRangeIds.has(path[i].id)) {
+	// Entries kept verbatim: every non-compaction entry from the latest
+	// compaction's firstKeptEntryId to the end of the path. Compaction entries
+	// are excluded here because they are represented by the summaries block.
+	const contextEntries: SessionEntry[] = [...visibleCompactions];
+	for (let i = keptStart; i < path.length; i++) {
+		if (path[i].type !== "compaction") {
 			contextEntries.push(path[i]);
 		}
 	}
-	contextEntries.push(...path.slice(compactionIdx + 1));
 	return contextEntries;
 }
 
@@ -472,10 +513,11 @@ export function buildSessionContext(
 	entries: SessionEntry[],
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
+	options?: BuildContextOptions,
 ): SessionContext {
 	const path = buildSessionPath(entries, leafId, byId);
 	const { thinkingLevel, model } = getSessionContextSettings(path);
-	const messages = buildContextEntries(entries, leafId, byId).flatMap(sessionEntryToContextMessages);
+	const messages = buildContextEntries(entries, leafId, byId, options).flatMap(sessionEntryToContextMessages);
 	return { messages, thinkingLevel, model };
 }
 
@@ -874,6 +916,15 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	/** Max tokens for the compaction summaries block in the prefix (see
+	 * BuildContextOptions.summaryBlockMaxTokens). Settable by the session owner. */
+	private summaryBlockMaxTokens: number = DEFAULT_SUMMARY_BLOCK_MAX_TOKENS;
+
+	/** Set the maximum total tokens allowed for the compaction summaries block in
+	 * the context prefix. Pass undefined to keep all summaries. */
+	setSummaryBlockMaxTokens(tokens: number | undefined): void {
+		this.summaryBlockMaxTokens = tokens ?? DEFAULT_SUMMARY_BLOCK_MAX_TOKENS;
+	}
 
 	private constructor(
 		cwd: string,
@@ -1379,7 +1430,9 @@ export class SessionManager {
 	 * Uses tree traversal from current leaf.
 	 */
 	buildContextEntries(): SessionEntry[] {
-		return buildContextEntries(this.getEntries(), this.leafId, this.byId);
+		return buildContextEntries(this.getEntries(), this.leafId, this.byId, {
+			summaryBlockMaxTokens: this.summaryBlockMaxTokens,
+		});
 	}
 
 	/**
@@ -1387,7 +1440,9 @@ export class SessionManager {
 	 * Uses tree traversal from current leaf.
 	 */
 	buildSessionContext(): SessionContext {
-		return buildSessionContext(this.getEntries(), this.leafId, this.byId);
+		return buildSessionContext(this.getEntries(), this.leafId, this.byId, {
+			summaryBlockMaxTokens: this.summaryBlockMaxTokens,
+		});
 	}
 
 	/**

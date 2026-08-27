@@ -437,6 +437,9 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
+		// Keep the session's summaries-block limit in sync with the configured value so
+		// the LLM context and TUI views agree on which summaries are visible.
+		this.sessionManager.setSummaryBlockMaxTokens(this.settingsManager.getSummaryBlockMaxTokens());
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
@@ -3137,6 +3140,7 @@ export class AgentSession {
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 		oldRunner.invalidate();
 		await this.settingsManager.reload();
+		this.sessionManager.setSummaryBlockMaxTokens(this.settingsManager.getSummaryBlockMaxTokens());
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
 		await this._resourceLoader.reload();

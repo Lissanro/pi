@@ -159,7 +159,7 @@ describe("buildSessionContext", () => {
 			expect((ctx.messages[0] as any).summary).toContain("Empty summary");
 		});
 
-		it("multiple compactions uses latest", () => {
+		it("multiple compactions keeps all summaries oldest-first, then the kept tail", () => {
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "a"),
 				msg("2", "1", "assistant", "b"),
@@ -171,9 +171,49 @@ describe("buildSessionContext", () => {
 			];
 			const ctx = buildSessionContext(entries);
 
-			// Should use second summary, keep from 4
-			expect(ctx.messages).toHaveLength(4);
-			expect((ctx.messages[0] as any).summary).toContain("Second summary");
+			// Both summaries in order, then the kept tail from 4.
+			expect(ctx.messages).toHaveLength(5);
+			expect((ctx.messages[0] as any).summary).toContain("First summary");
+			expect((ctx.messages[1] as any).summary).toContain("Second summary");
+			expect((ctx.messages[2] as any).content).toBe("c");
+			expect((ctx.messages[4] as any).content).toBe("e");
+		});
+
+		it("summary block limit keeps only the most recent summary when 0", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "a"),
+				compaction("3", "1", "First summary", "1"),
+				msg("4", "3", "user", "c"),
+				compaction("6", "4", "Second summary", "4"),
+				msg("7", "6", "user", "e"),
+			];
+			const ctx = buildSessionContext(entries, undefined, undefined, { summaryBlockMaxTokens: 0 });
+
+			// Only the most recent summary survives; the oldest is dropped from the view.
+			expect(ctx.messages.map((m) => (m as any).summary).filter(Boolean)).toEqual(["Second summary"]);
+		});
+
+		it("summary block limit drops oldest summaries to fit a token budget", () => {
+			// Long first summary (~1 token per 4 chars), short second summary.
+			const first = "F".repeat(400); // ~100 tokens
+			const second = "S".repeat(40); // ~10 tokens
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "a"),
+				compaction("3", "1", first, "1"),
+				msg("4", "3", "user", "c"),
+				compaction("6", "4", second, "4"),
+				msg("7", "6", "user", "e"),
+			];
+			// Budget of 50 tokens: first summary (100) + second (10) = 110 > 50,
+			// so the oldest (first) is dropped and only the second remains.
+			const ctx = buildSessionContext(entries, undefined, undefined, { summaryBlockMaxTokens: 50 });
+			const summaries = ctx.messages.map((m) => (m as any).summary).filter(Boolean);
+			expect(summaries).toEqual([second]);
+
+			// A large budget keeps both.
+			const ctxAll = buildSessionContext(entries, undefined, undefined, { summaryBlockMaxTokens: 200 });
+			const allSummaries = ctxAll.messages.map((m) => (m as any).summary).filter(Boolean);
+			expect(allSummaries).toEqual([first, second]);
 		});
 
 		it("buildContextEntries returns compaction-aware entries including custom entries", () => {

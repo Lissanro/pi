@@ -40,9 +40,9 @@ You can also trigger manually with `/compact [instructions]`, where optional ins
 
 1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
 2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point
-3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
-4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
-5. **Rebuilds context**: Session rebuilds the context for the next request, using summary + messages from `firstKeptEntryId` onwards
+3. **Generate summary**: Call LLM to summarize the cut messages with the structured format. Prior summaries are included in the request prefix (as their own messages) for provider cache fidelity, but are context, not re-folded into the new summary.
+4. **Append entry**: Save a new `CompactionEntry` with summary and `firstKeptEntryId`
+5. **Rebuilds context**: Session rebuilds the context for the next request, using all summaries (oldest first) + messages from the latest `firstKeptEntryId` onwards
 
 ```
 Before compaction:
@@ -76,7 +76,9 @@ What the LLM sees:
     prompt   from cmp          messages from firstKeptEntryId
 ```
 
-On repeated compactions, the summarized span starts at the previous compaction's kept boundary (`firstKeptEntryId`), not at the compaction entry itself, falling back to the entry after the previous compaction if that kept entry cannot be found in the path. This preserves messages that survived the earlier compaction by including them in the next summarization pass as well. Pi also recalculates `tokensBefore` from the rebuilt session context before writing the new `CompactionEntry`, so the token count reflects the actual pre-compaction context being replaced.
+On repeated compactions, each new compaction summarizes only the messages being cut. Every prior summary is kept as its own message in the context prefix (oldest first), so no summary is ever re-summarized into a summary-of-summaries. The LLM sees `system prompt + [summary 1, summary 2, ...] + [kept messages]`. Because the summaries block grows with each compaction, its size is bounded by `summaryBlockMaxTokens` (default 16384); when the block exceeds the limit, the oldest summaries are dropped from the context view (never the most recent). A limit of `0` keeps only the most recent summary, matching the pre-feature single-summary behavior. Dropped summaries remain in the JSONL file; only the context view is filtered.
+
+The summarization request stays byte-identical to the normal chat prefix (system prompt plus the summaries block and the messages being cut, minus the preserved tail) so the provider KV cache is reused; only the summarization instruction is appended at the end.
 
 ### Split Turns
 
@@ -402,7 +404,8 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
-    "keepRecentTokens": 20000
+    "keepRecentTokens": 20000,
+    "summaryBlockMaxTokens": 16384
   }
 }
 ```
@@ -412,5 +415,6 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | `enabled` | `true` | Enable auto-compaction |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+| `summaryBlockMaxTokens` | `16384` | Max tokens for the summaries block in the prefix; oldest summaries are dropped beyond this (the most recent is always kept). `0` keeps only the most recent summary |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.

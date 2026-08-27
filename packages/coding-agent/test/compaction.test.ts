@@ -277,6 +277,7 @@ describe("shouldCompact", () => {
 			enabled: true,
 			reserveTokens: 10000,
 			keepRecentTokens: 20000,
+			summaryBlockMaxTokens: 10000,
 		};
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(true);
@@ -288,6 +289,7 @@ describe("shouldCompact", () => {
 			enabled: false,
 			reserveTokens: 10000,
 			keepRecentTokens: 20000,
+			summaryBlockMaxTokens: 10000,
 		};
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(false);
@@ -442,7 +444,7 @@ describe("buildSessionContext", () => {
 		expect((loaded.messages[0] as any).summary).toContain("Summary of 1,a,2,b");
 	});
 
-	it("should handle multiple compactions (only latest matters)", () => {
+	it("should keep all summaries oldest-first across multiple compactions", () => {
 		// First batch
 		const u1 = createMessageEntry(createUserMessage("1"));
 		const a1 = createMessageEntry(createAssistantMessage("a"));
@@ -460,9 +462,11 @@ describe("buildSessionContext", () => {
 		const entries: SessionEntry[] = [u1, a1, compact1, u2, b, u3, c, compact2, u4, d];
 
 		const loaded = buildSessionContext(entries);
-		// summary + kept from u3 (u3, c) + after (u4, d) = 5
-		expect(loaded.messages.length).toBe(5);
-		expect((loaded.messages[0] as any).summary).toContain("Second summary");
+		// Both summaries, then the kept tail from u3 (u3, c, u4, d) = 6
+		expect(loaded.messages.length).toBe(6);
+		expect((loaded.messages[0] as any).summary).toContain("First summary");
+		expect((loaded.messages[1] as any).summary).toContain("Second summary");
+		expect((loaded.messages[2] as any).content).toBe("3");
 	});
 
 	it("should keep all messages when firstKeptEntryId is first entry", () => {
@@ -572,6 +576,65 @@ describe("prepareCompaction with previous compaction", () => {
 		expect(extractText(preparation!.messagesToSummarize.slice(1))).toContain("user msg 2 - kept by compaction1");
 		// previousSummary is available for iterative update.
 		expect(preparation!.previousSummary).toBe("First summary");
+	});
+
+	it("prepends ALL visible previous summaries to messagesToSummarize (no folding)", () => {
+		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)"));
+		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1"));
+		const compact1 = createCompactionEntry("First summary", u1.id);
+		const u2 = createMessageEntry(createUserMessage("user msg 2 - kept by compaction1 ".repeat(12)));
+		const b = createMessageEntry(createAssistantMessage("assistant msg 2 ".repeat(12)));
+		const u3 = createMessageEntry(createUserMessage("user msg 3 - kept by compaction1 ".repeat(12)));
+		const c = createMessageEntry(createAssistantMessage("assistant msg 3 ".repeat(12), createMockUsage(5000, 1000)));
+		const compact2 = createCompactionEntry("Second summary", u3.id);
+		const u4 = createMessageEntry(createUserMessage("user msg 4 (new after compaction2) ".repeat(12)));
+		const a4 = createMessageEntry(createAssistantMessage("assistant msg 4 ".repeat(12), createMockUsage(8000, 2000)));
+
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 100,
+		};
+		const preparation = prepareCompaction([u1, a1, compact1, u2, b, u3, c, compact2, u4, a4], settings);
+
+		expect(preparation).toBeDefined();
+		// Both summaries lead messagesToSummarize, oldest first, then the cut messages.
+		expect(preparation!.messagesToSummarize[0]).toMatchObject({
+			role: "compactionSummary",
+			summary: "First summary",
+		});
+		expect(preparation!.messagesToSummarize[1]).toMatchObject({
+			role: "compactionSummary",
+			summary: "Second summary",
+		});
+		expect(extractText(preparation!.messagesToSummarize.slice(2))).toContain("user msg 3 - kept by compaction1");
+		// previousSummary exposes the most recent summary for extension consumers.
+		expect(preparation!.previousSummary).toBe("Second summary");
+	});
+
+	it("summary block limit of 0 keeps only the most recent summary in messagesToSummarize", () => {
+		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)"));
+		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1"));
+		const compact1 = createCompactionEntry("First summary", u1.id);
+		const u2 = createMessageEntry(createUserMessage("user msg 2 - kept by compaction1 ".repeat(12)));
+		const b = createMessageEntry(createAssistantMessage("assistant msg 2 ".repeat(12)));
+		const u3 = createMessageEntry(createUserMessage("user msg 3 - kept by compaction1 ".repeat(12)));
+		const c = createMessageEntry(createAssistantMessage("assistant msg 3 ".repeat(12), createMockUsage(5000, 1000)));
+		const compact2 = createCompactionEntry("Second summary", u3.id);
+		const u4 = createMessageEntry(createUserMessage("user msg 4 (new after compaction2) ".repeat(12)));
+		const a4 = createMessageEntry(createAssistantMessage("assistant msg 4 ".repeat(12), createMockUsage(8000, 2000)));
+
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 100,
+			summaryBlockMaxTokens: 0,
+		};
+		const preparation = prepareCompaction([u1, a1, compact1, u2, b, u3, c, compact2, u4, a4], settings);
+
+		expect(preparation).toBeDefined();
+		// Only the most recent summary survives in the request prefix.
+		const summaries = preparation!.messagesToSummarize.filter((m) => m.role === "compactionSummary");
+		expect(summaries).toHaveLength(1);
+		expect((summaries[0] as any).summary).toBe("Second summary");
 	});
 });
 

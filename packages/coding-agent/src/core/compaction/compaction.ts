@@ -21,6 +21,8 @@ import { convertToLlm } from "../messages.ts";
 import {
 	buildSessionContext,
 	type CompactionEntry,
+	DEFAULT_SUMMARY_BLOCK_MAX_TOKENS,
+	filterSummariesToBlockLimit,
 	type SessionEntry,
 	sessionEntryToContextMessages,
 } from "../session-manager.ts";
@@ -111,12 +113,16 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	/** Max total tokens for the summaries block in the prefix; 0 keeps only the
+	 * most recent summary (pre-feature behavior). */
+	summaryBlockMaxTokens: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
+	summaryBlockMaxTokens: DEFAULT_SUMMARY_BLOCK_MAX_TOKENS,
 };
 
 // ============================================================================
@@ -518,47 +524,6 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
-const UPDATE_SUMMARIZATION_INSTRUCTIONS = `Update the existing structured summary with new information. RULES:
-- PRESERVE all existing information from the previous summary
-- ADD new progress, decisions, and context from the new messages
-- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
-- UPDATE "Next Steps" based on what was accomplished
-- PRESERVE exact file paths, function names, and error messages
-- If something is no longer relevant, you may remove it
-
-Use this EXACT format:
-
-## Goal
-[Preserve existing goals, add new ones if the task expanded]
-
-## Constraints & Preferences
-- [Preserve existing, add new ones discovered]
-
-## Progress
-### Done
-- [x] [Include previously done items AND newly completed items]
-
-### In Progress
-- [ ] [Current work - update based on progress]
-
-### Blocked
-- [Current blockers - remove if resolved]
-
-## Key Decisions
-- **[Decision]**: [Brief rationale] (preserve all previous, add new)
-
-## Next Steps
-1. [Update based on current state]
-
-## Critical Context
-- [Preserve important context, add new if needed]
-
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
-
-const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
-
-${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
-
 /**
  * Build a summarization context that mirrors a normal agent turn as closely as
  * possible. When an agent is supplied, use its transformContext/convertToLlm
@@ -710,8 +675,16 @@ export async function generateSummaryWithUsage(
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 	);
 
-	// Use update prompt if we have a previous summary, otherwise initial prompt
-	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
+	// Retained for API compatibility; the previous summaries are provided as
+	// messages in the request prefix and are no longer folded into the instruction.
+	void previousSummary;
+
+	// Multiple previous summaries live in the request prefix (as their own
+	// messages) for cache fidelity, so they are NOT re-folded here. Every
+	// compaction summarizes only the messages being cut with the base prompt; the
+	// previous summaries are context, not a target to update. `previousSummary` is
+	// kept in the signature for API compatibility but no longer drives folding.
+	let basePrompt = SUMMARIZATION_PROMPT;
 	if (customInstructions) {
 		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
 	}
@@ -727,12 +700,8 @@ export async function generateSummaryWithUsage(
 		tools,
 	} = await buildAgentSummarizationContext(agent, currentMessages, signal, systemPrompt);
 
-	let instructionText =
-		"Do not continue the conversation above. Output only the structured summary requested below.\n\n";
-	if (previousSummary) {
-		instructionText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
-	}
-	instructionText += basePrompt;
+	const instructionText =
+		"Do not continue the conversation above. Output only the structured summary requested below.\n\n" + basePrompt;
 
 	const summarizationMessages: Message[] = [
 		...llmMessages,
@@ -872,18 +841,21 @@ export function prepareCompaction(
 		return undefined;
 	}
 
-	// Prepend the previous compaction's summary message so the summarization
-	// request carries exactly what the chat contains before compaction: system
-	// prompt plus the unaltered history (with the previous summary in its natural
-	// position), minus only the preserved tail, plus the summarization instruction
+	// Prepend ALL visible previous summary messages (oldest first) so the
+	// summarization request carries exactly what the chat contains before
+	// compaction: system prompt plus the unaltered summaries block in its natural
+	// position, minus only the preserved tail, plus the summarization instruction
 	// at the end. The provider KV cache is prefix-based, so even a single byte of
 	// difference before the instruction forces a full re-prefill of the whole
-	// request; without the summary message here the request would diverge from the
-	// cached prefix immediately after the system prompt.
-	if (prevCompactionIndex >= 0) {
-		const prevSummaryMsg = sessionEntryToContextMessages(pathEntries[prevCompactionIndex])[0];
-		if (prevSummaryMsg) messagesToSummarize.unshift(prevSummaryMsg);
-	}
+	// request. Previous summaries are context here, not re-folded into the new one.
+	const compactions: CompactionEntry[] = pathEntries.filter(
+		(entry): entry is CompactionEntry => entry.type === "compaction",
+	);
+	const visibleCompactions = filterSummariesToBlockLimit(compactions, settings.summaryBlockMaxTokens);
+	const summaryMessages = visibleCompactions
+		.map((c) => sessionEntryToContextMessages(c)[0])
+		.filter((m): m is AgentMessage => m !== undefined);
+	messagesToSummarize.unshift(...summaryMessages);
 
 	// Extract file operations from messages and previous compaction
 	const fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);

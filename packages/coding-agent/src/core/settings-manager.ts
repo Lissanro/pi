@@ -9,6 +9,7 @@ import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import { DEFAULT_SUMMARY_BLOCK_MAX_TOKENS } from "./session-manager.ts";
 
 /**
  * Where the compaction summary is shown in the chat UI.
@@ -24,6 +25,9 @@ export interface CompactionSettings {
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
 	summaryPlacement?: CompactionSummaryPlacement; // default: "context"
+	// Max total tokens for the compaction summaries block in the prefix.
+	// Default keeps several summaries; 0 keeps only the most recent one.
+	summaryBlockMaxTokens?: number;
 }
 
 export interface BranchSummarySettings {
@@ -882,11 +886,30 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+	getSummaryBlockMaxTokens(): number {
+		return this.settings.compaction?.summaryBlockMaxTokens ?? DEFAULT_SUMMARY_BLOCK_MAX_TOKENS;
+	}
+
+	setSummaryBlockMaxTokens(tokens: number): void {
+		if (!this.globalSettings.compaction) {
+			this.globalSettings.compaction = {};
+		}
+		this.globalSettings.compaction.summaryBlockMaxTokens = tokens;
+		this.markModified("compaction", "summaryBlockMaxTokens");
+		this.save();
+	}
+
+	getCompactionSettings(): {
+		enabled: boolean;
+		reserveTokens: number;
+		keepRecentTokens: number;
+		summaryBlockMaxTokens: number;
+	} {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(),
+			summaryBlockMaxTokens: this.getSummaryBlockMaxTokens(),
 		};
 	}
 

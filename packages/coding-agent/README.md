@@ -279,6 +279,8 @@ Long sessions can exhaust context windows. Compaction summarizes older messages 
 
 **Automatic:** Enabled by default. Triggers on context overflow (recovers and retries) or when approaching the limit (proactive). Configure via `/settings` or `settings.json`.
 
+On repeated compactions, each prior summary is kept as its own message in the context prefix (oldest first) rather than folded into the newest, so older history is not re-summarized. `compaction.summaryBlockMaxTokens` bounds how many summaries stay in the prefix (oldest dropped beyond the limit; the most recent is always kept). `0` keeps only the latest summary.
+
 Compaction is lossy. The full history remains in the JSONL file; use `/tree` to revisit. Customize compaction behavior via [extensions](#extensions). See [docs/compaction.md](docs/compaction.md) for internals.
 
 ---
