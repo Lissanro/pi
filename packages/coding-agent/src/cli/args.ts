@@ -16,6 +16,8 @@ export interface Args {
 	apiKey?: string;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
+	/** Force a rebuild of the system prompt from current files on resume. */
+	updateSystemPrompt?: boolean;
 	thinking?: ThinkingLevel;
 	continue?: boolean;
 	resume?: boolean;
@@ -117,6 +119,8 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--append-system-prompt" && i + 1 < args.length) {
 			result.appendSystemPrompt = result.appendSystemPrompt ?? [];
 			result.appendSystemPrompt.push(args[++i]);
+		} else if (arg === "--update-system-prompt") {
+			result.updateSystemPrompt = true;
 		} else if (arg === "--name" || arg === "-n") {
 			if (i + 1 < args.length) {
 				result.name = args[++i];
@@ -285,6 +289,7 @@ ${chalk.bold("Options:")}
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
+  --update-system-prompt         On resume, rebuild the system prompt from current files instead of using the saved one
   --mode <mode>                  Output mode: text (default), json, or rpc
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session

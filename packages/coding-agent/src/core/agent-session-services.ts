@@ -62,6 +62,8 @@ export interface CreateAgentSessionFromServicesOptions {
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
+	/** Restore the saved system prompt on resume. Default: true. */
+	restoreSystemPrompt?: boolean;
 }
 
 /**
@@ -217,5 +219,6 @@ export async function createAgentSessionFromServices(
 		noTools: options.noTools,
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
+		restoreSystemPrompt: options.restoreSystemPrompt,
 	});
 }

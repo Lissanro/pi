@@ -84,6 +84,12 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/**
+	 * Restore the system prompt saved in the session on resume instead of
+	 * rebuilding it from current files. Default: true. Set false to force a
+	 * rebuild and resave.
+	 */
+	restoreSystemPrompt?: boolean;
 }
 
 /** Result from createAgentSession */
@@ -415,6 +421,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		restoreSystemPrompt: options.restoreSystemPrompt,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

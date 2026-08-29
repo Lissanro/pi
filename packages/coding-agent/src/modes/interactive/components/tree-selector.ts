@@ -360,7 +360,8 @@ class TreeList implements Component {
 				entry.type === "custom" ||
 				entry.type === "model_change" ||
 				entry.type === "thinking_level_change" ||
-				entry.type === "session_info";
+				entry.type === "session_info" ||
+				entry.type === "system_prompt";
 
 			switch (this.filterMode) {
 				case "user-only":

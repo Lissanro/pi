@@ -3337,6 +3337,12 @@ export class InteractiveMode {
 				await this.handleReloadCommand();
 				return;
 			}
+			if (text === "/system-prompt" || text.startsWith("/system-prompt ")) {
+				const arg = text.startsWith("/system-prompt ") ? text.slice(14).trim() : "";
+				this.editor.setText("");
+				await this.handleSystemPromptCommand(arg);
+				return;
+			}
 			if (text === "/debug") {
 				this.handleDebugCommand();
 				this.editor.setText("");
@@ -7047,6 +7053,52 @@ export class InteractiveMode {
 			}
 			this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
+	}
+
+	private handleSystemPromptCommand(arg: string): void {
+		if (arg === "update") {
+			this.session.reloadSystemPromptFromFiles();
+			this.showStatus("System prompt updated from current files and saved to the session");
+			return;
+		}
+		if (arg === "clear") {
+			this.session.setCustomSystemPrompt("");
+			this.showStatus("Custom system prompt cleared; using the file-based prompt");
+			return;
+		}
+		if (arg.startsWith("set ")) {
+			const text = arg.slice(4);
+			if (text.trim().length === 0) {
+				this.session.setCustomSystemPrompt("");
+				this.showStatus("Custom system prompt cleared; using the file-based prompt");
+			} else {
+				this.session.setCustomSystemPrompt(text);
+				this.showStatus("Custom system prompt set and saved to the session");
+			}
+			return;
+		}
+
+		const prompt = this.session.systemPrompt;
+		const sourcePath = this.session.resourceLoader.getSystemPromptSource()?.path;
+		const appendPaths = this.session.resourceLoader
+			.getAppendSystemPromptSources()
+			.map((p) => `  - ${p.path}`)
+			.join("\n");
+		let info = `${theme.bold(theme.fg("accent", "System Prompt"))}\n\n`;
+		info += `${theme.fg("dim", "Custom:")} ${this.session.hasCustomSystemPrompt ? "yes" : "no"}\n`;
+		if (sourcePath) {
+			info += `${theme.fg("dim", "Source:")} ${sourcePath}\n`;
+		}
+		if (appendPaths) {
+			info += `${theme.fg("dim", "Append:")}\n${appendPaths}\n`;
+		}
+		info += `${theme.fg("dim", "Length:")} ${prompt.length} characters\n`;
+		info += `\n${theme.fg("dim", "Usage:")} /system-prompt update (reload from files) | set <text> | clear\n`;
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.chatContainer.addChild(new Markdown(prompt, 1, 1, this.getMarkdownThemeWithSettings()));
+		this.ui.requestRender();
 	}
 
 	private async handleExportCommand(text: string): Promise<void> {

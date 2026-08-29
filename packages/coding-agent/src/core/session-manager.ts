@@ -124,6 +124,23 @@ export interface SessionInfoEntry extends SessionEntryBase {
 }
 
 /**
+ * Snapshot of the effective base system prompt at a point in the session.
+ * The most recent entry on the active path is restored verbatim on resume so
+ * the model's prefill cache is preserved even when APPEND_SYSTEM.md or Pi's
+ * internal prompt changed since the session was last run.
+ */
+export interface SystemPromptEntry extends SessionEntryBase {
+	type: "system_prompt";
+	/** The full effective base system prompt string sent to the model. */
+	systemPrompt: string;
+	/**
+	 * Optional custom base prompt text (set via /system-prompt set or
+	 * --system-prompt) that replaces the file-based SYSTEM.md prompt.
+	 */
+	customPrompt?: string;
+}
+
+/**
  * Custom message entry for extensions to inject messages into LLM context.
  * Use customType to identify your extension's entries.
  *
@@ -153,7 +170,8 @@ export type SessionEntry =
 	| CustomEntry
 	| CustomMessageEntry
 	| LabelEntry
-	| SessionInfoEntry;
+	| SessionInfoEntry
+	| SystemPromptEntry;
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
@@ -1197,6 +1215,35 @@ export class SessionManager {
 		};
 		this._appendEntry(entry);
 		return entry.id;
+	}
+
+	/** Append a system prompt snapshot as child of current leaf, then advance leaf. Returns entry id. */
+	appendSystemPrompt(systemPrompt: string, customPrompt?: string): string {
+		const entry: SystemPromptEntry = {
+			type: "system_prompt",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			systemPrompt,
+			...(customPrompt !== undefined && { customPrompt }),
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/**
+	 * Get the latest system prompt snapshot on the active path, if any.
+	 * Returns the full saved prompt and optional custom base prompt text.
+	 */
+	getSavedSystemPrompt(): { systemPrompt: string; customPrompt?: string } | undefined {
+		const path = this.getBranch();
+		for (let i = path.length - 1; i >= 0; i--) {
+			const entry = path[i];
+			if (entry.type === "system_prompt") {
+				return { systemPrompt: entry.systemPrompt, customPrompt: entry.customPrompt };
+			}
+		}
+		return undefined;
 	}
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */

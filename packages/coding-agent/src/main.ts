@@ -536,6 +536,14 @@ function buildSessionOptions(
 		options.excludeTools = [...parsed.excludeTools];
 	}
 
+	// On resume, restore the system prompt saved in the session by default so
+	// the prefill cache survives APPEND_SYSTEM.md / Pi prompt changes. Explicitly
+	// setting or updating the prompt (--system-prompt, --append-system-prompt,
+	// --update-system-prompt) forces a rebuild from current files instead.
+	if (parsed.updateSystemPrompt || parsed.systemPrompt !== undefined || (parsed.appendSystemPrompt?.length ?? 0) > 0) {
+		options.restoreSystemPrompt = false;
+	}
+
 	return { options, cliThinkingFromModel, diagnostics };
 }
 
@@ -822,6 +830,7 @@ export async function main(args: string[], options?: MainOptions) {
 			excludeTools: sessionOptions.excludeTools,
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
+			restoreSystemPrompt: sessionOptions.restoreSystemPrompt,
 		});
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {

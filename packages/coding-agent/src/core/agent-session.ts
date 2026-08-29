@@ -253,6 +253,12 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/**
+	 * Restore the system prompt saved in the session on resume instead of
+	 * rebuilding it from current files. Default: true. Set false to force a
+	 * rebuild and resave (e.g. via /system-prompt update or --update-system-prompt).
+	 */
+	restoreSystemPrompt?: boolean;
 }
 
 export interface ExtensionBindings {
@@ -439,6 +445,12 @@ export class AgentSession {
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _systemPromptOverride?: string;
+	/** Custom base prompt text replacing the file-based SYSTEM.md prompt (via /system-prompt set). */
+	private _customSystemPromptOverride?: string;
+	/** Whether the saved system prompt should be restored on the next base-prompt commit. */
+	private _restoreSystemPrompt = true;
+	/** Last persisted system prompt, to avoid duplicate session entries. */
+	private _lastPersistedSystemPrompt?: string;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -458,6 +470,7 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._restoreSystemPrompt = config.restoreSystemPrompt ?? true;
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -1013,8 +1026,7 @@ export class AgentSession {
 		this.agent.state.tools = tools;
 
 		// Rebuild base system prompt with new tool set
-		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
-		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+		this._commitBaseSystemPrompt(this._rebuildSystemPrompt(validToolNames));
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1302,6 +1314,7 @@ export class AgentSession {
 		}
 
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
+		const customPrompt = this._customSystemPromptOverride ?? loaderSystemPrompt;
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
 		const appendSystemPrompt =
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
@@ -1312,13 +1325,73 @@ export class AgentSession {
 			cwd: this._cwd,
 			skills: loadedSkills,
 			contextFiles: loadedContextFiles,
-			customPrompt: loaderSystemPrompt,
+			customPrompt,
 			appendSystemPrompt,
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
+	}
+
+	/**
+	 * Commit a newly-built base system prompt. On startup (restoreSystemPrompt
+	 * still enabled), the first commit restores the prompt saved in the session
+	 * verbatim so the model's prefill cache survives APPEND_SYSTEM.md or Pi's
+	 * internal prompt changes; the freshly-rebuilt value is discarded. After
+	 * startup, commits persist the prompt to the session so the next resume can
+	 * restore it. Persistence is skipped when the value is unchanged to avoid
+	 * accumulating redundant entries.
+	 */
+	private _commitBaseSystemPrompt(prompt: string, forcePersist = false): void {
+		if (this._restoreSystemPrompt) {
+			this._restoreSystemPrompt = false;
+			const saved = this.sessionManager.getSavedSystemPrompt();
+			if (saved) {
+				if (saved.customPrompt !== undefined) {
+					this._customSystemPromptOverride = saved.customPrompt;
+				}
+				this._baseSystemPromptOptions = {
+					...this._baseSystemPromptOptions,
+					customPrompt: saved.customPrompt,
+				};
+				this._lastPersistedSystemPrompt = saved.systemPrompt;
+				this._baseSystemPrompt = saved.systemPrompt;
+				this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+				return;
+			}
+		}
+
+		this._baseSystemPrompt = prompt;
+		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+		if (this.sessionManager.isPersisted() && (forcePersist || prompt !== this._lastPersistedSystemPrompt)) {
+			this.sessionManager.appendSystemPrompt(prompt, this._customSystemPromptOverride);
+			this._lastPersistedSystemPrompt = prompt;
+		}
+	}
+
+	/**
+	 * Rebuild the base system prompt from current files/resources, clear any
+	 * custom prompt override, and persist it. Use to update a resumed session
+	 * with the latest APPEND_SYSTEM.md / SYSTEM.md contents.
+	 */
+	reloadSystemPromptFromFiles(): void {
+		this._customSystemPromptOverride = undefined;
+		this._commitBaseSystemPrompt(this._rebuildSystemPrompt(this.getActiveToolNames()), true);
+	}
+
+	/**
+	 * Set a custom base system prompt (replacing the file-based SYSTEM.md
+	 * prompt) and persist it. Pass empty text to revert to the file-based prompt.
+	 */
+	setCustomSystemPrompt(text: string): void {
+		this._customSystemPromptOverride = text.length > 0 ? text : undefined;
+		this._commitBaseSystemPrompt(this._rebuildSystemPrompt(this.getActiveToolNames()), true);
+	}
+
+	/** Whether a custom base system prompt is currently in effect. */
+	get hasCustomSystemPrompt(): boolean {
+		return this._customSystemPromptOverride !== undefined;
 	}
 
 	// =========================================================================
@@ -2903,8 +2976,7 @@ export class AgentSession {
 		};
 
 		this._resourceLoader.extendResources(extensionPaths);
-		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
-		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		this._commitBaseSystemPrompt(this._rebuildSystemPrompt(this.getActiveToolNames()));
 	}
 
 	private buildExtensionResourcePaths(entries: Array<{ path: string; extensionPath: string }>): Array<{
