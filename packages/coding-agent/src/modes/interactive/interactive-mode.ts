@@ -472,6 +472,20 @@ function quoteIfNeeded(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * Write a string to stdout and wait for it to be flushed before resolving.
+ * For a TTY the write is synchronous and resolves immediately; for a pipe it
+ * waits on the write callback so a subsequent process.exit() cannot truncate it.
+ */
+function writeFlushedStdout(chunk: string): Promise<void> {
+	return new Promise<void>((resolve) => {
+		const flushed = process.stdout.write(chunk, () => resolve());
+		if (flushed) {
+			resolve();
+		}
+	});
+}
+
 export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
 	if (!process.stdout.isTTY) return undefined;
 	if (!sessionManager.isPersisted()) return undefined;
@@ -4311,7 +4325,12 @@ export class InteractiveMode {
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
 		if (resumeCommand) {
-			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
+			// Write the resume hint on a fresh line and flush it before exiting.
+			// process.exit(0) below does not wait for pending async stdout writes,
+			// which can truncate or interleave the hint with other processes sharing
+			// the terminal. The leading newline keeps it off the prior line.
+			const hint = `\n${chalk.dim("To resume this session:")} ${resumeCommand}\n`;
+			await writeFlushedStdout(hint);
 		}
 
 		process.exit(0);
