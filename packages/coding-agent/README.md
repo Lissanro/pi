@@ -338,6 +338,8 @@ Disable context file loading with `--no-context-files` (or `-nc`).
 
 Replace the default system prompt with `.pi/SYSTEM.md` (project) or `~/.pi/agent/SYSTEM.md` (global). Append without replacing via `APPEND_SYSTEM.md`.
 
+The effective system prompt is saved with each session. Resuming a session restores the saved prompt verbatim by default, so the model's prefill cache survives edits to `APPEND_SYSTEM.md` or Pi's internal prompt. To force a rebuild from current files on resume, pass `--update-system-prompt`. In the interactive TUI, `/system-prompt` shows the current prompt, `/system-prompt update` reloads it from files, `/system-prompt set <text>` replaces the base prompt with custom text, and `/system-prompt clear` reverts to the file-based prompt.
+
 ---
 
 ## Customization
@@ -612,6 +614,7 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
 |--------|-------------|
 | `--system-prompt <text>` | Replace default prompt (context files and skills still appended) |
 | `--append-system-prompt <text>` | Append to system prompt |
+| `--update-system-prompt` | On resume, rebuild the system prompt from current files instead of using the saved one |
 | `--tui-mode <mode>` | TUI mode: `regular` (default) or experimental `fullscreen` |
 | `--use-theme <name[/name]>` | Set the initial interactive theme for this run without changing settings |
 | `--verbose` | Force verbose startup |
