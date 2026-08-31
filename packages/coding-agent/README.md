@@ -28,12 +28,6 @@ For the full explanation, see [this post on X](https://x.com/badlogicgames/statu
 
 To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi-share-hf). Read its README.md for setup instructions. All you need is a Hugging Face account, the Hugging Face CLI, and `pi-share-hf`.
 
-You can also watch [this video](https://x.com/badlogicgames/status/2041151967695634619), where I show how I publish my `pi-mono` sessions.
-
-I regularly publish my own `pi-mono` work sessions here:
-
-- [badlogicgames/pi-mono on Hugging Face](https://huggingface.co/datasets/badlogicgames/pi-mono)
-
 ## Table of Contents
 
 - [Quick Start](#quick-start)
@@ -276,6 +270,8 @@ Use `/session` in interactive mode to see the current session ID before reusing 
 Long sessions can exhaust context windows. Compaction summarizes older messages while keeping recent ones.
 
 **Manual:** `/compact` or `/compact <custom instructions>`
+
+When `/compact` is typed while the agent is streaming, the compact is deferred until the current message finishes; if the agent was working when `/compact` was sent, an automatic `/continue` runs after compaction completes. While idle, `/compact` runs immediately with no auto-continue.
 
 **Automatic:** Enabled by default. Triggers on context overflow (recovers and retries) or when approaching the limit (proactive). Configure via `/settings` or `settings.json`.
 
