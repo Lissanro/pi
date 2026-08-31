@@ -749,6 +749,15 @@ export class InteractiveMode {
 	// A /continue issued while compaction is running, deferred until the session
 	// is idle (compaction complete and any queued compaction messages drained).
 	private pendingCompactionContinue = false;
+	// A /compact queued while the agent was streaming, deferred until the current
+	// message settles so it does not interrupt the running turn. `continueAfter`
+	// is true when /compact was sent while the agent was working, so an automatic
+	// /continue runs once compaction completes.
+	private pendingCompactCommand?: {
+		instructions?: string;
+		options?: { keepRecentTokens?: number; keepRecentMessages?: number };
+		continueAfter: boolean;
+	};
 
 	// Scheduled messages (/schedule)
 	private scheduledMessages: ScheduledMessage[] = [];
@@ -3343,6 +3352,18 @@ export class InteractiveMode {
 				const args = text.startsWith("/compact ") ? text.slice(9).trim() : "";
 				const { options, instructions } = parseCompactArgs(args);
 				this.editor.setText("");
+				if (this.session.isStreaming) {
+					// Do not interrupt the running turn. Queue the compact to run once the
+					// current message finishes, then auto-continue after it compacts (the
+					// agent was working when /compact was sent).
+					this.pendingCompactCommand = {
+						instructions: instructions || undefined,
+						options,
+						continueAfter: true,
+					};
+					this.showStatus("Queued compact until the current message completes");
+					return;
+				}
 				await this.handleCompactCommand(instructions || undefined, options);
 				return;
 			}
@@ -3717,6 +3738,7 @@ export class InteractiveMode {
 			case "agent_settled":
 				await this.checkShutdownRequested();
 				this.fireDueScheduledMessages();
+				this.runPendingCompactCommand();
 				break;
 
 			case "compaction_start": {
@@ -5763,6 +5785,7 @@ export class InteractiveMode {
 		this.scheduledMessages = [];
 		this.deferredScheduledActions = [];
 		this.pendingCompactionContinue = false;
+		this.pendingCompactCommand = undefined;
 	}
 
 	/**
@@ -7716,6 +7739,24 @@ export class InteractiveMode {
 
 		this.bashComponent = undefined;
 		this.ui.requestRender();
+	}
+
+	/**
+	 * Run a /compact deferred while the agent was streaming, now that the current
+	 * message has settled. If /compact was sent while the agent was working,
+	 * queue an automatic /continue to run after compaction completes.
+	 */
+	private runPendingCompactCommand(): void {
+		if (!this.pendingCompactCommand) return;
+		if (this.session.isStreaming || this.session.isCompacting) return;
+		const { instructions, options, continueAfter } = this.pendingCompactCommand;
+		this.pendingCompactCommand = undefined;
+		if (continueAfter) {
+			// Run /continue once compaction finishes, since the agent was working
+			// when /compact was sent.
+			this.pendingCompactionContinue = true;
+		}
+		void this.handleCompactCommand(instructions, options);
 	}
 
 	private async handleCompactCommand(
