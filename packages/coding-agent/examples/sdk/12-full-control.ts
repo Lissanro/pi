@@ -46,6 +46,8 @@ Available: read, bash. Be concise.`,
 	getAppendSystemPromptSources: () => [],
 	extendResources: () => {},
 	reload: async () => {},
+	reloadSystemPrompt: () => {},
+	reloadSkills: () => {},
 };
 
 const { session } = await createAgentSession({

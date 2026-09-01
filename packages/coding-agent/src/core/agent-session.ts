@@ -108,6 +108,7 @@ import { exportSessionToJsonl } from "./session-export.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { getLatestCompactionEntry } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
+import type { Skill } from "./skills.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
@@ -254,9 +255,9 @@ export interface AgentSessionConfig {
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
 	/**
-	 * Restore the system prompt saved in the session on resume instead of
-	 * rebuilding it from current files. Default: true. Set false to force a
-	 * rebuild and resave (e.g. via /system-prompt update or --update-system-prompt).
+	 * Restore the system prompt (and skills) saved in the session on resume
+	 * instead of rebuilding them from current files. Default: true. Set false
+	 * to force a rebuild and resave (e.g. via /update or --update-system-prompt).
 	 */
 	restoreSystemPrompt?: boolean;
 }
@@ -451,6 +452,8 @@ export class AgentSession {
 	private _restoreSystemPrompt = true;
 	/** Last persisted system prompt, to avoid duplicate session entries. */
 	private _lastPersistedSystemPrompt?: string;
+	/** Effective skill set used for the prompt and runtime, restored on resume. */
+	private _effectiveSkills?: Skill[];
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -1318,7 +1321,7 @@ export class AgentSession {
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
 		const appendSystemPrompt =
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
-		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const loadedSkills = this._resolveEffectiveSkills();
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
 		this._baseSystemPromptOptions = {
@@ -1335,12 +1338,26 @@ export class AgentSession {
 	}
 
 	/**
+	 * Resolve the effective skill set, defaulting to the resource loader's
+	 * freshly-loaded skills on first use. On resume the saved skills are
+	 * restored in _commitBaseSystemPrompt before this is consulted.
+	 */
+	private _resolveEffectiveSkills(): Skill[] {
+		if (this._effectiveSkills === undefined) {
+			this._effectiveSkills = this._resourceLoader.getSkills().skills;
+		}
+		return this._effectiveSkills;
+	}
+
+	/**
 	 * Commit a newly-built base system prompt. On startup (restoreSystemPrompt
 	 * still enabled), the first commit restores the prompt saved in the session
 	 * verbatim so the model's prefill cache survives APPEND_SYSTEM.md or Pi's
-	 * internal prompt changes; the freshly-rebuilt value is discarded. After
-	 * startup, commits persist the prompt to the session so the next resume can
-	 * restore it. Persistence is skipped when the value is unchanged to avoid
+	 * internal prompt changes; the freshly-rebuilt value is discarded. The saved
+	 * skill set is restored the same way so the runtime skill list stays
+	 * consistent with the restored prompt. After startup, commits persist the
+	 * prompt (and effective skills) to the session so the next resume can
+	 * restore them. Persistence is skipped when the value is unchanged to avoid
 	 * accumulating redundant entries.
 	 */
 	private _commitBaseSystemPrompt(prompt: string, forcePersist = false): void {
@@ -1358,26 +1375,58 @@ export class AgentSession {
 				this._lastPersistedSystemPrompt = saved.systemPrompt;
 				this._baseSystemPrompt = saved.systemPrompt;
 				this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+				this._effectiveSkills = saved.skills !== undefined ? saved.skills : this._resourceLoader.getSkills().skills;
 				return;
 			}
 		}
 
+		this._effectiveSkills = this._resolveEffectiveSkills();
 		this._baseSystemPrompt = prompt;
 		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 		if (this.sessionManager.isPersisted() && (forcePersist || prompt !== this._lastPersistedSystemPrompt)) {
-			this.sessionManager.appendSystemPrompt(prompt, this._customSystemPromptOverride);
+			this.sessionManager.appendSystemPrompt(prompt, this._customSystemPromptOverride, this._effectiveSkills);
 			this._lastPersistedSystemPrompt = prompt;
 		}
 	}
 
 	/**
-	 * Rebuild the base system prompt from current files/resources, clear any
-	 * custom prompt override, and persist it. Use to update a resumed session
-	 * with the latest APPEND_SYSTEM.md / SYSTEM.md contents.
+	 * Reload the system prompt and/or skills from disk, clear any custom prompt
+	 * override when reloading the system prompt, then rebuild and persist the
+	 * base system prompt once. Use to update a resumed session with the latest
+	 * APPEND_SYSTEM.md / SYSTEM.md / skill contents.
+	 */
+	private reloadFromFiles(options: { systemPrompt?: boolean; skills?: boolean }): void {
+		if (options.systemPrompt) {
+			this._resourceLoader.reloadSystemPrompt();
+			this._customSystemPromptOverride = undefined;
+		}
+		if (options.skills) {
+			this._resourceLoader.reloadSkills();
+			this._effectiveSkills = undefined;
+		}
+		this._commitBaseSystemPrompt(this._rebuildSystemPrompt(this.getActiveToolNames()), true);
+	}
+
+	/**
+	 * Reload the system prompt (SYSTEM.md / APPEND_SYSTEM.md) from disk, clear
+	 * any custom prompt override, and persist. Keeps the current effective
+	 * skill set.
 	 */
 	reloadSystemPromptFromFiles(): void {
-		this._customSystemPromptOverride = undefined;
-		this._commitBaseSystemPrompt(this._rebuildSystemPrompt(this.getActiveToolNames()), true);
+		this.reloadFromFiles({ systemPrompt: true });
+	}
+
+	/**
+	 * Reload skills from disk and persist. Keeps the current file-based system
+	 * prompt.
+	 */
+	reloadSkillsFromFiles(): void {
+		this.reloadFromFiles({ skills: true });
+	}
+
+	/** Reload both the system prompt and skills from disk, then persist. */
+	reloadAllFromFiles(): void {
+		this.reloadFromFiles({ systemPrompt: true, skills: true });
 	}
 
 	/**
@@ -1798,7 +1847,7 @@ export class AgentSession {
 		const skillName = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
 		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
 
-		const skill = this.resourceLoader.getSkills().skills.find((s) => s.name === skillName);
+		const skill = this._resolveEffectiveSkills().find((s) => s.name === skillName);
 		if (!skill) return text; // Unknown skill, pass through
 
 		try {
@@ -3047,7 +3096,7 @@ export class AgentSession {
 				sourceInfo: template.sourceInfo,
 			}));
 
-			const skills: SlashCommandInfo[] = this._resourceLoader.getSkills().skills.map((skill) => ({
+			const skills: SlashCommandInfo[] = this._resolveEffectiveSkills().map((skill) => ({
 				name: `skill:${skill.name}`,
 				description: skill.description,
 				source: "skill",

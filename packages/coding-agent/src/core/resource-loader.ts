@@ -49,6 +49,10 @@ export interface ResourceLoader {
 	getAppendSystemPromptSources(): Array<{ path: string }>;
 	extendResources(paths: ResourceExtensionPaths): void;
 	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
+	/** Re-read the system prompt and append-system-prompt files from disk. */
+	reloadSystemPrompt(): void;
+	/** Re-scan the configured skill paths from disk. */
+	reloadSkills(): void;
 }
 
 function resolvePromptInput(input: string | undefined, description: string): string | undefined {
@@ -523,6 +527,18 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
 
+		// System prompt and append sources are re-read from disk via the granular
+		// reloadSystemPrompt() method.
+		this.reloadSystemPrompt();
+		this.loaded = true;
+	}
+
+	/**
+	 * Re-read the system prompt and append-system-prompt files from disk.
+	 * Unlike reload(), this does not touch extensions, skills, prompts, themes,
+	 * or context files, and does not require project-trust resolution.
+	 */
+	reloadSystemPrompt(): void {
 		const systemPromptSource = this.systemPromptSource ?? this.discoverSystemPromptFile();
 		const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt");
 		this.systemPrompt = this.systemPromptOverride ? this.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
@@ -543,7 +559,15 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.appendSystemPromptSourcePaths = appendSources
 			.filter((source) => existsSync(source))
 			.map((source) => resolvePath(source));
-		this.loaded = true;
+	}
+
+	/**
+	 * Re-scan the configured skill paths from disk.
+	 * Unlike reload(), this does not touch extensions, prompts, themes, or
+	 * context files, and does not require project-trust resolution.
+	 */
+	reloadSkills(): void {
+		this.updateSkillsFromPaths(this.lastSkillPaths, this.resourceMetadataByPath);
 	}
 
 	private async loadCurrentExtensionSet(options: { includeInlineFactories: boolean }): Promise<LoadExtensionsResult> {

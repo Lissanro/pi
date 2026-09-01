@@ -3378,6 +3378,12 @@ export class InteractiveMode {
 				await this.handleSystemPromptCommand(arg);
 				return;
 			}
+			if (text === "/update" || text.startsWith("/update ")) {
+				const arg = text.startsWith("/update ") ? text.slice(7).trim() : "";
+				this.editor.setText("");
+				this.handleUpdateCommand(arg);
+				return;
+			}
 			if (text === "/debug") {
 				this.handleDebugCommand();
 				this.editor.setText("");
@@ -7097,12 +7103,27 @@ export class InteractiveMode {
 		}
 	}
 
-	private handleSystemPromptCommand(arg: string): void {
-		if (arg === "update") {
-			this.session.reloadSystemPromptFromFiles();
-			this.showStatus("System prompt updated from current files and saved to the session");
+	private handleUpdateCommand(arg: string): void {
+		const target = arg === "" ? "all" : arg;
+		if (target === "all") {
+			this.session.reloadAllFromFiles();
+			this.showStatus("Updated system prompt and skills from current files; saved to the session");
 			return;
 		}
+		if (target === "system-prompt" || target === "system_prompt") {
+			this.session.reloadSystemPromptFromFiles();
+			this.showStatus("Updated system prompt from current files; saved to the session");
+			return;
+		}
+		if (target === "skills") {
+			this.session.reloadSkillsFromFiles();
+			this.showStatus("Updated skills from current files; saved to the session");
+			return;
+		}
+		this.showError(`Unknown /update target: ${arg}. Usage: /update [all|system-prompt|skills]`);
+	}
+
+	private handleSystemPromptCommand(arg: string): void {
 		if (arg === "clear") {
 			this.session.setCustomSystemPrompt("");
 			this.showStatus("Custom system prompt cleared; using the file-based prompt");
@@ -7135,7 +7156,7 @@ export class InteractiveMode {
 			info += `${theme.fg("dim", "Append:")}\n${appendPaths}\n`;
 		}
 		info += `${theme.fg("dim", "Length:")} ${prompt.length} characters\n`;
-		info += `\n${theme.fg("dim", "Usage:")} /system-prompt update (reload from files) | set <text> | clear\n`;
+		info += `\n${theme.fg("dim", "Usage:")} /system-prompt [set <text>|clear] | /update [all|system-prompt|skills]\n`;
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));

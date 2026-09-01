@@ -77,9 +77,14 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "resume", description: "Resume a different session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files" },
 	{
+		name: "update",
+		description: "Update the system prompt and/or skills from current files",
+		argumentHint: "[all|system-prompt|skills]",
+	},
+	{
 		name: "system-prompt",
-		description: "Show the system prompt, update it from files, or set a custom prompt",
-		argumentHint: "[update|set <text>]",
+		description: "Show the system prompt or set a custom prompt",
+		argumentHint: "[set <text>|clear]",
 	},
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];

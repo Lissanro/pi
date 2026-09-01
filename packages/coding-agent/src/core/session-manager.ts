@@ -26,6 +26,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import type { Skill } from "./skills.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -138,6 +139,13 @@ export interface SystemPromptEntry extends SessionEntryBase {
 	 * --system-prompt) that replaces the file-based SYSTEM.md prompt.
 	 */
 	customPrompt?: string;
+	/**
+	 * The effective skill set (name/description/location metadata) embedded in
+	 * the prompt. Restored verbatim on resume so the runtime skill list stays
+	 * consistent with the restored prompt and the prefill cache survives skill
+	 * file edits.
+	 */
+	skills?: Skill[];
 }
 
 /**
@@ -1218,7 +1226,7 @@ export class SessionManager {
 	}
 
 	/** Append a system prompt snapshot as child of current leaf, then advance leaf. Returns entry id. */
-	appendSystemPrompt(systemPrompt: string, customPrompt?: string): string {
+	appendSystemPrompt(systemPrompt: string, customPrompt?: string, skills?: Skill[]): string {
 		const entry: SystemPromptEntry = {
 			type: "system_prompt",
 			id: generateId(this.byId),
@@ -1226,6 +1234,7 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			systemPrompt,
 			...(customPrompt !== undefined && { customPrompt }),
+			...(skills !== undefined && { skills }),
 		};
 		this._appendEntry(entry);
 		return entry.id;
@@ -1233,14 +1242,15 @@ export class SessionManager {
 
 	/**
 	 * Get the latest system prompt snapshot on the active path, if any.
-	 * Returns the full saved prompt and optional custom base prompt text.
+	 * Returns the full saved prompt, optional custom base prompt text, and the
+	 * effective skill set embedded in the prompt.
 	 */
-	getSavedSystemPrompt(): { systemPrompt: string; customPrompt?: string } | undefined {
+	getSavedSystemPrompt(): { systemPrompt: string; customPrompt?: string; skills?: Skill[] } | undefined {
 		const path = this.getBranch();
 		for (let i = path.length - 1; i >= 0; i--) {
 			const entry = path[i];
 			if (entry.type === "system_prompt") {
-				return { systemPrompt: entry.systemPrompt, customPrompt: entry.customPrompt };
+				return { systemPrompt: entry.systemPrompt, customPrompt: entry.customPrompt, skills: entry.skills };
 			}
 		}
 		return undefined;

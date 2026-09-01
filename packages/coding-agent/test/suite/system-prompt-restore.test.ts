@@ -38,6 +38,8 @@ function createResourceLoader(append: string): ResourceLoader {
 		getAppendSystemPromptSources: () => [],
 		extendResources: () => {},
 		reload: async () => {},
+		reloadSystemPrompt: () => {},
+		reloadSkills: () => {},
 	};
 }
 

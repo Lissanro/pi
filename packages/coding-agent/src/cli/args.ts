@@ -16,7 +16,7 @@ export interface Args {
 	apiKey?: string;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
-	/** Force a rebuild of the system prompt from current files on resume. */
+	/** Force a rebuild of the system prompt and skills from current files on resume. */
 	updateSystemPrompt?: boolean;
 	thinking?: ThinkingLevel;
 	continue?: boolean;
@@ -289,7 +289,7 @@ ${chalk.bold("Options:")}
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
-  --update-system-prompt         On resume, rebuild the system prompt from current files instead of using the saved one
+  --update-system-prompt         On resume, rebuild the system prompt (and reload skills) from current files instead of using the saved ones
   --mode <mode>                  Output mode: text (default), json, or rpc
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
