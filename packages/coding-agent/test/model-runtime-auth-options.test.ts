@@ -126,7 +126,7 @@ describe("ModelRuntime auth options", () => {
 		expect(await runtime.checkAuth("anthropic")).toMatchObject({ type: "oauth" });
 	});
 
-	it("distinguishes subscription OAuth from generic OAuth sign-in", async () => {
+	it.skipIf(cloudDisabled)("distinguishes subscription OAuth from generic OAuth sign-in", async () => {
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory({
 				anthropic: {

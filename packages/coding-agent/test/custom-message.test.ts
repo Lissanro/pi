@@ -1,10 +1,14 @@
-import { Text } from "@earendil-works/pi-tui";
+import { setPadLinesToWidth, Text } from "@earendil-works/pi-tui";
 import { describe, expect, test } from "vitest";
 import type { MessageRenderer, MessageRenderOptions } from "../src/core/extensions/types.ts";
 import type { CustomMessage } from "../src/core/messages.ts";
 import { CustomMessageComponent } from "../src/modes/interactive/components/custom-message.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
+
+// The component renders custom renderer output through TUI Text, whose left/right
+// padding is only applied when full-width line padding is enabled.
+setPadLinesToWidth(true);
 
 describe("CustomMessageComponent", () => {
 	test("provides output padding to custom renderers and updates it", () => {

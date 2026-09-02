@@ -58,7 +58,7 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toMatch(
 				/When resolving relative doc paths, use .+ as the docs root and .+ as the examples root\./,
 			);
-			expect(prompt).toContain("environment variables (docs/environment-variables.md)");
+			expect(prompt).toContain("- Environment variables: docs/environment-variables.md");
 		});
 	});
 

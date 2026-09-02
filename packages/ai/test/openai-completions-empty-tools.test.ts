@@ -170,7 +170,7 @@ describe("openai-completions empty tools handling", () => {
 			process.env.CLOUDFLARE_API_KEY = "cf-token";
 			process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
 			process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-			const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6")!;
+			const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6" as any)!;
 
 			await streamSimple(
 				model,
@@ -208,7 +208,7 @@ describe("openai-completions empty tools handling", () => {
 		process.env.CLOUDFLARE_API_KEY = "cf-token";
 		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
 		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-		const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6")!;
+		const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6" as any)!;
 
 		await streamSimple(model, {
 			messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
@@ -240,11 +240,11 @@ describe("openai-completions empty tools handling", () => {
 		},
 	);
 
-	it("sends session affinity headers for Workers AI through Cloudflare AI Gateway", async () => {
+	it.skipIf(cloudDisabled)("sends session affinity headers for Workers AI through Cloudflare AI Gateway", async () => {
 		process.env.CLOUDFLARE_API_KEY = "cf-token";
 		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
 		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-		const workersModel = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6")!;
+		const workersModel = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6" as any)!;
 
 		await streamSimple(
 			workersModel,

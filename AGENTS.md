@@ -30,7 +30,7 @@
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
 - Only run `npm run build` or `npm test` when the current task requires it.
-- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For all non-e2e tests, run `./test.sh` from the repo root. Otherwise run specific tests from the package root:
+- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present, and direct runs inherit ambient API keys (e.g. `OPENAI_API_KEY`) that can change env-dependent results. `./test.sh` from the repo root is the authoritative run: it isolates HOME/credentials/network and disables cloud-provider tests by default (`PI_DISABLE_CLOUD_PROVIDERS=1`). It prints an aggregate `=== TOTAL ===` line at the end (passed/failed/skipped) and exits non-zero if any package failed; filter with `./test.sh 2>&1 | tail -15` to see the final total, or `grep '=== TOTAL\|FAIL\|failed'` for failures. Otherwise run specific tests from the package root:
   - Vitest: `node "$(git rev-parse --show-toplevel)/node_modules/vitest/dist/cli.js" --run test/specific.test.ts`
   - `packages/tui` (`node:test`): `node --test test/specific.test.ts`
 - Running tests may modify `package.json` / lockfiles on their own; if the change was not intentional, restore it with `git checkout -- <file>` before committing.

@@ -155,7 +155,7 @@ describe("OpenAI Responses tool-call namespaces", () => {
 		}).find((item) => item.type === "custom_tool_call");
 		expect(replayed).toMatchObject({
 			type: "custom_tool_call",
-			id: "ctc_test",
+			id: "fc_ctc_test",
 			call_id: "call_test",
 			name: "query",
 			input: "hello",

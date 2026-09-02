@@ -125,7 +125,7 @@ Custom tools may also be registered by extensions.${guidelinesSection}`;
 	// Pi documentation paths (always included; used when pi internals are referenced)
 	prompt += `\n\nPi documentation:\n- README: ${readmePath}\n- Docs directory: ${docsPath}\n- Examples directory: ${examplesPath}`;
 
-	prompt += `\n\nPi doc file locations:\n- Extensions: docs/extensions.md\n- Themes: docs/themes.md\n- Skills: docs/skills.md\n- Prompt templates: docs/prompt-templates.md\n- TUI components: docs/tui.md\n- Keybindings: docs/keybindings.md\n- SDK integrations: docs/sdk.md\n- Custom providers: docs/custom-provider.md\n- Adding models: docs/models.md\n- Pi packages: docs/packages.md`;
+	prompt += `\n\nPi doc file locations:\n- Extensions: docs/extensions.md\n- Themes: docs/themes.md\n- Skills: docs/skills.md\n- Prompt templates: docs/prompt-templates.md\n- TUI components: docs/tui.md\n- Keybindings: docs/keybindings.md\n- SDK integrations: docs/sdk.md\n- Custom providers: docs/custom-provider.md\n- Adding models: docs/models.md\n- Pi packages: docs/packages.md\n- Environment variables: docs/environment-variables.md`;
 
 	prompt += `\n\nWhen resolving relative doc paths, use ${docsPath} as the docs root and ${examplesPath} as the examples root.`;
 

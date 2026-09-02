@@ -71,29 +71,35 @@ describe("builtin providers", () => {
 		expect(getBuiltinModel("anthropic", "claude-haiku-4-5").compat?.supportsStrictTools).toBe(true);
 	});
 
-	it("uses official Kimi K3 pricing for Moonshot providers", () => {
-		const models = builtinModels();
-		for (const provider of ["moonshotai", "moonshotai-cn"]) {
-			expect(models.getModel(provider, "kimi-k3")?.cost).toEqual({
-				input: 3,
-				output: 15,
-				cacheRead: 0.3,
-				cacheWrite: 0,
-			});
-		}
-	});
+	it.skipIf(process.env.PI_DISABLE_CLOUD_PROVIDERS === "1")(
+		"uses official Kimi K3 pricing for Moonshot providers",
+		() => {
+			const models = builtinModels();
+			for (const provider of ["moonshotai", "moonshotai-cn"]) {
+				expect(models.getModel(provider, "kimi-k3")?.cost).toEqual({
+					input: 3,
+					output: 15,
+					cacheRead: 0.3,
+					cacheWrite: 0,
+				});
+			}
+		},
+	);
 
-	it("uses API-equivalent implied pricing for Kimi Coding subscription models", () => {
-		const models = builtinModels();
-		const expectedCosts = {
-			k3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
-			"kimi-for-coding-highspeed": { input: 1.9, output: 8, cacheRead: 0.38, cacheWrite: 0 },
-		};
+	it.skipIf(process.env.PI_DISABLE_CLOUD_PROVIDERS === "1")(
+		"uses API-equivalent implied pricing for Kimi Coding subscription models",
+		() => {
+			const models = builtinModels();
+			const expectedCosts = {
+				k3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
+				"kimi-for-coding-highspeed": { input: 1.9, output: 8, cacheRead: 0.38, cacheWrite: 0 },
+			};
 
-		for (const [modelId, cost] of Object.entries(expectedCosts)) {
-			expect(models.getModel("kimi-coding", modelId)?.cost).toEqual(cost);
-		}
-	});
+			for (const [modelId, cost] of Object.entries(expectedCosts)) {
+				expect(models.getModel("kimi-coding", modelId)?.cost).toEqual(cost);
+			}
+		},
+	);
 
 	it("resolves Anthropic bearer auth from env with auth token precedence", async () => {
 		const models = createModels({

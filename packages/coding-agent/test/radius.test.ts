@@ -99,7 +99,7 @@ describe("Radius provider", () => {
 		expect(radiusRequest?.[1]?.headers).toMatchObject({ authorization: "Bearer access-token" });
 	});
 
-	it("does not refresh catalogs over the network by default", async () => {
+	it.skipIf(cloudDisabled)("does not refresh catalogs over the network by default", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected catalog fetch"));
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory({

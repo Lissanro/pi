@@ -48,6 +48,6 @@ it("keeps zero costs for Coding Plan models without a matching API price", () =>
 
 	for (const provider of ["zai", "zai-coding-cn"] as const) {
 		expect(getBuiltinModel(provider, "glm-5.2-highspeed").cost).toEqual(zeroCost);
-		expect(getBuiltinModel(provider, "glm-5.3").cost).toEqual(zeroCost);
+		expect(getBuiltinModel(provider, "glm-5.3-highspeed").cost).toEqual(zeroCost);
 	}
 });

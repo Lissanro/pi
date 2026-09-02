@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
 import { Container, isViewportTUI, Text } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -150,7 +151,9 @@ describe("InteractiveMode right-click paste", () => {
 });
 
 type CopyCommandContext = {
-	session: { getLastAssistantText: () => string | undefined };
+	session: {
+		getEditableMessage: (index: number) => { entryId: string; message: AgentMessage } | undefined;
+	};
 	ui: ReturnType<typeof createInteractiveTui>;
 	showStatus: (message: string) => void;
 	showError: (message: string) => void;
@@ -159,7 +162,25 @@ type CopyCommandContext = {
 type CopyCommandOptions = { flashConfirmation?: boolean };
 
 type CopyCommandPrototype = {
-	handleCopyCommand(this: CopyCommandContext, options?: CopyCommandOptions): Promise<void>;
+	handleCopyCommand(this: CopyCommandContext, arg: string, options?: CopyCommandOptions): Promise<void>;
+};
+
+const copyableAssistantMessage: AgentMessage = {
+	role: "assistant",
+	api: "openai-responses",
+	provider: "openai",
+	model: "gpt-test",
+	content: [{ type: "text", text: "assistant response" }],
+	usage: {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	},
+	stopReason: "stop",
+	timestamp: Date.now(),
 };
 
 const copyCommandPrototype = InteractiveMode.prototype as unknown as CopyCommandPrototype;
@@ -181,7 +202,9 @@ describe("InteractiveMode copy confirmation", () => {
 		const showStatus = vi.fn();
 		const showError = vi.fn();
 		const context: CopyCommandContext = {
-			session: { getLastAssistantText: () => "assistant response" },
+			session: {
+				getEditableMessage: () => ({ entryId: "0", message: copyableAssistantMessage }),
+			},
 			ui,
 			showStatus,
 			showError,
@@ -190,10 +213,10 @@ describe("InteractiveMode copy confirmation", () => {
 		ui.start();
 		try {
 			await terminal.waitForRender();
-			await copyCommandPrototype.handleCopyCommand.call(context, { flashConfirmation: true });
+			await copyCommandPrototype.handleCopyCommand.call(context, "", { flashConfirmation: true });
 			await terminal.waitForRender();
 
-			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
+			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("<pi_content>assistant response</pi_content>");
 			expect(showStatus).not.toHaveBeenCalled();
 			expect(showError).not.toHaveBeenCalled();
 			expect(terminal.getViewport().some((line) => line.includes("Copied!"))).toBe(true);
@@ -212,15 +235,17 @@ describe("InteractiveMode copy confirmation", () => {
 		const showStatus = vi.fn();
 		const showError = vi.fn();
 		const context: CopyCommandContext = {
-			session: { getLastAssistantText: () => "assistant response" },
+			session: {
+				getEditableMessage: () => ({ entryId: "0", message: copyableAssistantMessage }),
+			},
 			ui,
 			showStatus,
 			showError,
 		};
 
-		await copyCommandPrototype.handleCopyCommand.call(context, { flashConfirmation: true });
+		await copyCommandPrototype.handleCopyCommand.call(context, "", { flashConfirmation: true });
 
-		expect(showStatus).toHaveBeenCalledWith("Copied last agent message to clipboard");
+		expect(showStatus).toHaveBeenCalledWith("Copied last message to clipboard");
 		expect(showError).not.toHaveBeenCalled();
 	});
 });

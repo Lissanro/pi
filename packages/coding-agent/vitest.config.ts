@@ -10,7 +10,8 @@ export default mergeConfig(
 			environment: "node",
 			testTimeout: 30000,
 			// Tests run offline by default; opt in with allowNetwork() from test/test-network-env.ts.
-			env: { PI_OFFLINE: "1" },
+			// Cloud-provider tests are disabled by default too; override PI_DISABLE_CLOUD_PROVIDERS=0 to run them.
+			env: { PI_OFFLINE: "1", PI_DISABLE_CLOUD_PROVIDERS: "1" },
 			unstubEnvs: true,
 			reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
 			silent: "passed-only",

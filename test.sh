@@ -60,6 +60,7 @@ test_env=(
 	"NPM_CONFIG_GLOBALCONFIG=$test_root/npm-globalconfig"
 	"NPM_CONFIG_CACHE=$test_root/cache/npm"
 	"PI_NO_LOCAL_LLM=1"
+	"PI_DISABLE_CLOUD_PROVIDERS=1"
 	"AWS_EC2_METADATA_DISABLED=true"
 )
 
@@ -75,9 +76,10 @@ for name in CI GITHUB_ACTIONS; do
 	[[ -z "$value" ]] || test_env+=("$name=$value")
 done
 
-# NOTE: behavior-changing PI_* vars (PI_OFFLINE, PI_SKIP_VERSION_CHECK,
-# PI_DISABLE_CLOUD_PROVIDERS) are intentionally NOT unset: tests gate themselves
-# on these vars, so the suite must pass with them exported in the environment.
+# NOTE: behavior-changing PI_* vars (PI_OFFLINE, PI_SKIP_VERSION_CHECK) are
+# intentionally NOT unset: tests gate themselves on these vars. PI_DISABLE_CLOUD_PROVIDERS
+# is set to 1 by default so cloud-provider tests never run unless a developer
+# explicitly overrides it (e.g. PI_DISABLE_CLOUD_PROVIDERS=0 ./test.sh).
 
 # Unset API keys (see packages/ai/src/stream.ts getEnvApiKey)
 unset ANTHROPIC_API_KEY
@@ -140,4 +142,46 @@ unset BINANCE_API_SECRET
 unset BSCSCAN_API_KEY
 
 echo "Running tests without API keys in isolated home: $test_root/home"
-env -i "${test_env[@]}" npm test
+
+# Run the suite, capturing every package's vitest summary so we can aggregate a
+# final total. The pipe exit status is taken from npm test (via PIPESTATUS),
+# not from tee or the aggregator.
+summary_file="$test_root/summary.log"
+set -o pipefail
+set +e
+env -i "${test_env[@]}" npm test 2>&1 | tee "$summary_file"
+run_status=${PIPESTATUS[0]}
+set -e
+
+# Aggregate per-package vitest tallies. Every package prints lines shaped like:
+#   Test Files  241 passed | 11 skipped (252)
+#       Tests  2025 passed | 143 skipped (2168)
+# We sum the passed/failed/skipped numbers across all packages for a single total.
+awk '
+/^[[:space:]]+Tests[[:space:]]/ {
+	line = $0
+	# Normalize the count labels so we can total them regardless of order.
+	passed = 0; failed = 0; skipped = 0
+	while (match(line, /[0-9]+ (passed|failed|skipped)/)) {
+		count = substr(line, RSTART, RLENGTH)
+		num = count; sub(/ .*/, "", num)
+		if (count ~ /passed/) passed += num
+		else if (count ~ /failed/) failed += num
+		else skipped += num
+		line = substr(line, RSTART + RLENGTH)
+	}
+	TP += passed; TF += failed; TS += skipped
+}
+END {
+	printf "\n=== TOTAL: %d passed, %d failed, %d skipped ===\n", TP, TF, TS
+	if (TF > 0) exit 1
+}
+' "$summary_file"
+summary_status=$?
+
+# Prefer the npm test exit status; fall back to the aggregate when npm did not
+# report a failure explicitly.
+if [[ $run_status -ne 0 ]]; then
+	exit $run_status
+fi
+exit $summary_status
