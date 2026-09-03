@@ -147,7 +147,9 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 
 		expect(order).toEqual(["drainInput", "stop", "dispose"]);
 		const resumeCall = stdoutWrite.mock.calls.find((call) => String(call[0]).includes("To resume this session:"));
-		expect(resumeCall?.[0]).toBe(`\n${chalk.dim("To resume this session:")} ${APP_NAME} --session test-session\n`);
+		expect(resumeCall?.[0]).toBe(
+			`\n\x1b[2K${chalk.dim("To resume this session:")} ${APP_NAME} --session test-session\n`,
+		);
 	});
 
 	test("signal-triggered shutdown does not print a resume hint", async () => {

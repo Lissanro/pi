@@ -4356,8 +4356,11 @@ export class InteractiveMode {
 			// Write the resume hint on a fresh line and flush it before exiting.
 			// process.exit(0) below does not wait for pending async stdout writes,
 			// which can truncate or interleave the hint with other processes sharing
-			// the terminal. The leading newline keeps it off the prior line.
-			const hint = `\n${chalk.dim("To resume this session:")} ${resumeCommand}\n`;
+			// the terminal. The leading newline keeps it off the prior line, and the
+			// \x1b[2K erases the target line so stale trailing columns from a prior,
+			// taller render (lines are unpadded by default) cannot remain visible
+			// after the resume text.
+			const hint = `\n\x1b[2K${chalk.dim("To resume this session:")} ${resumeCommand}\n`;
 			await writeFlushedStdout(hint);
 		}
 
