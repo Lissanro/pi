@@ -2,7 +2,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
-import { FooterComponent, formatCwdForFooter } from "../src/modes/interactive/components/footer.ts";
+import { FooterComponent, formatCwdForFooter, formatTokens } from "../src/modes/interactive/components/footer.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -78,7 +78,7 @@ function createSession(options: {
 			getSessionName: () => options.sessionName,
 			getCwd: () => "/tmp/project",
 		},
-		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3 }),
+		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3, tokens: 24_600 }),
 		modelRuntime: {
 			isUsingSubscription: () => options.usingSubscription ?? false,
 		},
@@ -100,6 +100,27 @@ function createFooterData(providerCount: number): ReadonlyFooterDataProvider {
 
 	return provider;
 }
+
+describe("formatTokens", () => {
+	it("uses 1024 as the default base so 256K context windows render as 256k", () => {
+		expect(formatTokens(262_144)).toBe("256k");
+		expect(formatTokens(393_216)).toBe("384k");
+	});
+
+	it("uses the decimal base when 1000 is selected", () => {
+		expect(formatTokens(262_144, 1000)).toBe("262k");
+		expect(formatTokens(393_216, 1000)).toBe("393k");
+	});
+
+	it("renders small counts without a suffix", () => {
+		expect(formatTokens(512)).toBe("512");
+	});
+
+	it("renders M suffixes with the selected base", () => {
+		expect(formatTokens(1_048_576, 1024)).toBe("1.0M");
+		expect(formatTokens(1_500_000, 1000)).toBe("1.5M");
+	});
+});
 
 describe("formatCwdForFooter", () => {
 	it("does not abbreviate sibling paths that share the home prefix", () => {
@@ -188,6 +209,31 @@ describe("FooterComponent width handling", () => {
 
 		const statsLine = stripAnsi(footer.render(120)[1]);
 		expect(statsLine).toContain("$1.250");
+	});
+
+	it("shows context as used/window with the percentage", () => {
+		const session = createSession({
+			sessionName: "",
+			usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+		});
+		const footer = new FooterComponent(session, createFooterData(1));
+
+		const statsLine = stripAnsi(footer.render(120)[1]);
+		// contextWindow 200000, tokens 24600 (12.3%) => "24k/195k (12.3%)"
+		expect(statsLine).toContain("24k/195k (12.3%)");
+	});
+
+	it("uses the configured token count base in stats", () => {
+		const session = createSession({
+			sessionName: "",
+			usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+		});
+		const footer = new FooterComponent(session, createFooterData(1));
+		footer.setTokenCountBase(1000);
+
+		const statsLine = stripAnsi(footer.render(120)[1]);
+		// contextWindow 200000, tokens 24600 (12.3%) with base 1000 => "25k/200k (12.3%)"
+		expect(statsLine).toContain("25k/200k (12.3%)");
 	});
 
 	it("shows the latest cache hit rate when cache usage is present", () => {

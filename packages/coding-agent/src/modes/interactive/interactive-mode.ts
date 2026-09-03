@@ -866,6 +866,7 @@ export class InteractiveMode {
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+		this.footer.setTokenCountBase(this.settingsManager.getTokenCountBase());
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);
 
@@ -2254,6 +2255,7 @@ export class InteractiveMode {
 		this.applyFullscreenScrollbarSetting();
 		this.footer.setSession(this.session);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+		this.footer.setTokenCountBase(this.settingsManager.getTokenCountBase());
 		this.footerDataProvider.setCwd(this.sessionManager.getCwd());
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 		this.outputPad = this.settingsManager.getOutputPad();
@@ -4969,6 +4971,7 @@ export class InteractiveMode {
 					wrapLines: this.settingsManager.getWrapLines(),
 					messageBackground: this.settingsManager.getMessageBackground(),
 					messageSeparator: this.settingsManager.getMessageSeparator(),
+					tokenCountBase: this.settingsManager.getTokenCountBase(),
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
 					quietStartup: this.settingsManager.getQuietStartup(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
@@ -5119,6 +5122,10 @@ export class InteractiveMode {
 						this.settingsManager.setMessageSeparator(enabled);
 						setMessageSeparator(enabled);
 						this.rebuildChatFromMessages();
+					},
+					onTokenCountBaseChange: (base) => {
+						this.settingsManager.setTokenCountBase(base);
+						this.footer.setTokenCountBase(base);
 					},
 					onOutputPadChange: (padding) => {
 						this.settingsManager.setOutputPad(padding);

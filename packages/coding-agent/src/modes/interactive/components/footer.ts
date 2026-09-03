@@ -19,14 +19,16 @@ function sanitizeStatusText(text: string): string {
 }
 
 /**
- * Format token counts for compact footer display.
+ * Format token counts for compact footer display. The base selects the divisor
+ * for the k/M suffixes: 1024 (model context windows are powers of two, so 256K
+ * tokens renders as 256k) or 1000 (decimal).
  */
-export function formatTokens(count: number): string {
-	if (count < 1000) return count.toString();
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1000000) return `${Math.round(count / 1000)}k`;
-	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-	return `${Math.round(count / 1000000)}M`;
+export function formatTokens(count: number, base: 1000 | 1024 = 1024): string {
+	if (count < base) return count.toString();
+	if (count < base * 10) return `${(count / base).toFixed(1)}k`;
+	if (count < base * base) return `${Math.round(count / base)}k`;
+	if (count < base * base * 10) return `${(count / base / base).toFixed(1)}M`;
+	return `${Math.round(count / base / base)}M`;
 }
 
 export function formatCwdForFooter(cwd: string, home: string | undefined): string {
@@ -49,6 +51,7 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
  */
 export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
+	private tokenCountBase: 1000 | 1024 = 1024;
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
 
@@ -63,6 +66,10 @@ export class FooterComponent implements Component {
 
 	setAutoCompactEnabled(enabled: boolean): void {
 		this.autoCompactEnabled = enabled;
+	}
+
+	setTokenCountBase(base: 1000 | 1024): void {
+		this.tokenCountBase = base;
 	}
 
 	/**
@@ -108,6 +115,7 @@ export class FooterComponent implements Component {
 		// exposes it, otherwise it is "?" until the next LLM response reports usage.
 		const contextUsage = this.session.getContextUsage();
 		const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
+		const contextTokens = contextUsage?.tokens ?? null;
 		const contextPercentValue = contextUsage?.percent ?? 0;
 		const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
 
@@ -128,10 +136,10 @@ export class FooterComponent implements Component {
 
 		// Build stats line
 		const statsParts = [];
-		if (usageTotals.input) statsParts.push(`↑${formatTokens(usageTotals.input)}`);
-		if (usageTotals.output) statsParts.push(`↓${formatTokens(usageTotals.output)}`);
-		if (usageTotals.cacheRead) statsParts.push(`R${formatTokens(usageTotals.cacheRead)}`);
-		if (usageTotals.cacheWrite) statsParts.push(`W${formatTokens(usageTotals.cacheWrite)}`);
+		if (usageTotals.input) statsParts.push(`↑${formatTokens(usageTotals.input, this.tokenCountBase)}`);
+		if (usageTotals.output) statsParts.push(`↓${formatTokens(usageTotals.output, this.tokenCountBase)}`);
+		if (usageTotals.cacheRead) statsParts.push(`R${formatTokens(usageTotals.cacheRead, this.tokenCountBase)}`);
+		if (usageTotals.cacheWrite) statsParts.push(`W${formatTokens(usageTotals.cacheWrite, this.tokenCountBase)}`);
 		if ((usageTotals.cacheRead > 0 || usageTotals.cacheWrite > 0) && latestCacheHitRate !== undefined) {
 			statsParts.push(`CH${latestCacheHitRate.toFixed(1)}%`);
 		}
@@ -145,13 +153,16 @@ export class FooterComponent implements Component {
 			statsParts.push(costStr);
 		}
 
-		// Colorize context percentage based on usage
+		// Colorize context usage based on percent. Show the used tokens over the
+		// context window with the percentage, e.g. "89k/256k (34.7%)", so the
+		// current context length is directly readable.
 		let contextPercentStr: string;
 		const autoIndicator = this.autoCompactEnabled ? " (auto)" : "";
+		const windowStr = formatTokens(contextWindow, this.tokenCountBase);
 		const contextPercentDisplay =
-			contextPercent === "?"
-				? `?/${formatTokens(contextWindow)}${autoIndicator}`
-				: `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
+			contextPercent === "?" || contextTokens === null
+				? `?/${windowStr}${autoIndicator}`
+				: `${formatTokens(contextTokens, this.tokenCountBase)}/${windowStr} (${contextPercent}%)${autoIndicator}`;
 		if (contextPercentValue > 90) {
 			contextPercentStr = theme.fg("error", contextPercentDisplay);
 		} else if (contextPercentValue > 70) {

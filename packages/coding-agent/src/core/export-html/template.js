@@ -796,11 +796,13 @@
       // MESSAGE RENDERING
       // ============================================================
 
-      function formatTokens(count) {
-        if (count < 1000) return count.toString();
-        if (count < 10000) return (count / 1000).toFixed(1) + 'k';
-        if (count < 1000000) return Math.round(count / 1000) + 'k';
-        return (count / 1000000).toFixed(1) + 'M';
+      function formatTokens(count, base) {
+        base = base || 1024;
+        if (count < base) return count.toString();
+        if (count < base * 10) return (count / base).toFixed(1) + 'k';
+        if (count < base * base) return Math.round(count / base) + 'k';
+        if (count < base * base * 10) return (count / base / base).toFixed(1) + 'M';
+        return Math.round(count / base / base) + 'M';
       }
 
       function formatTimestamp(ts) {

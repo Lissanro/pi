@@ -24,6 +24,10 @@ The summarization request carries exactly what the chat contains - system prompt
 
 Rendered lines carry only their own content: no padding by default and no inserted line breaks, so copying multiline text with the mouse produces exactly what was written, and code blocks render verbatim. The upstream look is one setting away: `padLines` (full-width padding), `wrapLines` (wrap with newlines at the terminal width), `messageBackground`, and `messageSeparator`.
 
+## Footer stats
+
+The footer shows the session's token usage and context state on the status line. Each item reads as follows: `↑` is total input tokens, `↓` total output tokens, `R` prompt-cache read tokens, `W` prompt-cache write tokens, `CH` the latest prompt-cache hit rate, and `$` the estimated cost. The context indicator shows the current context over the model's context window with the percentage, e.g. `89k/256k (34.7%)`, so the current context length is directly readable; `?` means the count is unknown (e.g. right after compaction, before the next response). The `k`/`M` suffixes divide by the `tokenCountBase` setting (default 1024, matching model context windows: a 256K window renders as `256k`; set it to 1000 for decimal), which can be changed in `/settings`.
+
 ## Framing and providers
 
 The default system prompt is a factual reference: a tool inventory and the documentation locations. Compaction and summary prompts use neutral direction labels (INCOMING/OUTGOING/TOOL). The `incomingMessagePrefix` setting prepends text to each user message when it is sent to the model; the session file keeps the typed text.

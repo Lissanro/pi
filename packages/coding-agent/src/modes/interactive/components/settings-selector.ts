@@ -80,6 +80,7 @@ export interface SettingsConfig {
 	wrapLines: boolean;
 	messageBackground: boolean;
 	messageSeparator: boolean;
+	tokenCountBase: 1000 | 1024;
 	autocompleteMaxVisible: number;
 	quietStartup: boolean;
 	defaultProjectTrust: DefaultProjectTrust;
@@ -120,6 +121,7 @@ export interface SettingsCallbacks {
 	onWrapLinesChange: (enabled: boolean) => void;
 	onMessageBackgroundChange: (enabled: boolean) => void;
 	onMessageSeparatorChange: (enabled: boolean) => void;
+	onTokenCountBaseChange: (base: 1000 | 1024) => void;
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
 	onQuietStartupChange: (enabled: boolean) => void;
 	onDefaultProjectTrustChange: (defaultProjectTrust: DefaultProjectTrust) => void;
@@ -818,6 +820,16 @@ export class SettingsSelectorComponent extends Container {
 			values: ["true", "false"],
 		});
 
+		// Token count base selector (insert after message-separator)
+		const tokenCountBaseIndex = items.findIndex((item) => item.id === "message-separator");
+		items.splice(tokenCountBaseIndex + 1, 0, {
+			id: "token-count-base",
+			label: "Token count base",
+			description: "Divisor for k/M suffixes in the footer stats (1024 for model context windows, 1000 decimal)",
+			currentValue: String(config.tokenCountBase),
+			values: ["1024", "1000"],
+		});
+
 		// Autocomplete max visible toggle (insert after output-padding)
 		const outputPaddingIndex = items.findIndex((item) => item.id === "output-padding");
 		items.splice(outputPaddingIndex + 1, 0, {
@@ -944,6 +956,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "message-separator":
 						callbacks.onMessageSeparatorChange(newValue === "true");
+						break;
+					case "token-count-base":
+						callbacks.onTokenCountBaseChange(newValue === "1024" ? 1024 : 1000);
 						break;
 					case "autocomplete-max-visible":
 						callbacks.onAutocompleteMaxVisibleChange(parseInt(newValue, 10));

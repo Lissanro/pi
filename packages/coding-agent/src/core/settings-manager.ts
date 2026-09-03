@@ -148,6 +148,7 @@ export interface Settings {
 	wrapLines?: boolean; // Wrap lines with newlines at the terminal width (default: false; padLines forces it on)
 	messageBackground?: boolean; // Colored background for user messages and tool call fragments (default: false)
 	messageSeparator?: boolean; // Full-width background on the first/last line of each message/tool block (default: true)
+	tokenCountBase?: 1000 | 1024; // Base for token count suffixes in the footer stats (default: 1024)
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
@@ -1409,6 +1410,16 @@ export class SettingsManager {
 	setMessageSeparator(enabled: boolean): void {
 		this.globalSettings.messageSeparator = enabled;
 		this.markModified("messageSeparator");
+		this.save();
+	}
+
+	getTokenCountBase(): 1000 | 1024 {
+		return this.settings.tokenCountBase ?? 1024;
+	}
+
+	setTokenCountBase(base: 1000 | 1024): void {
+		this.globalSettings.tokenCountBase = base;
+		this.markModified("tokenCountBase");
 		this.save();
 	}
 
