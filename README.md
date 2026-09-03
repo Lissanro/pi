@@ -28,6 +28,8 @@ Rendered lines carry only their own content: no padding by default and no insert
 
 The footer shows the session's token usage and context state on the status line. Each item reads as follows: `↑` is total input tokens, `↓` total output tokens, `R` prompt-cache read tokens, `W` prompt-cache write tokens, `CH` the latest prompt-cache hit rate, and `$` the estimated cost. The context indicator shows the current context over the model's context window with the percentage, e.g. `89k/256k (34.7%)`, so the current context length is directly readable; `?` means the count is unknown (e.g. right after compaction, before the next response). The `k`/`M` suffixes divide by the `tokenCountBase` setting (default 1024, matching model context windows: a 256K window renders as `256k`; set it to 1000 for decimal), which can be changed in `/settings`.
 
+The `$` cost is computed from the model's per-million-token rates, so it stays absent (no `$`) for local models unless you give them a cost. To track energy or hardware cost for a local model, set its `cost` in `~/.pi/agent/models.json`; for example `{ "input": 1, "output": 3, "cacheRead": 0.1, "cacheWrite": 0.5 }` sets rates in dollars per million tokens, with an optional `tiers` array for cheaper rates above an `inputTokensAbove` threshold. See [packages/coding-agent/docs/models.md](packages/coding-agent/docs/models.md) for the full schema.
+
 ## Framing and providers
 
 The default system prompt is a factual reference: a tool inventory and the documentation locations. Compaction and summary prompts use neutral direction labels (INCOMING/OUTGOING/TOOL). The `incomingMessagePrefix` setting prepends text to each user message when it is sent to the model; the session file keeps the typed text.
