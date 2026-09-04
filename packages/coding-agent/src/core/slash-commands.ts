@@ -61,8 +61,9 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "heartbeat",
 		description:
-			"Send the message below repeatedly, or continue with no message: every duration (e.g. 3h), or daily at a local time (HH:MM[:SS]). Use list or no arguments to list, -N to cancel the last N, or cancel <id> to cancel one",
-		argumentHint: "[-N|cancel <id>|list|duration e.g. 3h|HH:MM[:SS]]",
+			"Send the message below repeatedly, or continue with no message: every duration (e.g. 3h), or daily at a local time (HH:MM[:SS]). Use list or no arguments to list (with time left or paused), cancel <id[,id...]> to cancel, pause [id[,id...]] / continue [id[,id...]] to toggle, save [path] / load [path] to persist to or restore from HEARTBEAT.md (default), or -N to cancel the last N",
+		argumentHint:
+			"[-N|list|cancel <id[,id...]>|pause [id[,id...]>|continue [id[,id...]>|save [path]|load [path]|duration e.g. 3h|HH:MM[:SS]]",
 	},
 	{
 		name: "delete",

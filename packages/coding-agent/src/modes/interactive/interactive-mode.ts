@@ -343,6 +343,12 @@ export interface HeartbeatEntry {
 	intervalMs: number | null;
 	/** Daily local time, or null for interval beats. */
 	dailyAt: { hh: number; mm: number; ss: number } | null;
+	/** Original schedule spec string, kept for a lossless /heartbeat save round-trip. */
+	spec: string;
+	/** Paused beats are not armed; their timer is cleared until they are continued. */
+	paused: boolean;
+	/** When the current armed timer will fire, or null when paused/unarmed. */
+	nextFireAt: number | null;
 	timer?: ReturnType<typeof setTimeout>;
 	/** No message payload; run a bare continue when the beat fires. */
 	isContinue?: boolean;
@@ -457,6 +463,77 @@ function formatDuration(ms: number): string {
 	if (minutes > 0) parts.push(`${minutes}m`);
 	if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
 	return parts.join(" ");
+}
+
+/**
+ * Return the schedule spec if the line is a valid heartbeat header, else
+ * undefined. A valid header is exactly "/heartbeat" followed by whitespace and
+ * a spec that parseHeartbeatSpec accepts, with nothing else on the line. Any
+ * other line (including "/heartbeat <invalid>") is ordinary text belonging to
+ * the current block.
+ */
+function heartbeatHeaderSpec(line: string): string | undefined {
+	if (!line.startsWith("/heartbeat")) return undefined;
+	const rest = line.slice("/heartbeat".length);
+	if (rest === "" || !/^\s/.test(rest)) return undefined;
+	const spec = rest.trim();
+	if (spec === "" || parseHeartbeatSpec(spec) === undefined) return undefined;
+	return spec;
+}
+
+/**
+ * Parse a HEARTBEAT.md file into heartbeats. Each valid header (see
+ * heartbeatHeaderSpec) starts a block; its text is every line until the next
+ * header or end of file, with trailing blank lines and whitespace stripped but
+ * internal newlines preserved verbatim. Lines before the first header are
+ * ignored. A header with an empty block yields a bare-continue beat.
+ */
+export function parseHeartbeatFile(content: string): Array<{ spec: string; text: string }> {
+	const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+	const results: Array<{ spec: string; text: string }> = [];
+	let current: { spec: string; textLines: string[] } | null = null;
+	const flush = () => {
+		if (!current) return;
+		const text = current.textLines.join("\n").replace(/\s+$/u, "");
+		results.push({ spec: current.spec, text });
+		current = null;
+	};
+	for (const line of lines) {
+		const spec = heartbeatHeaderSpec(line);
+		if (spec !== undefined) {
+			flush();
+			current = { spec, textLines: [] };
+		} else if (current !== null) {
+			current.textLines.push(line);
+		}
+	}
+	flush();
+	return results;
+}
+
+/** Reconstruct a schedule spec string for a heartbeat entry. */
+function heartbeatSpecFromEntry(entry: HeartbeatEntry): string {
+	if (entry.spec !== "") return entry.spec;
+	if (entry.intervalMs !== null) return formatDuration(entry.intervalMs);
+	if (entry.dailyAt) {
+		const { hh, mm, ss } = entry.dailyAt;
+		const time = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}${ss ? `:${String(ss).padStart(2, "0")}` : ""}`;
+		return time;
+	}
+	return "";
+}
+
+/**
+ * Serialize heartbeats to the HEARTBEAT.md format: one "/heartbeat <spec>" header
+ * per beat, followed by its text block (empty for bare-continue beats), blocks
+ * separated by a blank line, and a trailing newline.
+ */
+export function serializeHeartbeats(entries: HeartbeatEntry[]): string {
+	const blocks = entries.map((entry) => {
+		const header = `/heartbeat ${heartbeatSpecFromEntry(entry)}`;
+		return entry.text === "" ? header : `${header}\n${entry.text}`;
+	});
+	return `${blocks.join("\n\n")}\n`;
 }
 
 function formatScheduledTime(at: number): string {
@@ -1436,6 +1513,11 @@ export class InteractiveMode {
 				}
 			}
 		}
+
+		// Load HEARTBEAT.md from the project root, if present (new or resumed session).
+		const cwd = this.sessionManager.getCwd();
+		const heartbeatFile = path.resolve(cwd, "HEARTBEAT.md");
+		await this.loadHeartbeatsFromPath(heartbeatFile, "HEARTBEAT.md", true);
 
 		// CLI-preset heartbeats (message-less bare-continue beats).
 		for (const spec of this.options.heartbeatSpecs ?? []) {
@@ -5815,46 +5897,170 @@ export class InteractiveMode {
 		const spec = (newlineIndex === -1 ? arg : arg.slice(0, newlineIndex)).trim();
 		const payload = newlineIndex === -1 ? "" : arg.slice(newlineIndex + 1).trim();
 
-		// Negative count cancels heartbeats (removes the last N).
-		if (/^-\d+$/.test(spec)) {
-			this.cancelHeartbeats(Number.parseInt(spec, 10) * -1);
-			return;
-		}
-
 		// No arguments, `list`, or `l` lists active heartbeats.
 		if (spec === "" || /^(?:list|l)$/i.test(spec)) {
 			this.listHeartbeats();
 			return;
 		}
 
-		const cancelMatch = spec.match(/^cancel\s+(\d+)$/i);
-		if (cancelMatch) {
-			this.cancelHeartbeatById(Number.parseInt(cancelMatch[1], 10));
+		// Negative count cancels heartbeats (removes the last N).
+		if (/^-\d+$/.test(spec)) {
+			this.cancelHeartbeats(Number.parseInt(spec, 10) * -1);
+			return;
+		}
+
+		// Subcommands take everything after the keyword on the first line.
+		if (/^cancel\b/i.test(spec)) {
+			this.cancelHeartbeatByIds(spec);
+			return;
+		}
+		if (/^pause\b/i.test(spec)) {
+			this.pauseHeartbeats(spec);
+			return;
+		}
+		if (/^continue\b/i.test(spec)) {
+			this.continueHeartbeats(spec);
+			return;
+		}
+		if (/^save\b/i.test(spec)) {
+			await this.saveHeartbeatsFromArg(spec);
+			return;
+		}
+		if (/^load\b/i.test(spec)) {
+			await this.loadHeartbeatsFromArg(spec);
 			return;
 		}
 
 		this.scheduleHeartbeat(spec, payload);
 	}
 
-	/** Schedule a heartbeat from a spec string and message text. */
-	private scheduleHeartbeat(spec: string, text: string): void {
+	/** Create, arm, and return a heartbeat entry without adding it to the list. */
+	private createHeartbeatEntry(spec: string, text: string): HeartbeatEntry | null {
 		const schedule = parseHeartbeatSpec(spec);
-		if (!schedule) {
-			this.showStatus(
-				"Usage: /heartbeat [list | cancel <id> | -N | duration e.g. 3h | HH:MM[:SS]] with the message on the following line(s); no message = continue",
-			);
-			return;
-		}
+		if (!schedule) return null;
 		const entry: HeartbeatEntry = {
 			id: this.nextHeartbeatId++,
 			text,
 			intervalMs: schedule.type === "interval" ? schedule.intervalMs : null,
 			dailyAt: schedule.type === "daily" ? { hh: schedule.hh, mm: schedule.mm, ss: schedule.ss } : null,
+			spec: spec.trim(),
+			paused: false,
+			nextFireAt: null,
 			isContinue: text === "",
 		};
 		this.armHeartbeat(entry);
+		return entry;
+	}
+
+	/** Schedule a heartbeat from a spec string and message text. */
+	private scheduleHeartbeat(spec: string, text: string): void {
+		const entry = this.createHeartbeatEntry(spec, text);
+		if (!entry) {
+			this.showStatus(
+				"Usage: /heartbeat [list | cancel <id> | pause [id...] | continue [id...] | save [path] | load [path] | -N | duration e.g. 3h | HH:MM[:SS]] with the message on the following line(s); no message = continue",
+			);
+			return;
+		}
 		this.heartbeats.push(entry);
 		this.showStatus(`Scheduled heartbeat ${this.heartbeatDescription(entry)}`);
+	}
+
+	/** Parse the comma-separated ids after a keyword (pause/continue/cancel). */
+	private parseHeartbeatIds(spec: string, keyword: string): number[] | null {
+		const rest = spec.slice(keyword.length).trim();
+		if (rest === "") return [];
+		const ids: number[] = [];
+		for (const part of rest.split(",")) {
+			const token = part.trim();
+			if (!/^\d+$/.test(token)) return null;
+			ids.push(Number.parseInt(token, 10));
+		}
+		return ids;
+	}
+
+	/** Pause heartbeats: all, or the given ids (comma-separated). */
+	private pauseHeartbeats(spec: string): void {
+		const ids = this.parseHeartbeatIds(spec, "pause");
+		if (ids === null) {
+			this.showStatus("Usage: /heartbeat pause [id[,id...]]");
+			return;
+		}
+		const targets = ids.length === 0 ? this.heartbeats : this.heartbeats.filter((entry) => ids.includes(entry.id));
+		if (targets.length === 0) {
+			this.showStatus(ids.length === 0 ? "No active heartbeats to pause" : `No heartbeat with id ${ids.join(", ")}`);
+			return;
+		}
+		let changed = 0;
+		for (const entry of targets) {
+			if (!entry.paused) {
+				this.setHeartbeatPaused(entry, true);
+				changed++;
+			}
+		}
+		this.showStatus(`Paused ${changed} heartbeat${changed === 1 ? "" : "s"}`);
+	}
+
+	/** Continue heartbeats: all, or the given ids (comma-separated). */
+	private continueHeartbeats(spec: string): void {
+		const ids = this.parseHeartbeatIds(spec, "continue");
+		if (ids === null) {
+			this.showStatus("Usage: /heartbeat continue [id[,id...]]");
+			return;
+		}
+		const targets = ids.length === 0 ? this.heartbeats : this.heartbeats.filter((entry) => ids.includes(entry.id));
+		if (targets.length === 0) {
+			this.showStatus(
+				ids.length === 0 ? "No active heartbeats to continue" : `No heartbeat with id ${ids.join(", ")}`,
+			);
+			return;
+		}
+		let changed = 0;
+		for (const entry of targets) {
+			if (entry.paused) {
+				this.setHeartbeatPaused(entry, false);
+				changed++;
+			}
+		}
+		this.showStatus(`Continued ${changed} heartbeat${changed === 1 ? "" : "s"}`);
+	}
+
+	/** Toggle a heartbeat's paused state, arming or clearing its timer. */
+	private setHeartbeatPaused(entry: HeartbeatEntry, paused: boolean): void {
+		entry.paused = paused;
+		if (paused) {
+			if (entry.timer) {
+				clearTimeout(entry.timer);
+				entry.timer = undefined;
+			}
+			entry.nextFireAt = null;
+		} else {
+			this.armHeartbeat(entry);
+		}
+	}
+
+	/** Cancel heartbeats by id (comma-separated), reported per id. */
+	private cancelHeartbeatByIds(spec: string): void {
+		const ids = this.parseHeartbeatIds(spec, "cancel");
+		if (ids === null || ids.length === 0) {
+			this.showStatus("Usage: /heartbeat cancel <id[,id...]>");
+			return;
+		}
+		let removed = 0;
+		const missing: number[] = [];
+		for (const id of ids) {
+			const index = this.heartbeats.findIndex((entry) => entry.id === id);
+			if (index === -1) {
+				missing.push(id);
+				continue;
+			}
+			const [entry] = this.heartbeats.splice(index, 1);
+			if (entry.timer) clearTimeout(entry.timer);
+			removed++;
+		}
+		const parts: string[] = [];
+		if (removed > 0) parts.push(`Cancelled ${removed} heartbeat${removed === 1 ? "" : "s"}`);
+		if (missing.length > 0) parts.push(`no heartbeat with id ${missing.join(", ")}`);
+		this.showStatus(parts.join("; "));
 	}
 
 	/** Remove the last N heartbeats, keeping the rest if any. */
@@ -5876,19 +6082,7 @@ export class InteractiveMode {
 		this.showStatus(`Cancelled ${removed} heartbeat${removed === 1 ? "" : "s"}`);
 	}
 
-	/** Cancel one heartbeat by the id shown by /heartbeat list. */
-	private cancelHeartbeatById(id: number): void {
-		const index = this.heartbeats.findIndex((entry) => entry.id === id);
-		if (index === -1) {
-			this.showStatus(`No heartbeat with id ${id}`);
-			return;
-		}
-		const [entry] = this.heartbeats.splice(index, 1);
-		if (entry.timer) clearTimeout(entry.timer);
-		this.showStatus(`Cancelled heartbeat ${id}`);
-	}
-
-	/** List active heartbeats in status (id, spec, action, next fire time). */
+	/** List active heartbeats in status (id, spec, action, time left or paused). */
 	private listHeartbeats(): void {
 		if (this.heartbeats.length === 0) {
 			this.showStatus("No active heartbeats");
@@ -5896,9 +6090,10 @@ export class InteractiveMode {
 		}
 		const lines = this.heartbeats.map((entry) => {
 			const action = entry.isContinue ? "continue" : `message ${this.quotedListText(entry.text)}`;
-			return `  ${entry.id}: ${this.heartbeatDescription(entry)} - ${action} (next ${this.nextHeartbeatFireTime(entry)})`;
+			const when = this.heartbeatTimeLeft(entry);
+			return `  ${entry.id}: ${this.heartbeatDescription(entry)} - ${action} (${when})`;
 		});
-		this.showStatus(`Active heartbeats:\n${lines.join("\n")}`);
+		this.showStatus(`Active heartbeats (each beat fires when the session is idle):\n${lines.join("\n")}`);
 	}
 
 	/** Text description of a heartbeat entry's schedule. */
@@ -5914,34 +6109,29 @@ export class InteractiveMode {
 		return "?";
 	}
 
-	/** Next fire time for a heartbeat entry, formatted as a local time. */
-	private nextHeartbeatFireTime(entry: HeartbeatEntry): string {
-		if (entry.intervalMs !== null) {
-			return formatScheduledTime(Date.now() + entry.intervalMs);
-		}
-		if (entry.dailyAt) {
-			const now = new Date();
-			const at = new Date(
-				now.getFullYear(),
-				now.getMonth(),
-				now.getDate(),
-				entry.dailyAt.hh,
-				entry.dailyAt.mm,
-				entry.dailyAt.ss,
-			).getTime();
-			return formatScheduledTime(at <= now.getTime() ? at + 86_400_000 : at);
-		}
-		return "?";
+	/** Time left until the next fire, or "paused" when the beat is paused. */
+	private heartbeatTimeLeft(entry: HeartbeatEntry): string {
+		if (entry.paused || entry.nextFireAt === null) return "paused";
+		const ms = Math.max(entry.nextFireAt - Date.now(), 0);
+		return `in ${formatDuration(ms)}`;
 	}
 
-	/** Arm (or re-arm) a heartbeat's timer from its original schedule. */
+	/**
+	 * Arm (or re-arm) a heartbeat's timer from its original schedule. Paused
+	 * beats are left unarmmed with nextFireAt null; otherwise the timer is set
+	 * and nextFireAt records the wall-clock fire time for the "time left" display.
+	 */
 	private armHeartbeat(entry: HeartbeatEntry): void {
 		if (entry.timer) clearTimeout(entry.timer);
-		if (entry.intervalMs !== null) {
-			entry.timer = setTimeout(() => this.fireHeartbeat(entry.id), entry.intervalMs);
+		entry.timer = undefined;
+		if (entry.paused) {
+			entry.nextFireAt = null;
 			return;
 		}
-		if (entry.dailyAt) {
+		let delay: number | null = null;
+		if (entry.intervalMs !== null) {
+			delay = entry.intervalMs;
+		} else if (entry.dailyAt) {
 			const now = new Date();
 			let at = new Date(
 				now.getFullYear(),
@@ -5961,13 +6151,20 @@ export class InteractiveMode {
 					entry.dailyAt.ss,
 				).getTime();
 			}
-			entry.timer = setTimeout(() => this.fireHeartbeat(entry.id), Math.max(at - now.getTime(), 0));
+			delay = Math.max(at - now.getTime(), 0);
 		}
+		if (delay === null) {
+			entry.nextFireAt = null;
+			return;
+		}
+		entry.nextFireAt = Date.now() + delay;
+		entry.timer = setTimeout(() => this.fireHeartbeat(entry.id), delay);
 	}
 
 	/**
-	 * Fire a heartbeat. When the session is Working (streaming) or compacting
-	 * the beat is skipped entirely - deliver nothing, just re-arm the next one.
+	 * Fire a heartbeat. Paused beats should never fire (their timer is cleared);
+	 * guard anyway. When the session is Working (streaming) or compacting the
+	 * beat is skipped entirely - deliver nothing, just re-arm the next one.
 	 * Otherwise deliver like a scheduled message (session.prompt), or run a bare
 	 * continue for message-less beats. Then re-arm from the original schedule.
 	 */
@@ -5975,6 +6172,11 @@ export class InteractiveMode {
 		const index = this.heartbeats.findIndex((entry) => entry.id === id);
 		if (index === -1) return;
 		const entry = this.heartbeats[index];
+		if (entry.paused) {
+			entry.timer = undefined;
+			entry.nextFireAt = null;
+			return;
+		}
 
 		// Skip while Working or compacting: do not deliver anything, just re-arm.
 		if (this.session.isStreaming || this.session.isCompacting) {
@@ -5995,6 +6197,73 @@ export class InteractiveMode {
 		}
 
 		this.armHeartbeat(entry);
+	}
+
+	/** Save all active heartbeats to a file (default HEARTBEAT.md in the cwd). */
+	private async saveHeartbeatsFromArg(spec: string): Promise<void> {
+		const pathArg = spec.slice("save".length).trim();
+		const cwd = this.sessionManager.getCwd();
+		const target = this.resolveHeartbeatPath(pathArg, cwd);
+		if (this.heartbeats.length === 0) {
+			this.showStatus("No active heartbeats to save");
+			return;
+		}
+		const display = getCwdRelativePath(target, cwd) ?? target;
+		try {
+			await fs.promises.mkdir(path.dirname(target), { recursive: true });
+			await fs.promises.writeFile(target, serializeHeartbeats(this.heartbeats), "utf8");
+			this.showStatus(
+				`Saved ${this.heartbeats.length} heartbeat${this.heartbeats.length === 1 ? "" : "s"} to ${display}`,
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "unknown error";
+			this.showStatus(`Could not save heartbeats to ${display}: ${message}`);
+		}
+	}
+
+	/** Load heartbeats from a file (default HEARTBEAT.md in the cwd). */
+	private async loadHeartbeatsFromArg(spec: string): Promise<void> {
+		const pathArg = spec.slice("load".length).trim();
+		const cwd = this.sessionManager.getCwd();
+		const target = this.resolveHeartbeatPath(pathArg, cwd);
+		await this.loadHeartbeatsFromPath(target, getCwdRelativePath(target, cwd) ?? target, false);
+	}
+
+	/** Resolve a heartbeat file path: relative to the cwd, or absolute as given. */
+	private resolveHeartbeatPath(arg: string, cwd: string): string {
+		if (arg === "") return path.resolve(cwd, "HEARTBEAT.md");
+		return path.isAbsolute(arg) ? path.resolve(arg) : path.resolve(cwd, arg);
+	}
+
+	/** Read, parse, and add heartbeats from a file. */
+	private async loadHeartbeatsFromPath(
+		resolvedPath: string,
+		displayPath: string,
+		silentIfMissing: boolean,
+	): Promise<void> {
+		let content: string;
+		try {
+			content = await fs.promises.readFile(resolvedPath, "utf8");
+		} catch {
+			if (silentIfMissing) return;
+			this.showStatus(`Could not read heartbeats from ${displayPath}`);
+			return;
+		}
+		const parsed = parseHeartbeatFile(content);
+		if (parsed.length === 0) {
+			if (silentIfMissing) return;
+			this.showStatus(`No heartbeats found in ${displayPath}`);
+			return;
+		}
+		let added = 0;
+		for (const { spec, text } of parsed) {
+			const entry = this.createHeartbeatEntry(spec, text);
+			if (entry) {
+				this.heartbeats.push(entry);
+				added++;
+			}
+		}
+		this.showStatus(`Loaded ${added} heartbeat${added === 1 ? "" : "s"} from ${displayPath}`);
 	}
 
 	/** Clear all heartbeats (session shutdown/restart). */
