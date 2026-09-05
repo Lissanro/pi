@@ -1,10 +1,114 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { Markdown } from "../src/components/markdown.ts";
+import type { Terminal } from "../src/terminal.ts";
 import type { Component } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { defaultMarkdownTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
+
+/**
+ * Terminal wrapper that records how many times a scrollback-clearing \x1b[3J was
+ * emitted. In Kitty, \x1b[3J resets the scroll position to the bottom, so emitting it
+ * during streaming yanks a scrolled-up user out of history on every wrap boundary.
+ */
+class ScrollbackClearSpyTerminal implements Terminal {
+	private readonly inner: VirtualTerminal;
+	clearScrollbackCount = 0;
+
+	constructor(cols: number, rows: number) {
+		this.inner = new VirtualTerminal(cols, rows);
+	}
+
+	get delegate(): VirtualTerminal {
+		return this.inner;
+	}
+
+	start(onInput: (data: string) => void, onResize: () => void): void {
+		this.inner.start(onInput, onResize);
+	}
+	stop(): void {
+		this.inner.stop();
+	}
+	async drainInput(maxMs?: number, idleMs?: number): Promise<void> {
+		await this.inner.drainInput(maxMs, idleMs);
+	}
+	write(data: string): void {
+		if (data.includes("\x1b[3J")) this.clearScrollbackCount += 1;
+		this.inner.write(data);
+	}
+	get columns(): number {
+		return this.inner.columns;
+	}
+	get rows(): number {
+		return this.inner.rows;
+	}
+	get kittyProtocolActive(): boolean {
+		return this.inner.kittyProtocolActive;
+	}
+	moveBy(lines: number): void {
+		this.inner.moveBy(lines);
+	}
+	hideCursor(): void {
+		this.inner.hideCursor();
+	}
+	showCursor(): void {
+		this.inner.showCursor();
+	}
+	clearLine(): void {
+		this.inner.clearLine();
+	}
+	clearFromCursor(): void {
+		this.inner.clearFromCursor();
+	}
+	clearScreen(): void {
+		this.inner.clearScreen();
+	}
+	setTitle(title: string): void {
+		this.inner.setTitle(title);
+	}
+	setProgress(active: boolean): void {
+		this.inner.setProgress(active);
+	}
+	async waitForRender(): Promise<void> {
+		await this.inner.waitForRender();
+	}
+}
+
+async function assertNoScrollbackClearDuringStream(
+	logAbove: string[],
+	logBelow: string[],
+	cols: number,
+	rows: number,
+	context: string,
+): Promise<void> {
+	const terminal = new ScrollbackClearSpyTerminal(cols, rows);
+	const tui = new TuiMainScreen(terminal);
+	let stream = "";
+	// The streaming paragraph sits in the MIDDLE with stable content below it (like the
+	// assistant output above the input field). Growing it across a wrap boundary shifts
+	// every following line's terminal row, which is exactly the layout-change case that
+	// used to full-render (and clear scrollback) on every wrap.
+	tui.addChild(new TestComponent(() => [...logAbove, stream, ...logBelow]));
+	tui.start();
+	await terminal.waitForRender();
+
+	const tokens = "streaming paragraph that grows and wraps across the width boundary repeatedly";
+	for (let step = 0; step < tokens.length; step++) {
+		stream += tokens[step];
+		tui.requestRender();
+		await terminal.waitForRender();
+	}
+	assert.strictEqual(terminal.clearScrollbackCount, 0, `${context}: \\x1b[3J emitted during wrap-boundary streaming`);
+	await assertMatchesReference(
+		terminal.delegate,
+		[...logAbove, stream, ...logBelow],
+		cols,
+		rows,
+		`${context}: scroll buffer`,
+	);
+	tui.stop();
+}
 
 class TestComponent implements Component {
 	private readonly getLines: () => string[];
@@ -194,6 +298,17 @@ describe("TUI wrapped-line scrollback integrity (wrapping disabled)", () => {
 		}
 		await assertMatchesReference(terminal, [...log, ...markdown.render(cols)], cols, rows, "after markdown stream");
 		tui.stop();
+	});
+
+	it("does not clear scrollback (\\x1b[3J) when a streaming line crosses a wrap boundary", async () => {
+		const cols = 30;
+		const rows = 8;
+		const logAbove = [
+			"#0 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+			"#1 xxxxxxxxxxxxxxxxxxxxxxgggggggggggggggggggggggggggggg",
+		];
+		const logBelow = ["#2 xxxxxx#32", "#3 ccccccccccccccccccccccccc", "#4 zzzzzzzzzzzzzzzzzzzzzzzzzz"];
+		await assertNoScrollbackClearDuringStream(logAbove, logBelow, cols, rows, "wrap boundary streaming");
 	});
 
 	it("keeps the scrollback aligned when a bottom line shrinks back below the viewport", async () => {

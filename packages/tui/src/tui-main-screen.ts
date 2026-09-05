@@ -453,11 +453,19 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		// When line wrapping is disabled (default), wide lines reflow in the terminal
 		// into multiple rows. If any line's row count changed, the previous differential
-		// position bookkeeping is invalid (lines have shifted), so re-render everything.
-		if (this.rowLayoutChanged(newLayout.offsets, prevLayout.offsets, firstChanged)) {
-			logRedraw("line wrapping layout changed");
-			fullRender(true);
-			return;
+		// position bookkeeping is invalid (lines have shifted). A line's terminal row
+		// count changed (it crossed a wrap boundary). The terminal has
+		// NOT reflowed the content: a growing wrapped line simply overwrites the next row
+		// (soft wrap is a linefeed, not an insertion), so every line below the changed line
+		// is still at its old position. A full re-render here would emit \x1b[3J (clear
+		// scrollback), which resets Kitty's scroll position to the bottom and yanks the
+		// user out of scrolled-up history mid-stream on every wrap. Instead fall through to
+		// the differential renderer and rewrite the whole tail (changed line through the
+		// end): the shifted-but-unchanged lines below must be rewritten at their new rows
+		// because the terminal did not move them.
+		const layoutChanged = this.rowLayoutChanged(newLayout.offsets, prevLayout.offsets, firstChanged);
+		if (layoutChanged) {
+			logRedraw("line wrapping layout changed; rewriting tail");
 		}
 
 		// No changes - but still need to update hardware cursor position if it moved
@@ -535,7 +543,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		const prevViewportBottom = prevViewportTop + height - 1;
 		// Terminal row where the first changed logical line starts (appendStart targets
 		// the last previous row so the \r\n below advances onto the new content).
-		const moveTargetRow = appendStart ? prevLayout.totalRows - 1 : newLayout.offsets[firstChanged];
+		const moveTargetRow = appendStart && !layoutChanged ? prevLayout.totalRows - 1 : newLayout.offsets[firstChanged];
 		if (moveTargetRow > prevViewportBottom) {
 			const currentScreenRow = Math.max(0, Math.min(height - 1, hardwareCursorRow - prevViewportTop));
 			const moveToBottom = height - 1 - currentScreenRow;
@@ -561,7 +569,10 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		// Only render changed lines (firstChanged to lastChanged), not all lines to end
 		// This reduces flicker when only a single line changes (e.g., spinner animation)
-		const renderEnd = Math.min(lastChanged, newLines.length - 1);
+		// On a layout change the unchanged lines below the changed line sit at stale rows
+		// (the terminal did not shift them), so the render range must extend to the end of
+		// content instead of stopping at the last textually-changed line.
+		const renderEnd = layoutChanged ? newLines.length - 1 : Math.min(lastChanged, newLines.length - 1);
 		for (let i = firstChanged; i <= renderEnd; i++) {
 			if (i > firstChanged) buffer += "\r\n";
 			const line = newLines[i];
