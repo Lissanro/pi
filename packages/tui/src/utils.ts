@@ -408,11 +408,25 @@ export function extractAnsiCode(str: string, pos: number): { code: string; lengt
 
 	const next = str[pos + 1];
 
-	// CSI sequence: ESC [ ... m/G/K/H/J
+	// CSI sequence: ESC [ params(0x30-0x3F) intermediates(0x20-0x2F) final(0x40-0x7E)
+	// Recognize any valid CSI final byte, not just styling (m/G/K/H/J). Cursor
+	// movement (A/B/C/D), mode sets (?2026h, ?25l), erase (J/K), positioning (H)
+	// and scrollback clears (3J) are all zero-width control sequences and must be
+	// stripped from width measurements; the narrow regex treated their trailing
+	// bytes as visible text, inflating line widths and breaking row counts.
 	if (next === "[") {
 		let j = pos + 2;
-		while (j < str.length && !/[mGKHJ]/.test(str[j]!)) j++;
-		if (j < str.length) return { code: str.substring(pos, j + 1), length: j + 1 - pos };
+		while (j < str.length) {
+			const code = str.charCodeAt(j);
+			if (code >= 0x40 && code <= 0x7e) {
+				return { code: str.substring(pos, j + 1), length: j + 1 - pos };
+			}
+			if (code >= 0x20 && code <= 0x3f) {
+				j++;
+				continue;
+			}
+			break;
+		}
 		return null;
 	}
 

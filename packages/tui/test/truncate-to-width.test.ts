@@ -2,6 +2,19 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import { normalizeTerminalOutput, truncateToWidth, visibleWidth } from "../src/utils.ts";
 
+describe("visibleWidth strips all CSI control sequences", () => {
+	it("counts non-styling CSI final bytes as zero width", () => {
+		// Cursor movement (A), mode sets (?2026h/l, ?25l) and scrollback clears (3J)
+		// are zero-width control sequences. They used to be miscounted as visible
+		// text, inflating line widths and breaking row counts.
+		assert.strictEqual(visibleWidth("a\x1b[1Bc"), 2);
+		assert.strictEqual(visibleWidth("\x1b[?2026h\x1b[?2026l"), 0);
+		assert.strictEqual(visibleWidth("\x1b[?25l\x1b[?25h"), 0);
+		assert.strictEqual(visibleWidth("x\x1b[3Jy"), 2);
+		assert.strictEqual(visibleWidth("\x1b[38;2;255;0;0mred\x1b[0m"), 3);
+	});
+});
+
 describe("truncateToWidth", () => {
 	it("keeps output within width for very large unicode input", () => {
 		const text = "🙂界".repeat(100_000);
