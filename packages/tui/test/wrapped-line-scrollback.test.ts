@@ -337,4 +337,54 @@ describe("TUI wrapped-line scrollback integrity (wrapping disabled)", () => {
 		await assertMatchesReference(terminal, [...log, stream], cols, rows, "after shrink");
 		tui.stop();
 	});
+
+	it("keeps the scrollback aligned when a line fills the width exactly, ends with a newline, then the next line soft-wraps", async () => {
+		const cols = 22;
+		const rows = 6;
+		const log = makeLog();
+		const terminal = new VirtualTerminal(cols, rows);
+		const tui = new TuiMainScreen(terminal);
+		let stream = "";
+		tui.addChild(new TestComponent(() => [...log, stream]));
+		tui.start();
+		await terminal.waitForRender();
+
+		// A markdown line whose first segment fills the terminal width exactly, then a
+		// newline, then a second segment that grows across the wrap boundary. Real
+		// terminals resolve the pending wrap onto a fresh line, so the empty line after
+		// the full-width segment must stay aligned and never be eaten on the next wrap.
+		const full = `${"A".repeat(22)}\n${"B".repeat(24)}`;
+		for (let step = 1; step <= full.length; step++) {
+			stream = full.slice(0, step);
+			tui.requestRender();
+			await terminal.waitForRender();
+		}
+		await assertMatchesReference(terminal, [...log, stream], cols, rows, "after full-width line + newline + wrap");
+		tui.stop();
+	});
+
+	it("keeps the scrollback aligned when an embedded-newline segment does not fill the width and the next segment starts on a fresh line", async () => {
+		const cols = 30;
+		const rows = 7;
+		const log = makeLog();
+		const terminal = new VirtualTerminal(cols, rows);
+		const tui = new TuiMainScreen(terminal);
+		let stream = "";
+		tui.addChild(new TestComponent(() => [...log, stream]));
+		tui.start();
+		await terminal.waitForRender();
+
+		// A markdown line with an embedded newline (e.g. a list rendered as a single line
+		// with a hard break). The first segment wraps partway, then the newline must reset
+		// to column 0 so the next segment starts at the left edge, not at the leftover
+		// column of the previous segment.
+		const full = "a. alpha item that is fairly long\nb. beta item that is also long";
+		for (let step = 1; step <= full.length; step++) {
+			stream = full.slice(0, step);
+			tui.requestRender();
+			await terminal.waitForRender();
+		}
+		await assertMatchesReference(terminal, [...log, stream], cols, rows, "after embedded-newline partial segment");
+		tui.stop();
+	});
 });

@@ -186,13 +186,13 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			return Math.max(1, Math.ceil(visibleWidth(line) / width));
 		}
 		// A line may contain embedded newlines (e.g. a markdown paragraph with a hard line
-		// break or inline latex spanning lines). Simulate the terminal exactly (verified
-		// against xterm): a bare \n advances a row but keeps the column, clamping a pending
-		// wrap column to width-1; a segment ending exactly on the width boundary leaves a
-		// pending wrap that only the next written character materializes into a new row, so
-		// it must not be counted as an extra row. Miscounting here is not harmless: an
-		// overcount makes the differential renderer scroll a stale blank row into the
-		// scrollback, an undercount leaves stale fragments behind (duplicated lines).
+		// break or inline latex spanning lines). Simulate the terminal: a bare \n advances
+		// a row AND resets the column to 0 (the pty translates LF to CR+LF), so each
+		// segment starts at column 0 regardless of the previous segment's width. Keeping
+		// the column across a newline would overcount rows for embedded-newline lines.
+		// Miscounting here is not harmless: an overcount makes the differential renderer
+		// scroll a stale blank row into the scrollback, an undercount leaves stale
+		// fragments behind (duplicated lines).
 		const segments = line.split("\n");
 		let row = 0;
 		let col = 0; // column in [0, width]; col === width means a pending wrap
@@ -210,10 +210,12 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				}
 			}
 			if (s < segments.length - 1) {
-				if (col === width) {
-					col = width - 1; // \n clamps a pending wrap column to the last column
-				}
-				row += 1; // \n advances a row, column otherwise unchanged
+				// A bare \n is translated to CR+LF by the terminal pty (onlcr), so it always
+				// advances a row AND resets the column to 0, whether or not a pending wrap
+				// was latched. Keeping the column across a newline overcounts rows for
+				// embedded-newline lines (e.g. a markdown paragraph with a hard break).
+				row += 1;
+				col = 0;
 			}
 		}
 		return Math.max(1, row + 1);

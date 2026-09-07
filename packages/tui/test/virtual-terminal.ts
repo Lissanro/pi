@@ -27,6 +27,32 @@ export class VirtualTerminal implements Terminal {
 			disableStdin: true,
 			allowProposedApi: true,
 		});
+		// Real terminals (kitty, tmux) resolve a pending wrap on a following newline onto a
+		// fresh line (column 0). xterm.js instead clamps the pending wrap column to the last
+		// column, so content after a full-width line + newline starts at the wrong column and
+		// the renderer's row accounting diverges from real terminals. Patch the internal
+		// lineFeed handler to materialize the pending wrap like a real terminal.
+		this.patchMaterializeWrap();
+	}
+
+	/**
+	 * Patch the xterm lineFeed handler so a pending wrap (cursor one past the last column)
+	 * resolves to column 0 instead of clamping to the last column, matching real terminals.
+	 */
+	private patchMaterializeWrap(): void {
+		// The headless Terminal wraps CoreTerminal as `_core`; the InputHandler is internal.
+		const core = (this.xterm as unknown as { _core?: unknown })._core;
+		const handler = (core as { _inputHandler?: { lineFeed?: unknown } } | undefined)?._inputHandler;
+		if (!handler || typeof handler.lineFeed !== "function") return;
+		const bufferService = (handler as { _bufferService?: { cols: number; buffer: { x: number } } })._bufferService;
+		if (!bufferService) return;
+		const original = (handler.lineFeed as () => void).bind(handler);
+		handler.lineFeed = () => {
+			original();
+			// Real terminals translate a bare \n to CR+LF (pty onlcr), so the cursor always
+			// returns to column 0 after a newline. xterm.js keeps the column; force the reset.
+			bufferService.buffer.x = 0;
+		};
 	}
 
 	start(onInput: (data: string) => void, onResize: () => void): void {
