@@ -156,6 +156,12 @@ const heartbeatPrototype = InteractiveMode.prototype as unknown as {
 	setHeartbeatPaused: (this: HeartbeatCommandContext, entry: HeartbeatEntry, paused: boolean) => void;
 	fireHeartbeat: (this: HeartbeatCommandContext, id: number) => void;
 	armHeartbeat: (this: HeartbeatCommandContext, entry: HeartbeatEntry) => void;
+	tickHeartbeats: (this: HeartbeatCommandContext) => void;
+	markActivity: (this: HeartbeatCommandContext) => void;
+	deliverHeartbeat: (this: HeartbeatCommandContext, entry: HeartbeatEntry) => void;
+	ensureHeartbeatTicker: (this: HeartbeatCommandContext) => void;
+	stopHeartbeatTickerIfUnneeded: (this: HeartbeatCommandContext) => void;
+	hasArmedIntervalBeat: (this: HeartbeatCommandContext) => boolean;
 	saveHeartbeatsFromArg: (this: HeartbeatCommandContext, spec: string) => Promise<void>;
 	loadHeartbeatsFromArg: (this: HeartbeatCommandContext, spec: string) => Promise<void>;
 	loadHeartbeatsFromPath: (
@@ -172,6 +178,14 @@ const heartbeatPrototype = InteractiveMode.prototype as unknown as {
 };
 
 type HeartbeatCommandContext = {
+	lastActivityAt: number;
+	heartbeatTicker?: ReturnType<typeof setInterval>;
+	tickHeartbeats: () => void;
+	markActivity: () => void;
+	deliverHeartbeat: (entry: HeartbeatEntry) => void;
+	ensureHeartbeatTicker: () => void;
+	stopHeartbeatTickerIfUnneeded: () => void;
+	hasArmedIntervalBeat: () => boolean;
 	showStatus: (message: string) => void;
 	heartbeats: HeartbeatEntry[];
 	nextHeartbeatId: number;
@@ -211,6 +225,8 @@ function makeContext(overrides: Partial<HeartbeatCommandContext> = {}): Heartbea
 		showStatus: vi.fn(),
 		heartbeats: [],
 		nextHeartbeatId: 1,
+		lastActivityAt: Date.now(),
+		heartbeatTicker: undefined,
 		session: { isStreaming: false, isCompacting: false },
 		sessionManager: { getCwd: () => "/tmp" },
 		armHeartbeat: vi.fn(),
@@ -234,6 +250,12 @@ function makeContext(overrides: Partial<HeartbeatCommandContext> = {}): Heartbea
 		heartbeatDescription: (entry) => heartbeatPrototype.heartbeatDescription(entry),
 		heartbeatTimeLeft: (entry) => heartbeatPrototype.heartbeatTimeLeft(entry),
 		quotedListText: (text) => heartbeatPrototype.quotedListText(text),
+		tickHeartbeats: () => heartbeatPrototype.tickHeartbeats.call(context),
+		markActivity: () => heartbeatPrototype.markActivity.call(context),
+		deliverHeartbeat: (entry) => heartbeatPrototype.deliverHeartbeat.call(context, entry),
+		ensureHeartbeatTicker: () => heartbeatPrototype.ensureHeartbeatTicker.call(context),
+		stopHeartbeatTickerIfUnneeded: () => heartbeatPrototype.stopHeartbeatTickerIfUnneeded.call(context),
+		hasArmedIntervalBeat: () => heartbeatPrototype.hasArmedIntervalBeat.call(context),
 		...overrides,
 	};
 
@@ -468,8 +490,19 @@ describe("InteractiveMode heartbeat pause and continue", () => {
 		expect(context.showStatus).toHaveBeenCalledWith("Continued 1 heartbeat");
 	});
 
-	it("armHeartbeat sets nextFireAt and a timer for an armed beat", () => {
+	it("armHeartbeat sets an idle deadline for an interval beat and starts the ticker", () => {
 		const entry = mkEntry(1, "5m", "hi");
+		const context = makeContext();
+		heartbeatPrototype.armHeartbeat.call(context, entry);
+		expect(entry.nextFireAt).toBeGreaterThan(Date.now());
+		// Interval beats are idle-based and driven by the ticker, not a one-shot timer.
+		expect(entry.timer).toBeUndefined();
+		expect(context.heartbeatTicker).toBeDefined();
+		if (context.heartbeatTicker) clearInterval(context.heartbeatTicker);
+	});
+
+	it("armHeartbeat sets a one-shot timer for a daily beat", () => {
+		const entry = mkEntry(1, "15:23", "wake");
 		const context = makeContext();
 		heartbeatPrototype.armHeartbeat.call(context, entry);
 		expect(entry.nextFireAt).toBeGreaterThan(Date.now());
@@ -484,6 +517,94 @@ describe("InteractiveMode heartbeat pause and continue", () => {
 		heartbeatPrototype.armHeartbeat.call(context, entry);
 		expect(entry.nextFireAt).toBeNull();
 		expect(entry.timer).toBeUndefined();
+	});
+});
+
+describe("InteractiveMode interval heartbeat idle semantics", () => {
+	/** Build a context with one armed interval beat and the real armHeartbeat bound. */
+	function armedContext(interval = "5m"): HeartbeatCommandContext {
+		const context = makeContext({
+			heartbeats: [mkEntry(1, interval, "hi")],
+			session: { isStreaming: false, isCompacting: false },
+			deliverScheduledMessage: vi.fn(),
+			deferOrRunScheduledAction: vi.fn(),
+		});
+		context.armHeartbeat = (entry) => heartbeatPrototype.armHeartbeat.call(context, entry);
+		heartbeatPrototype.armHeartbeat.call(context, context.heartbeats[0]);
+		return context;
+	}
+
+	it("does not fire while the session is working, and keeps the idle clock fresh", () => {
+		const context = makeContext({
+			heartbeats: [mkEntry(1, "5m", "hi")],
+			session: { isStreaming: true, isCompacting: false },
+			deliverScheduledMessage: vi.fn(),
+			deferOrRunScheduledAction: vi.fn(),
+		});
+		// Make the idle look overdue (6 minutes), then tick while streaming.
+		context.lastActivityAt = Date.now() - 360_000;
+		heartbeatPrototype.tickHeartbeats.call(context);
+		expect(context.deliverScheduledMessage).not.toHaveBeenCalled();
+		expect(context.deferOrRunScheduledAction).not.toHaveBeenCalled();
+		// lastActivityAt was reset to now because the session is active.
+		expect(context.lastActivityAt).toBeGreaterThan(Date.now() - 2000);
+	});
+
+	it("does not fire before the interval elapses", () => {
+		const context = armedContext();
+		context.lastActivityAt = Date.now() - 60_000; // only 1 minute of idle
+		heartbeatPrototype.tickHeartbeats.call(context);
+		expect(context.deliverScheduledMessage).not.toHaveBeenCalled();
+		expect(context.deferOrRunScheduledAction).not.toHaveBeenCalled();
+		// Idle clock is left untouched when the beat is not yet due.
+		expect(context.lastActivityAt).toBeLessThanOrEqual(Date.now());
+		if (context.heartbeatTicker) clearInterval(context.heartbeatTicker);
+	});
+
+	it("fires after the idle interval elapses and re-arms", () => {
+		const context = armedContext();
+		context.lastActivityAt = Date.now() - 301_000; // > 5 minutes idle
+		heartbeatPrototype.tickHeartbeats.call(context);
+		expect(context.deliverScheduledMessage).toHaveBeenCalledWith("hi");
+		expect(context.deferOrRunScheduledAction).not.toHaveBeenCalled();
+		// Delivering resets the idle clock so the next beat is a full interval away.
+		expect(context.lastActivityAt).toBeGreaterThan(Date.now() - 2000);
+		expect(context.heartbeats[0].nextFireAt).toBeGreaterThan(Date.now());
+		if (context.heartbeatTicker) clearInterval(context.heartbeatTicker);
+	});
+
+	it("runs a bare continue for a message-less interval beat when due", () => {
+		const context = armedContext("5m");
+		context.heartbeats[0].isContinue = true;
+		context.lastActivityAt = Date.now() - 301_000;
+		heartbeatPrototype.tickHeartbeats.call(context);
+		expect(context.deliverScheduledMessage).not.toHaveBeenCalled();
+		expect(context.deferOrRunScheduledAction).toHaveBeenCalled();
+		if (context.heartbeatTicker) clearInterval(context.heartbeatTicker);
+	});
+
+	it("markActivity resets the idle clock and pushes the deadline out", () => {
+		const context = armedContext();
+		const entry = context.heartbeats[0];
+		const idleStart = Date.now() - 200_000;
+		context.lastActivityAt = idleStart;
+		heartbeatPrototype.armHeartbeat.call(context, entry);
+		const deadlineBefore = entry.nextFireAt!;
+		heartbeatPrototype.markActivity.call(context); // typing in the input field
+		expect(context.lastActivityAt).toBeGreaterThan(idleStart);
+		expect(entry.nextFireAt!).toBeGreaterThan(deadlineBefore);
+		if (context.heartbeatTicker) clearInterval(context.heartbeatTicker);
+	});
+
+	it("stops the ticker when the last interval beat is cancelled", () => {
+		const context = makeContext();
+		const entry = mkEntry(1, "5m", "hi");
+		context.heartbeats.push(entry);
+		heartbeatPrototype.armHeartbeat.call(context, entry);
+		expect(context.heartbeatTicker).toBeDefined();
+		context.heartbeats.length = 0;
+		heartbeatPrototype.stopHeartbeatTickerIfUnneeded.call(context);
+		expect(context.heartbeatTicker).toBeUndefined();
 	});
 });
 

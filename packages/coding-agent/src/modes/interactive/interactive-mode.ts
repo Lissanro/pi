@@ -846,6 +846,14 @@ export class InteractiveMode {
 	private heartbeats: HeartbeatEntry[] = [];
 	private nextHeartbeatId = 1;
 
+	// Interval heartbeats are idle-based: they fire only after a fixed interval
+	// of continuous idle (no typing, no agent work/processing/waiting).
+	// lastActivityAt records the last burst of activity; the heartbeat ticker
+	// keeps it from advancing while the session is active, so idle time never
+	// accumulates during a working run, a server wait, or a retry.
+	private lastActivityAt = Date.now();
+	private heartbeatTicker?: ReturnType<typeof setInterval>;
+
 	// Shutdown state
 	private shutdownRequested = false;
 
@@ -3261,6 +3269,9 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.session.resume", () => this.showSessionSelector());
 
 		this.defaultEditor.onChange = (text: string) => {
+			// Any edit to the input field is activity: it resets the idle clock
+			// of interval heartbeats (which only fire after continuous idle).
+			this.markActivity();
 			const wasBashMode = this.isBashMode;
 			this.isBashMode = text.trimStart().startsWith("!");
 			if (wasBashMode !== this.isBashMode) {
@@ -6033,6 +6044,7 @@ export class InteractiveMode {
 				entry.timer = undefined;
 			}
 			entry.nextFireAt = null;
+			this.stopHeartbeatTickerIfUnneeded();
 		} else {
 			this.armHeartbeat(entry);
 		}
@@ -6057,6 +6069,7 @@ export class InteractiveMode {
 			if (entry.timer) clearTimeout(entry.timer);
 			removed++;
 		}
+		this.stopHeartbeatTickerIfUnneeded();
 		const parts: string[] = [];
 		if (removed > 0) parts.push(`Cancelled ${removed} heartbeat${removed === 1 ? "" : "s"}`);
 		if (missing.length > 0) parts.push(`no heartbeat with id ${missing.join(", ")}`);
@@ -6075,6 +6088,7 @@ export class InteractiveMode {
 			if (entry?.timer) clearTimeout(entry.timer);
 			removed++;
 		}
+		this.stopHeartbeatTickerIfUnneeded();
 		if (removed === 0) {
 			this.showStatus("No heartbeats to cancel");
 			return;
@@ -6116,22 +6130,109 @@ export class InteractiveMode {
 		return `in ${formatDuration(ms)}`;
 	}
 
+	/** Whether any armed interval beat exists (drives the ticker). */
+	private hasArmedIntervalBeat(): boolean {
+		return this.heartbeats.some((entry) => entry.intervalMs !== null && !entry.paused && entry.nextFireAt !== null);
+	}
+
+	/** Start the interval-beat ticker when any armed interval beat is present. */
+	private ensureHeartbeatTicker(): void {
+		if (this.heartbeatTicker) return;
+		this.heartbeatTicker = setInterval(() => this.tickHeartbeats(), 500);
+	}
+
+	/** Stop the ticker once no armed interval beat remains (paused/cancelled/cleared). */
+	private stopHeartbeatTickerIfUnneeded(): void {
+		if (this.heartbeatTicker && !this.hasArmedIntervalBeat()) {
+			clearInterval(this.heartbeatTicker);
+			this.heartbeatTicker = undefined;
+		}
+	}
+
 	/**
-	 * Arm (or re-arm) a heartbeat's timer from its original schedule. Paused
-	 * beats are left unarmmed with nextFireAt null; otherwise the timer is set
-	 * and nextFireAt records the wall-clock fire time for the "time left" display.
+	 * Record a burst of activity (typing in the input field) and push every
+	 * interval beat's fire time out by the same amount, since their countdown
+	 * is measured from the last activity.
+	 */
+	private markActivity(): void {
+		this.lastActivityAt = Date.now();
+		for (const entry of this.heartbeats) {
+			if (entry.intervalMs !== null && !entry.paused && entry.nextFireAt !== null) {
+				entry.nextFireAt = this.lastActivityAt + entry.intervalMs;
+			}
+		}
+	}
+
+	/**
+	 * Periodic check for interval heartbeats. Runs only while an armed interval
+	 * beat exists. While the session is active (streaming/compacting - which
+	 * covers working, processing, waiting on the server, and retries) the idle
+	 * clock is reset every tick so idle time never accumulates; only in the true
+	 * idle state does a beat fire, once its full interval has elapsed since the
+	 * last activity.
+	 */
+	private tickHeartbeats(): void {
+		const now = Date.now();
+		if (this.session.isStreaming || this.session.isCompacting) {
+			// Active: reset the idle clock and every beat's deadline so nothing
+			// fires (or comes due) until the harness is genuinely idle again.
+			this.lastActivityAt = now;
+			for (const entry of this.heartbeats) {
+				if (entry.intervalMs !== null && !entry.paused && entry.nextFireAt !== null) {
+					entry.nextFireAt = now + entry.intervalMs;
+				}
+			}
+			return;
+		}
+		for (const entry of this.heartbeats) {
+			if (entry.intervalMs === null || entry.paused || entry.nextFireAt === null) continue;
+			if (now - this.lastActivityAt >= entry.intervalMs) {
+				// Fires only after continuous idle. Delivering a beat is itself
+				// activity, so reset the idle clock and re-arm before moving on.
+				entry.nextFireAt = null;
+				this.deliverHeartbeat(entry);
+				this.lastActivityAt = now;
+				this.armHeartbeat(entry);
+			}
+		}
+	}
+
+	/** Deliver a heartbeat's payload (message or bare continue). */
+	private deliverHeartbeat(entry: HeartbeatEntry): void {
+		if (entry.isContinue) {
+			// Bare continue, reusing the /schedule defer-or-run action path.
+			this.deferOrRunScheduledAction({
+				id: entry.id,
+				text: "",
+				when: { type: "time", at: Date.now() },
+				isContinue: true,
+			});
+		} else {
+			this.deliverScheduledMessage(entry.text);
+		}
+	}
+
+	/**
+	 * Arm (or re-arm) a heartbeat from its original schedule. Paused beats are
+	 * left unarmed with nextFireAt null. Interval beats are idle-based: their
+	 * deadline is a fixed interval after the last activity, and the ticker
+	 * (tickHeartbeats) fires them when the session is truly idle. Daily beats
+	 * keep wall-clock semantics and use a one-shot timer.
 	 */
 	private armHeartbeat(entry: HeartbeatEntry): void {
 		if (entry.timer) clearTimeout(entry.timer);
 		entry.timer = undefined;
 		if (entry.paused) {
 			entry.nextFireAt = null;
+			this.stopHeartbeatTickerIfUnneeded();
 			return;
 		}
-		let delay: number | null = null;
 		if (entry.intervalMs !== null) {
-			delay = entry.intervalMs;
-		} else if (entry.dailyAt) {
+			entry.nextFireAt = this.lastActivityAt + entry.intervalMs;
+			this.ensureHeartbeatTicker();
+			return;
+		}
+		if (entry.dailyAt) {
 			const now = new Date();
 			let at = new Date(
 				now.getFullYear(),
@@ -6151,22 +6252,21 @@ export class InteractiveMode {
 					entry.dailyAt.ss,
 				).getTime();
 			}
-			delay = Math.max(at - now.getTime(), 0);
-		}
-		if (delay === null) {
-			entry.nextFireAt = null;
+			const delay = Math.max(at - now.getTime(), 0);
+			entry.nextFireAt = Date.now() + delay;
+			entry.timer = setTimeout(() => this.fireHeartbeat(entry.id), delay);
 			return;
 		}
-		entry.nextFireAt = Date.now() + delay;
-		entry.timer = setTimeout(() => this.fireHeartbeat(entry.id), delay);
+		entry.nextFireAt = null;
 	}
 
 	/**
-	 * Fire a heartbeat. Paused beats should never fire (their timer is cleared);
-	 * guard anyway. When the session is Working (streaming) or compacting the
-	 * beat is skipped entirely - deliver nothing, just re-arm the next one.
-	 * Otherwise deliver like a scheduled message (session.prompt), or run a bare
-	 * continue for message-less beats. Then re-arm from the original schedule.
+	 * Fire a heartbeat from its one-shot timer (daily beats only; interval beats
+	 * are fired by the ticker). Paused beats should never fire - guard anyway.
+	 * When the session is Working (streaming) or compacting the beat is skipped
+	 * entirely - deliver nothing, just re-arm for the next occurrence. Otherwise
+	 * deliver like a scheduled message (session.prompt), or run a bare continue
+	 * for message-less beats. Then re-arm from the original schedule.
 	 */
 	private fireHeartbeat(id: number): void {
 		const index = this.heartbeats.findIndex((entry) => entry.id === id);
@@ -6184,18 +6284,7 @@ export class InteractiveMode {
 			return;
 		}
 
-		if (entry.isContinue) {
-			// Bare continue, reusing the /schedule defer-or-run action path.
-			this.deferOrRunScheduledAction({
-				id: entry.id,
-				text: "",
-				when: { type: "time", at: Date.now() },
-				isContinue: true,
-			});
-		} else {
-			this.deliverScheduledMessage(entry.text);
-		}
-
+		this.deliverHeartbeat(entry);
 		this.armHeartbeat(entry);
 	}
 
@@ -6272,6 +6361,10 @@ export class InteractiveMode {
 			if (entry.timer) clearTimeout(entry.timer);
 		}
 		this.heartbeats = [];
+		if (this.heartbeatTicker) {
+			clearInterval(this.heartbeatTicker);
+			this.heartbeatTicker = undefined;
+		}
 	}
 
 	private showUserMessageSelector(): void {
