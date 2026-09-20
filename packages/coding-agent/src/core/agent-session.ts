@@ -382,6 +382,10 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	/** A manual /compact queued while the agent was streaming, to run at the next turn boundary. */
+	private _queuedCompact?: { options?: CompactOptions | string };
+	/** Whether the run stopped at a turn boundary for a queued /compact while tool results were pending a response. */
+	private _queuedCompactResume = false;
 	/**
 	 * Exact-ish token count of the post-compaction context (system prompt +
 	 * summaries + kept messages) from the model's /tokenize endpoint, when
@@ -490,6 +494,7 @@ export class AgentSession {
 		this._installAgentToolHooks();
 		this._installAgentNextTurnRefresh();
 		this._installAgentForcedPromptProjection();
+		this._installAgentQueuedCompactStop();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -680,6 +685,24 @@ export class AgentSession {
 				model: this.agent.state.model,
 				thinkingLevel: this.agent.state.thinkingLevel,
 			};
+		};
+	}
+
+	/**
+	 * Stop the agent loop at the next turn boundary when a /compact was queued
+	 * while streaming. The boundary is the same point where steering messages
+	 * are injected: the current assistant message and its related tool calls
+	 * have fully completed, but no further provider request has started.
+	 */
+	private _installAgentQueuedCompactStop(): void {
+		this.agent.shouldStopAfterTurn = (turn) => {
+			if (!this._queuedCompact) return false;
+			// Resume after compacting when tool results are pending a response;
+			// a turn without tool results ended the run, so no continuation
+			// follows. Turns that errored or were aborted exit the loop before
+			// this callback and compact without resuming.
+			this._queuedCompactResume = turn.toolResults.length > 0;
+			return true;
 		};
 	}
 
@@ -1733,6 +1756,9 @@ export class AgentSession {
 		if (!msg) {
 			this._pendingPrefill = undefined;
 			this._prefillRestorePoint = undefined;
+			// No assistant turn ran, but a /compact queued while streaming still
+			// runs now that the run has ended. Nothing to resume.
+			await this._runQueuedCompact();
 			return false;
 		}
 
@@ -1773,6 +1799,15 @@ export class AgentSession {
 				finalError: msg.errorMessage,
 			});
 			this._retryAttempt = 0;
+		}
+
+		// A /compact queued while streaming runs here: the current message and
+		// its related tool calls have fully completed - the same boundary where
+		// steering messages are injected. After compacting, resume the run when
+		// it was interrupted mid-task or messages are still queued.
+		const queuedCompactResume = await this._runQueuedCompact();
+		if (queuedCompactResume !== undefined) {
+			return queuedCompactResume || this.agent.hasQueuedMessages();
 		}
 
 		if (await this._checkCompaction(msg)) {
@@ -2674,20 +2709,72 @@ export class AgentSession {
 	/**
 	 * Manually compact the session context.
 	 *
-	 * This is the manual entry point used by `/compact`, RPC, and extensions. It is
-	 * separate from automatic threshold/overflow compaction, which enters through
-	 * `_checkCompaction()` and `_runAutoCompaction()`. After preparation and the
-	 * `session_before_compact` hook, both paths call the lower-level `compact()`
-	 * function imported from `./compaction/index.ts`, unless the hook cancels or
-	 * supplies a custom result.
+	 * This is the manual entry point used by `/compact` (when the agent is idle),
+	 * RPC, and extensions. It is separate from automatic threshold/overflow
+	 * compaction, which enters through `_checkCompaction()` and
+	 * `_runAutoCompaction()`. After preparation and the `session_before_compact`
+	 * hook, both paths call the lower-level `compact()` function imported from
+	 * `./compaction/index.ts`, unless the hook cancels or supplies a custom result.
 	 *
 	 * Aborts the current agent operation first. Manual compaction never retries or
-	 * continues the interrupted agent turn.
+	 * continues the interrupted agent turn. While the agent is streaming, call
+	 * `queueCompact()` instead so the run settles at the next turn boundary.
 	 *
 	 * @param options Optional instructions or overrides for the compaction.
 	 */
 	async compact(options?: CompactOptions | string): Promise<CompactionResult> {
 		await this.abort();
+		return await this._runManualCompaction(options);
+	}
+
+	/**
+	 * Queue a manual `/compact` issued while the agent is streaming.
+	 *
+	 * The agent loop stops at the next turn boundary - the same point where
+	 * steering messages are injected, once the current message and its related
+	 * tool calls have fully completed - and the compaction runs there. When the
+	 * run was interrupted mid-task (tool results pending a response), it resumes
+	 * automatically after the compaction; a turn that ended the run compacts
+	 * without a continuation. When the agent is idle, call `compact()` directly.
+	 */
+	queueCompact(options?: CompactOptions | string): void {
+		this._queuedCompact = { options };
+		this._queuedCompactResume = false;
+	}
+
+	/**
+	 * Run and consume a /compact queued while the agent was streaming, now that
+	 * the current message and its related tool calls have fully completed.
+	 * Returns whether the interrupted run should resume, or undefined when no
+	 * compact was queued. A cancelled compaction does not resume the run;
+	 * a failed one does, so an interrupted task continues.
+	 */
+	private async _runQueuedCompact(): Promise<boolean | undefined> {
+		const queued = this._queuedCompact;
+		if (!queued) return undefined;
+		this._queuedCompact = undefined;
+		const resume = this._queuedCompactResume;
+		this._queuedCompactResume = false;
+		try {
+			await this._runManualCompaction(queued.options);
+		} catch (error) {
+			// Failure or cancellation is reported through compaction_end and
+			// session_compact_failed events.
+			const cancelled =
+				error instanceof Error && (error.message === "Compaction cancelled" || error.name === "AbortError");
+			if (cancelled) return false;
+		}
+		return resume;
+	}
+
+	/**
+	 * Manual compaction body shared by `compact()` and queued compaction: emits
+	 * compaction events, prepares, runs extension hooks and the summarization
+	 * request, and finalizes the result. `compact()` aborts a running agent turn
+	 * first; the queued path is invoked with the loop already stopped at a turn
+	 * boundary and must not abort.
+	 */
+	private async _runManualCompaction(options?: CompactOptions | string): Promise<CompactionResult> {
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 		let fromExtension = false;
