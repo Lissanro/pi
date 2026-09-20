@@ -12,6 +12,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	AssistantMessage,
 	ImageContent,
+	JsonObject,
 	Message,
 	TextContent,
 	ThinkingContent,
@@ -289,9 +290,9 @@ function parseSpecialBlocksForward(
 		const inner = region.slice(open.end, close.start);
 
 		if (role === "assistant") {
-			let args: Record<string, unknown> = {};
+			let args: JsonObject = {};
 			try {
-				args = JSON.parse(inner) as Record<string, unknown>;
+				args = JSON.parse(inner) as JsonObject;
 			} catch {
 				args = {};
 			}
@@ -330,9 +331,9 @@ function parseTrailingSpecialBlocks(
 
 		if (role === "assistant") {
 			const argsText = content.slice(open.end, closeStart);
-			let args: Record<string, unknown> = {};
+			let args: JsonObject = {};
 			try {
-				args = JSON.parse(argsText) as Record<string, unknown>;
+				args = JSON.parse(argsText) as JsonObject;
 			} catch {
 				args = {};
 			}

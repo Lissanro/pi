@@ -284,7 +284,7 @@ describe("AgentSession.applyMessageEdits", () => {
 
 		const result = harness.session.applyMessageEdits('<pi_edit id="1" role="user">edited user</pi_edit>');
 		expect(result).toEqual({ edited: 1, added: 0 });
-		expect(getMessageText(harness.session.messages[0])).toBe("edited user");
+		expect(getMessageText(harness.session.messages[1])).toBe("edited user");
 		expect(getAssistantTexts(harness)).toEqual(["first"]);
 	});
 
@@ -330,7 +330,7 @@ describe("AgentSession.applyMessageEdits", () => {
 			'<pi_edit id="-1" role="assistant">new assistant</pi_edit><pi_edit id="-2" role="user">new user</pi_edit>',
 		);
 		expect(result).toEqual({ edited: 0, added: 2 });
-		const texts = harness.session.messages.map((m) => getMessageText(m));
+		const texts = harness.session.messages.filter((m) => m.role !== "system").map((m) => getMessageText(m));
 		expect(texts).toEqual(["user", "hi", "new assistant", "new user"]);
 	});
 
@@ -345,7 +345,7 @@ describe("AgentSession.applyMessageEdits", () => {
 			'<pi_edit id="0" role="assistant">edited hi</pi_edit><pi_edit id="-1" role="user">new user</pi_edit>',
 		);
 		expect(result).toEqual({ edited: 1, added: 1 });
-		const texts = harness.session.messages.map((m) => getMessageText(m));
+		const texts = harness.session.messages.filter((m) => m.role !== "system").map((m) => getMessageText(m));
 		expect(texts).toEqual(["user", "edited hi", "new user"]);
 	});
 
@@ -677,12 +677,13 @@ describe("AgentSession.deleteMessage", () => {
 		expect(target).toHaveLength(1);
 		expect(harness.session.deleteMessage(target[0].entryId)).toBe(true);
 
-		const texts = harness.session.messages.map((m) => getMessageText(m));
+		const texts = harness.session.messages.filter((m) => m.role !== "system").map((m) => getMessageText(m));
 		expect(texts).toEqual(["first question", "second question", "second answer"]);
 		// Session log agrees with agent state.
 		const branchTexts = harness.sessionManager
 			.getBranch()
 			.filter((entry) => entry.type === "message")
+			.filter((entry) => entry.message.role !== "system")
 			.map((entry) => getMessageText(entry.message));
 		expect(branchTexts).toEqual(["first question", "second question", "second answer"]);
 	});
@@ -696,7 +697,9 @@ describe("AgentSession.deleteMessage", () => {
 
 		const target = harness.session.getEditableMessage(0);
 		expect(harness.session.deleteMessage(target!.entryId)).toBe(true);
-		expect(harness.session.messages.map((m) => getMessageText(m))).toEqual(["only question"]);
+		expect(harness.session.messages.filter((m) => m.role !== "system").map((m) => getMessageText(m))).toEqual([
+			"only question",
+		]);
 	});
 
 	it("returns false for unknown or non-message entries", async () => {
@@ -707,6 +710,9 @@ describe("AgentSession.deleteMessage", () => {
 		await harness.session.prompt("user");
 
 		expect(harness.session.deleteMessage("nonexistent-id")).toBe(false);
-		expect(harness.session.messages.map((m) => getMessageText(m))).toEqual(["user", "ok"]);
+		expect(harness.session.messages.filter((m) => m.role !== "system").map((m) => getMessageText(m))).toEqual([
+			"user",
+			"ok",
+		]);
 	});
 });

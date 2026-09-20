@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { streamSimple } from "../src/api/openai-completions.ts";
 import { getModel } from "../src/compat.ts";
 import type { AssistantMessage } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 const mockState = vi.hoisted(() => ({
 	chunks: undefined as
@@ -138,10 +139,10 @@ describe("openai-completions __raw tool-call capture", () => {
 
 		const s = streamSimple(
 			model,
-			{
+			normalizeContext({
 				messages: [{ role: "user", content: "Read README.md", timestamp: Date.now() }],
 				tools: [tool],
-			},
+			}),
 			{ apiKey: "test" },
 		);
 
@@ -200,10 +201,10 @@ describe("openai-completions __raw tool-call capture", () => {
 
 		const s = streamSimple(
 			model,
-			{
+			normalizeContext({
 				messages: [{ role: "user", content: "Read /tmp/x", timestamp: Date.now() }],
 				tools: [tool],
-			},
+			}),
 			{ apiKey: "test" },
 		);
 

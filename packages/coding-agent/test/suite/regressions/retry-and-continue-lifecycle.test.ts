@@ -44,7 +44,7 @@ describe("retry with unlimited attempts and backoff cap", () => {
 	it("caps exponential backoff delay at maxDelayMs", async () => {
 		const harness = await createHarness({
 			settings: {
-				retry: { enabled: true, maxRetries: 5, baseDelayMs: 10, maxBackoffMs: 30 },
+				retry: { enabled: true, maxRetries: 5, baseDelayMs: 10, maxAgentDelayMs: 30 },
 			},
 		});
 		harnesses.push(harness);
@@ -67,7 +67,7 @@ describe("retry with unlimited attempts and backoff cap", () => {
 
 		await harness.session.prompt("test");
 
-		// baseDelayMs=10, maxBackoffMs=30
+		// baseDelayMs=10, maxAgentDelayMs=30
 		// attempt 1: 10 * 2^0 = 10
 		// attempt 2: 10 * 2^1 = 20
 		// attempt 3: 10 * 2^2 = 40 -> capped at 30
@@ -577,13 +577,13 @@ describe("retry prefill continuation", () => {
 		// (the assistant response), not extra orphaned entries.
 		const entriesBeforeDelete = harness.sessionManager
 			.buildContextEntries()
-			.filter((e) => e.type === "message").length;
+			.filter((e) => e.type === "message" && e.message.role !== "system").length;
 		expect(entriesBeforeDelete).toBe(2); // 1 user + 1 assistant
 		const removed = harness.session.deleteLastMessages(1);
 		expect(removed).toBe(1);
 		const entriesAfterDelete = harness.sessionManager
 			.buildContextEntries()
-			.filter((e) => e.type === "message").length;
+			.filter((e) => e.type === "message" && e.message.role !== "system").length;
 		expect(entriesAfterDelete).toBe(1); // only user prompt remains
 	});
 });

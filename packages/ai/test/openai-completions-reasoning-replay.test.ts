@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { convertMessages } from "../src/api/openai-completions.ts";
-import type { AssistantMessage, Context, Model, OpenAICompletionsCompat, Usage } from "../src/types.ts";
+import type { AssistantMessage, Model, OpenAICompletionsCompat, TranscriptContext, Usage } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 const emptyUsage: Usage = {
 	input: 0,
@@ -34,15 +35,14 @@ const compat = {
 	cacheControlFormat: undefined,
 	sendSessionAffinityHeaders: false,
 	sessionAffinityFormat: "openai",
+	supportsMidConvoSystemMessages: true,
+	supportsMidConvoToolAdditions: true,
+	vllmPriority: 0,
 	supportsLongCacheRetention: true,
 } satisfies Required<
-	Omit<
-		OpenAICompletionsCompat,
-		"cacheControlFormat" | "deferredToolsMode" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField"
-	>
+	Omit<OpenAICompletionsCompat, "cacheControlFormat" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField">
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
-	deferredToolsMode?: OpenAICompletionsCompat["deferredToolsMode"];
 	supportsThinkingTokenBudget?: OpenAICompletionsCompat["supportsThinkingTokenBudget"];
 	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
 };
@@ -76,14 +76,14 @@ function buildAssistant(content: AssistantMessage["content"]): AssistantMessage 
 	};
 }
 
-function buildContext(assistant: AssistantMessage): Context {
-	return {
+function buildContext(assistant: AssistantMessage): TranscriptContext {
+	return normalizeContext({
 		messages: [
 			{ role: "user", content: "hello", timestamp: 1 },
 			assistant,
 			{ role: "user", content: "continue", timestamp: 3 },
 		],
-	};
+	});
 }
 
 describe("openai-completions reasoning replay (requiresThinkingAsText: false)", () => {

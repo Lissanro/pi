@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
-import { setPadLinesToWidth, Text, type TUI } from "@earendil-works/pi-tui";
+import { setPadLinesToWidth, Text, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
 // These tests exercise the full-width padded rendering of tool output (padLines enabled).
 setPadLinesToWidth(true);
@@ -10,6 +10,7 @@ import { getReadmePath } from "../src/config.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
+import { withBuiltInRenderers } from "../src/core/tools/renderers/index.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
@@ -37,6 +38,10 @@ function createFakeTui(): TUI {
 describe("ToolExecutionComponent parity", () => {
 	beforeAll(() => {
 		initTheme("dark");
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
 	});
 
 	test("stacks custom call and result renderers like the old implementation", () => {
@@ -112,7 +117,7 @@ describe("ToolExecutionComponent parity", () => {
 			"tool-2",
 			{ path: "README.md", oldText: "before", newText: "after" },
 			{},
-			overrideDefinition,
+			withBuiltInRenderers("edit", overrideDefinition),
 			createFakeTui(),
 			process.cwd(),
 		);
@@ -195,6 +200,47 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).not.toContain("[Showing lines 2001-4000 of 4000. Full output:");
 	});
 
+	// Issue #9628: keep short durations precise and make long shell durations readable.
+	test.each([
+		{ ms: 0, formatted: "0.0s" },
+		{ ms: 4_200, formatted: "4.2s" },
+		{ ms: 59_900, formatted: "59.9s" },
+		{ ms: 59_999, formatted: "60.0s" },
+		{ ms: 60_000, formatted: "1m 0s" },
+		{ ms: 90_900, formatted: "1m 30s" },
+		{ ms: 1_592_200, formatted: "26m 32s" },
+		{ ms: 3_599_999, formatted: "59m 59s" },
+		{ ms: 3_600_000, formatted: "1h 0m 0s" },
+		{ ms: 7_384_900, formatted: "2h 3m 4s" },
+	])("bash renderer formats $ms ms as $formatted while running and after completion", ({ ms, formatted }) => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const component = new ToolExecutionComponent(
+			"bash",
+			"tool-bash-duration",
+			{ command: "long-running-command" },
+			{},
+			createBashToolDefinition(process.cwd(), { exposeSessionEnvironment: false }),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.updateResult({ content: [], isError: false }, true);
+
+		vi.advanceTimersByTime(ms);
+		component.invalidate();
+		const running = stripAnsi(component.render(120).join("\n"));
+
+		component.updateResult({ content: [], isError: false }, false);
+		const completed = stripAnsi(component.render(120).join("\n"));
+
+		vi.advanceTimersByTime(1_000);
+		component.invalidate();
+		expect(stripAnsi(component.render(120).join("\n"))).toBe(completed);
+		expect(running).toContain(`Elapsed ${formatted}`);
+		expect(completed).toContain(`Took ${formatted}`);
+	});
+
 	test("does not duplicate built-in headers when passed the active built-in definition", () => {
 		const component = new ToolExecutionComponent(
 			"read",
@@ -221,7 +267,7 @@ describe("ToolExecutionComponent parity", () => {
 			"tool-4b",
 			{ path: "notes.txt" },
 			{},
-			overrideDefinition,
+			withBuiltInRenderers("read", overrideDefinition),
 			createFakeTui(),
 			process.cwd(),
 		);
@@ -243,7 +289,7 @@ describe("ToolExecutionComponent parity", () => {
 			"tool-4c",
 			{ path: "README.md" },
 			{},
-			overrideDefinition,
+			withBuiltInRenderers("read", overrideDefinition),
 			createFakeTui(),
 			process.cwd(),
 		);
@@ -431,6 +477,42 @@ describe("ToolExecutionComponent parity", () => {
 		const rendered = component.render(120).join("\n");
 		expect(stripAnsi(rendered)).toContain(error);
 		expect(rendered).toContain(theme.fg("toolOutput", error));
+	});
+
+	test("expands a collapsed tool result when clicked", () => {
+		const component = new ToolExecutionComponent(
+			"read",
+			"tool-click-expand",
+			{ path: "notes.txt" },
+			{},
+			createReadToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult(
+			{ content: [{ type: "text", text: "hidden content" }], details: undefined, isError: false },
+			false,
+		);
+		const width = 120;
+		const lines = component.render(width);
+		const resultRow = lines.findIndex((line) => stripAnsi(line).includes("notes.txt"));
+		expect(resultRow).toBeGreaterThanOrEqual(0);
+		const event: TuiMouseEvent = {
+			type: "click",
+			button: "left",
+			x: 2,
+			y: resultRow,
+			screenX: 2,
+			screenY: resultRow,
+			width,
+			height: lines.length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 1,
+		};
+		expect(component.handleMouse(event)?.handled).toBe(true);
+		expect(stripAnsi(component.render(width).join("\n"))).toContain("hidden content");
 	});
 
 	test("collapses ordinary read results until expanded", () => {

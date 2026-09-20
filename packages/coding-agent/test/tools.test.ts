@@ -4,8 +4,20 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
-import { type BashOperations, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.ts";
+import type { ExtensionContext } from "../src/core/extensions/types.ts";
+import {
+	type BashOperations,
+	createBashTool,
+	createBashToolDefinition,
+	createLocalBashOperations,
+} from "../src/core/tools/bash.ts";
+import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
+import { createFindToolDefinition } from "../src/core/tools/find.ts";
+import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
+import { createLsToolDefinition } from "../src/core/tools/ls.ts";
+import { createReadToolDefinition } from "../src/core/tools/read.ts";
+import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import {
 	createEditTool,
 	createFindTool,
@@ -244,8 +256,7 @@ describe("Coding Agent Tools", () => {
 
 			const result = await writeTool.execute("test-call-3", { path: testFile, content });
 
-			expect(getTextOutput(result)).toContain("Successfully wrote");
-			expect(getTextOutput(result)).toContain(testFile);
+			expect(getTextOutput(result)).toBe(`Successfully wrote to ${testFile}`);
 			expect(result.details).toBeUndefined();
 		});
 
@@ -482,6 +493,52 @@ describe("Coding Agent Tools", () => {
 		it("should handle command errors", async () => {
 			await expect(bashTool.execute("test-call-9", { command: "exit 1" })).rejects.toThrow(
 				/(Command failed|code 1)/,
+			);
+		});
+
+		// Regression tests for https://github.com/earendil-works/pi/issues/9577
+		it.skipIf(process.platform === "win32")(
+			"should map signal-killed commands to 128 plus the signal number",
+			async () => {
+				const operations = createLocalBashOperations();
+				for (const { signal, exitCode } of [
+					{ signal: "KILL", exitCode: 137 },
+					{ signal: "TERM", exitCode: 143 },
+				]) {
+					const result = await operations.exec(`kill -${signal} $$`, testDir, { onData: () => {} });
+					expect(result.exitCode).toBe(exitCode);
+				}
+			},
+		);
+
+		it.skipIf(process.platform === "win32")(
+			"should reject signal-killed commands while preserving partial output",
+			async () => {
+				for (const { signal, exitCode } of [
+					{ signal: "KILL", exitCode: 137 },
+					{ signal: "TERM", exitCode: 143 },
+				]) {
+					const execution = bashTool.execute(`test-call-signal-${signal}`, {
+						command: `printf 'before-kill\\n'; kill -${signal} $$`,
+					});
+					await expect(execution).rejects.toThrow(
+						new RegExp(`before-kill\\s+Command exited with code ${exitCode}$`),
+					);
+				}
+			},
+		);
+
+		it("should reject a null exit code from custom operations", async () => {
+			const operations: BashOperations = {
+				exec: async (_command, _cwd, { onData }) => {
+					onData(Buffer.from("partial\n", "utf-8"));
+					return { exitCode: null };
+				},
+			};
+			const bash = createBashTool(testDir, { operations });
+
+			await expect(bash.execute("test-call-null-exit", { command: "remote" })).rejects.toThrow(
+				/partial\s+Command terminated without an exit code$/,
 			);
 		});
 
@@ -887,6 +944,116 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain(".hidden-file");
 			expect(output).toContain(".hidden-dir/");
 		});
+	});
+});
+
+function fakeCtx(cwd: string): ExtensionContext {
+	return { cwd } as ExtensionContext;
+}
+
+describe("tool cwd resolution", () => {
+	let testDir: string;
+
+	beforeEach(() => {
+		testDir = join(tmpdir(), `coding-agent-cwd-test-${Date.now()}`);
+		mkdirSync(testDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	it("read uses ctx.cwd when provided", async () => {
+		const testFile = join(testDir, "ctx-cwd-read.txt");
+		writeFileSync(testFile, "hello from ctx.cwd");
+		const tool = createReadToolDefinition("/");
+		const result = await tool.execute(
+			"test-read-ctx-cwd",
+			{ path: "ctx-cwd-read.txt" },
+			undefined,
+			undefined,
+			fakeCtx(testDir),
+		);
+		const output = getTextOutput(result);
+		expect(output).toContain("hello from ctx.cwd");
+	});
+
+	it("write uses ctx.cwd when provided", async () => {
+		const tool = createWriteToolDefinition("/");
+		await tool.execute(
+			"test-write-ctx-cwd",
+			{ path: "ctx-cwd-write.txt", content: "written via ctx.cwd" },
+			undefined,
+			undefined,
+			fakeCtx(testDir),
+		);
+		const content = readFileSync(join(testDir, "ctx-cwd-write.txt"), "utf-8");
+		expect(content).toBe("written via ctx.cwd");
+	});
+
+	it("edit uses ctx.cwd when provided", async () => {
+		const testFile = join(testDir, "ctx-cwd-edit.txt");
+		writeFileSync(testFile, "old text");
+		const tool = createEditToolDefinition("/");
+		await tool.execute(
+			"test-edit-ctx-cwd",
+			{ path: "ctx-cwd-edit.txt", edits: [{ oldText: "old text", newText: "new text" }] },
+			undefined,
+			undefined,
+			fakeCtx(testDir),
+		);
+		const content = readFileSync(testFile, "utf-8");
+		expect(content).toBe("new text");
+	});
+
+	it("grep uses ctx.cwd when provided", async () => {
+		const testFile = join(testDir, "ctx-cwd-grep.txt");
+		writeFileSync(testFile, "match in ctx.cwd");
+		const tool = createGrepToolDefinition("/");
+		const result = await tool.execute(
+			"test-grep-ctx-cwd",
+			{ pattern: "match" },
+			undefined,
+			undefined,
+			fakeCtx(testDir),
+		);
+		const output = getTextOutput(result);
+		expect(output).toContain("ctx-cwd-grep.txt");
+	});
+
+	it("find uses ctx.cwd when provided", async () => {
+		writeFileSync(join(testDir, "ctx-cwd-find.txt"), "find me");
+		const tool = createFindToolDefinition("/");
+		const result = await tool.execute(
+			"test-find-ctx-cwd",
+			{ pattern: "ctx-cwd-find.txt" },
+			undefined,
+			undefined,
+			fakeCtx(testDir),
+		);
+		const output = getTextOutput(result);
+		expect(output).toContain("ctx-cwd-find.txt");
+	});
+
+	it("ls uses ctx.cwd when provided", async () => {
+		writeFileSync(join(testDir, "ctx-cwd-ls.txt"), "list me");
+		const tool = createLsToolDefinition("/");
+		const result = await tool.execute("test-ls-ctx-cwd", {}, undefined, undefined, fakeCtx(testDir));
+		const output = getTextOutput(result);
+		expect(output).toContain("ctx-cwd-ls.txt");
+	});
+
+	it("bash uses ctx.cwd when provided", async () => {
+		const tool = createBashToolDefinition("/", { exposeSessionEnvironment: false });
+		const result = await tool.execute(
+			"test-bash-ctx-cwd",
+			{ command: "pwd" },
+			undefined,
+			undefined,
+			fakeCtx(testDir),
+		);
+		const output = getTextOutput(result);
+		expect(output).toContain(testDir);
 	});
 });
 

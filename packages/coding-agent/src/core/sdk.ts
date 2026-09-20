@@ -23,6 +23,7 @@ import {
 	createFindTool,
 	createGrepTool,
 	createLsTool,
+	createPowerShellTool,
 	createReadOnlyTools,
 	createReadTool,
 	createWriteTool,
@@ -131,6 +132,7 @@ export {
 	createGrepTool,
 	createFindTool,
 	createLsTool,
+	createPowerShellTool,
 };
 
 // Helper Functions

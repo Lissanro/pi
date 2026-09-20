@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { convertMessages } from "../src/api/openai-completions.ts";
-import type { AssistantMessage, Context, Model, OpenAICompletionsCompat, Usage } from "../src/types.ts";
+import type { AssistantMessage, Model, OpenAICompletionsCompat, TranscriptContext, Usage } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 const emptyUsage: Usage = {
 	input: 0,
@@ -33,15 +34,14 @@ const compat = {
 	cacheControlFormat: undefined,
 	sendSessionAffinityHeaders: false,
 	sessionAffinityFormat: "openai",
+	supportsMidConvoSystemMessages: true,
+	supportsMidConvoToolAdditions: true,
+	vllmPriority: 0,
 	supportsLongCacheRetention: true,
 } satisfies Required<
-	Omit<
-		OpenAICompletionsCompat,
-		"cacheControlFormat" | "deferredToolsMode" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField"
-	>
+	Omit<OpenAICompletionsCompat, "cacheControlFormat" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField">
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
-	deferredToolsMode?: OpenAICompletionsCompat["deferredToolsMode"];
 	supportsThinkingTokenBudget?: OpenAICompletionsCompat["supportsThinkingTokenBudget"];
 	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
 };
@@ -75,10 +75,10 @@ function buildAssistant(content: AssistantMessage["content"]): AssistantMessage 
 	};
 }
 
-function buildContext(...messages: AssistantMessage[]): Context {
-	return {
+function buildContext(...messages: AssistantMessage[]): TranscriptContext {
+	return normalizeContext({
 		messages: [{ role: "user", content: "Read the file", timestamp: 1 }, ...messages],
-	};
+	});
 }
 
 type AssistantParams = {
@@ -178,7 +178,7 @@ describe("openai-completions convertMessages tool-call prefill", () => {
 		const trailing = buildAssistant([{ type: "text", text: "continuing" }]);
 		const messages = convertMessages(
 			buildModel(),
-			{
+			normalizeContext({
 				messages: [
 					{ role: "user", content: "Read the file", timestamp: 1 },
 					first,
@@ -192,7 +192,7 @@ describe("openai-completions convertMessages tool-call prefill", () => {
 					},
 					trailing,
 				],
-			},
+			}),
 			compat,
 			{ prefill: true },
 		);

@@ -6,14 +6,21 @@
  */
 
 import type { Agent, AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@earendil-works/pi-ai";
+import {
+	contentText,
+	normalizeContext,
+	type RetryCallbacks,
+	type RetryPolicy,
+	retryAssistantCall,
+	uuidv7,
+} from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
-	Context,
 	Message,
 	Model,
 	SimpleStreamOptions,
 	Tool,
+	TranscriptContext,
 	Usage,
 } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
@@ -90,7 +97,9 @@ function getMessageFromEntryForCompaction(entry: SessionEntry): AgentMessage | u
 	if (entry.type === "compaction") {
 		return undefined;
 	}
-	return sessionEntryToContextMessages(entry)[0];
+	// System messages are prompt state, not conversation; the compaction entry carries their replay.
+	const message = sessionEntryToContextMessages(entry)[0];
+	return message?.role === "system" ? undefined : message;
 }
 
 /** Result from compact() - SessionManager adds uuid/parentUuid when saving */
@@ -448,13 +457,10 @@ export function findCutPoint(
 
 			// Check if we've exceeded the budget.
 			if (accumulatedTokens >= keepRecentTokens) {
-				// Find the closest valid cut point at or after this entry.
-				for (let c = 0; c < cutPoints.length; c++) {
-					if (cutPoints[c] >= i) {
-						tokenCut = cutPoints[c];
-						break;
-					}
-				}
+				// Prefer the closest valid cut point at or after this entry. If trailing
+				// tool results exceed the budget by themselves, keep their preceding
+				// assistant tool call instead of falling back to the first message.
+				tokenCut = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
 				break;
 			}
 		}
@@ -552,6 +558,20 @@ async function buildAgentSummarizationContext(
 	};
 }
 
+/**
+ * Returns an error message when a summarization response cannot safely be persisted.
+ * A length stop contains partial text and must not become a session checkpoint.
+ */
+export function getSummarizationFailure(response: AssistantMessage, label: string): string | undefined {
+	if (response.stopReason === "error") {
+		return `${label} failed: ${response.errorMessage || "Unknown error"}`;
+	}
+	if (response.stopReason === "length") {
+		return `${label} failed: generation hit the token cap and the summary is incomplete`;
+	}
+	return undefined;
+}
+
 function createSummarizationOptions(
 	model: Model<any>,
 	maxTokens: number,
@@ -586,7 +606,7 @@ function createSummarizationOptions(
  */
 export async function completeSummarization(
 	model: Model<any>,
-	context: Context,
+	context: TranscriptContext,
 	options: SimpleStreamOptions,
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
@@ -598,7 +618,6 @@ export async function completeSummarization(
 		...options,
 		cacheRetention: "none",
 		sessionId: options.sessionId ?? uuidv7(),
-		toolChoice: "none",
 	};
 	const produce = async (): Promise<AssistantMessage> =>
 		streamFn
@@ -700,8 +719,7 @@ export async function generateSummaryWithUsage(
 		tools,
 	} = await buildAgentSummarizationContext(agent, currentMessages, signal, systemPrompt);
 
-	const instructionText =
-		"Do not continue the conversation above. Output only the structured summary requested below.\n\n" + basePrompt;
+	const instructionText = `Do not continue the conversation above. Output only the structured summary requested below.\n\n${basePrompt}`;
 
 	const summarizationMessages: Message[] = [
 		...llmMessages,
@@ -726,15 +744,16 @@ export async function generateSummaryWithUsage(
 
 	const response = await completeSummarization(
 		model,
-		{ systemPrompt: effectiveSystemPrompt, messages: summarizationMessages, tools },
+		normalizeContext({ systemPrompt: effectiveSystemPrompt, messages: summarizationMessages, tools }),
 		completionOptions,
 		streamFn,
 		retry,
 		callbacks,
 	);
 
-	if (response.stopReason === "error") {
-		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
+	const failure = getSummarizationFailure(response, "Summarization");
+	if (failure) {
+		throw new Error(failure);
 	}
 	if (response.content.some((block) => block.type === "toolCall")) {
 		throw new Error("Summarization attempted to call a tool");

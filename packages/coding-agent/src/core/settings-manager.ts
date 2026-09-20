@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Transport } from "@earendil-works/pi-ai";
-import type { TuiMode as RendererTuiMode, ScrollViewScrollbar } from "@earendil-works/pi-tui";
+import type { Model, Transport } from "@earendil-works/pi-ai";
+import type { TuiMode as RendererTuiMode, ScrollViewScrollbar, TerminalCapabilities } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
@@ -20,6 +20,16 @@ import { DEFAULT_SUMMARY_BLOCK_MAX_TOKENS } from "./session-manager.ts";
  */
 export type CompactionSummaryPlacement = "context" | "chronological";
 
+export interface CompactionModelOverride {
+	reserveTokens?: number;
+	keepRecentTokens?: number;
+}
+
+const DEFAULT_COMPACTION_TOKEN_SETTINGS: Required<CompactionModelOverride> = {
+	reserveTokens: 16384,
+	keepRecentTokens: 20000,
+};
+
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
@@ -28,6 +38,7 @@ export interface CompactionSettings {
 	// Max total tokens for the compaction summaries block in the prefix.
 	// Default keeps several summaries; 0 keeps only the most recent one.
 	summaryBlockMaxTokens?: number;
+	modelOverrides?: Record<string, CompactionModelOverride>; // exact "provider/modelId" keys
 }
 
 export interface BranchSummarySettings {
@@ -45,7 +56,7 @@ export interface RetrySettings {
 	enabled?: boolean; // default: true
 	maxRetries?: number; // default: Infinity (unlimited attempts)
 	baseDelayMs?: number; // default: 2000 (exponential backoff base: 2s, 4s, 8s, ...)
-	maxBackoffMs?: number; // default: 30000 (cap exponential backoff at 30 seconds)
+	maxAgentDelayMs?: number; // default: 30000 (cap exponential backoff at 30 seconds)
 	provider?: ProviderRetrySettings;
 }
 
@@ -57,6 +68,9 @@ export interface TerminalSettings {
 	imageWidthCells?: number; // default: 60 (preferred inline image width in terminal cells)
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
 	showTerminalProgress?: boolean; // default: false (OSC 9;4 terminal progress indicators)
+	hyperlinks?: boolean | "auto";
+	images?: "kitty" | "iterm2" | "auto" | false;
+	trueColor?: boolean | "auto";
 }
 
 export interface ImageSettings {
@@ -118,7 +132,7 @@ export interface Settings {
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
 	hideThinkingBlock?: boolean;
-	showCacheMissNotices?: boolean; // default: false - show prompt-cache miss and compaction cost notices
+	showCacheMissNotices?: boolean; // default: false - show cache cost and provider recovery notices
 	externalEditor?: string; // Command for Ctrl+G external editor; takes precedence over VISUAL/EDITOR
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows); supports leading ~ expansion
 	quietStartup?: boolean;
@@ -160,6 +174,7 @@ export interface Settings {
 	tuiMode?: TuiMode; // default: "regular"
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
+	fullscreenCopyOnSelect?: boolean; // default: true; no effect in regular TUI mode
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -866,12 +881,36 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getCompactionReserveTokens(): number {
-		return this.settings.compaction?.reserveTokens ?? 16384;
+	private getCompactionTokenSetting(
+		field: keyof CompactionModelOverride,
+		model?: Pick<Model<string>, "provider" | "id">,
+	): number {
+		const compaction = this.settings.compaction;
+		const ordinary = compaction?.[field];
+		if (ordinary !== undefined && (typeof ordinary !== "number" || !Number.isSafeInteger(ordinary) || ordinary < 0)) {
+			throw new Error(
+				`Invalid compaction.${field} setting: ${String(ordinary)}. Expected a non-negative safe integer.`,
+			);
+		}
+
+		const modelKey = model ? `${model.provider}/${model.id}` : undefined;
+		const entry = modelKey !== undefined ? compaction?.modelOverrides?.[modelKey] : undefined;
+		if (entry !== undefined && !isMergeableObject(entry)) {
+			throw new Error(
+				`Invalid compaction.modelOverrides["${modelKey}"] setting: ${String(entry)}. Expected an object.`,
+			);
+		}
+		const override = entry?.[field];
+		if (override !== undefined && (typeof override !== "number" || !Number.isSafeInteger(override) || override < 0)) {
+			throw new Error(
+				`Invalid compaction.modelOverrides["${modelKey}"].${field} setting: ${String(override)}. Expected a non-negative safe integer.`,
+			);
+		}
+		return override ?? ordinary ?? DEFAULT_COMPACTION_TOKEN_SETTINGS[field];
 	}
 
-	getCompactionKeepRecentTokens(): number {
-		return this.settings.compaction?.keepRecentTokens ?? 20000;
+	getCompactionReserveTokens(model?: Pick<Model<string>, "provider" | "id">): number {
+		return this.getCompactionTokenSetting("reserveTokens", model);
 	}
 
 	getCompactionSummaryPlacement(): CompactionSummaryPlacement {
@@ -900,7 +939,12 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getCompactionSettings(): {
+	getCompactionKeepRecentTokens(model?: Pick<Model<string>, "provider" | "id">): number {
+		return this.getCompactionTokenSetting("keepRecentTokens", model);
+	}
+
+	/** Resolve each token setting through model override, ordinary setting, then built-in default. */
+	getCompactionSettings(model?: Pick<Model<string>, "provider" | "id">): {
 		enabled: boolean;
 		reserveTokens: number;
 		keepRecentTokens: number;
@@ -908,8 +952,8 @@ export class SettingsManager {
 	} {
 		return {
 			enabled: this.getCompactionEnabled(),
-			reserveTokens: this.getCompactionReserveTokens(),
-			keepRecentTokens: this.getCompactionKeepRecentTokens(),
+			reserveTokens: this.getCompactionReserveTokens(model),
+			keepRecentTokens: this.getCompactionKeepRecentTokens(model),
 			summaryBlockMaxTokens: this.getSummaryBlockMaxTokens(),
 		};
 	}
@@ -938,12 +982,12 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number; maxBackoffMs: number } {
+	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number; maxAgentDelayMs: number } {
 		return {
 			enabled: this.getRetryEnabled(),
 			maxRetries: this.settings.retry?.maxRetries ?? Number.POSITIVE_INFINITY,
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
-			maxBackoffMs: this.settings.retry?.maxBackoffMs ?? 30000,
+			maxAgentDelayMs: this.settings.retry?.maxAgentDelayMs ?? 30000,
 		};
 	}
 
@@ -1189,6 +1233,16 @@ export class SettingsManager {
 		return this.settings.thinkingBudgets;
 	}
 
+	getTerminalCapabilityOverrides(): Partial<TerminalCapabilities> {
+		const terminal = this.settings.terminal;
+		const images = terminal?.images;
+		return {
+			...(images === "kitty" || images === "iterm2" ? { images } : images === false ? { images: null } : {}),
+			...(typeof terminal?.trueColor === "boolean" ? { trueColor: terminal.trueColor } : {}),
+			...(typeof terminal?.hyperlinks === "boolean" ? { hyperlinks: terminal.hyperlinks } : {}),
+		};
+	}
+
 	getShowImages(): boolean {
 		return this.settings.terminal?.showImages ?? true;
 	}
@@ -1277,6 +1331,16 @@ export class SettingsManager {
 	setFullscreenScrollbar(mode: ScrollViewScrollbar): void {
 		this.globalSettings.fullscreenScrollbar = mode;
 		this.markModified("fullscreenScrollbar");
+		this.save();
+	}
+
+	getFullscreenCopyOnSelect(): boolean {
+		return this.settings.fullscreenCopyOnSelect ?? true;
+	}
+
+	setFullscreenCopyOnSelect(enabled: boolean): void {
+		this.globalSettings.fullscreenCopyOnSelect = enabled;
+		this.markModified("fullscreenCopyOnSelect");
 		this.save();
 	}
 

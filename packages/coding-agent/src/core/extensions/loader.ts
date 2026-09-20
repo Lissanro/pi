@@ -21,7 +21,7 @@ import { createJiti } from "jiti/static";
 import * as _bundledTypebox from "typebox";
 import * as _bundledTypeboxCompile from "typebox/compile";
 import * as _bundledTypeboxValue from "typebox/value";
-import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.ts";
+import { CONFIG_DIR_NAME, getAgentDir, isBunBinary, isBundledNode } from "../../config.ts";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @earendil-works/pi-coding-agent.
 import * as _bundledPiCodingAgent from "../../index.ts";
@@ -78,8 +78,6 @@ const require = createRequire(import.meta.url);
 const isNodeSeaBinary =
 	("sea" in process.features && process.features.sea === true) ||
 	process.getBuiltinModule("node:sea")?.isSea() === true;
-declare const PI_BUNDLED_NODE: boolean;
-const isBundledNode = typeof PI_BUNDLED_NODE !== "undefined" && PI_BUNDLED_NODE;
 const isTypeScriptSourceRuntime = !isBunBinary && path.extname(fileURLToPath(import.meta.url)) === ".ts";
 
 /**
@@ -279,15 +277,30 @@ function createExtensionAPI(
 
 	const api = {
 		// Registration methods - write to extension
-		on(event: string, handler: HandlerFn): void {
+		on(event: string, handler: HandlerFn): () => void {
 			assertActive();
+			const registeredHandler: HandlerFn = (...args) => handler(...args);
 			const list = extension.handlers.get(event) ?? [];
-			list.push(handler);
+			list.push(registeredHandler);
 			extension.handlers.set(event, list);
+
+			return () => {
+				const handlers = extension.handlers.get(event);
+				if (!handlers) return;
+				const handlerIndex = handlers.indexOf(registeredHandler);
+				if (handlerIndex === -1) return;
+				handlers.splice(handlerIndex, 1);
+				if (handlers.length === 0) extension.handlers.delete(event);
+			};
 		},
 
 		registerTool(tool: ToolDefinition): void {
 			assertActive();
+			if (typeof tool.parameters !== "object" || tool.parameters === null || Array.isArray(tool.parameters)) {
+				throw new Error(
+					`Tool "${tool.name}" registered by extension "${extension.path}" must define an object parameter schema.`,
+				);
+			}
 			extension.tools.set(tool.name, {
 				definition: tool,
 				sourceInfo: extension.sourceInfo,

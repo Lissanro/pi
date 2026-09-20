@@ -27,8 +27,11 @@ describe("AgentSession continue with prefill", () => {
 		await harness.session.prompt("Hello");
 
 		// The session has [user, assistant].
-		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
-		const prefill = harness.session.messages[1];
+		expect(harness.session.messages.filter((m) => m.role !== "system").map((message) => message.role)).toEqual([
+			"user",
+			"assistant",
+		]);
+		const prefill = harness.session.messages[2];
 		expect(prefill?.role).toBe("assistant");
 
 		// Switch to an openai-completions model and a mock stream that captures
@@ -62,21 +65,26 @@ describe("AgentSession continue with prefill", () => {
 		// Delete the prefill (last assistant message) from the session log and agent state.
 		const removed = harness.session.deleteLastMessages(1);
 		expect(removed).toBe(1);
-		expect(harness.session.messages.map((message) => message.role)).toEqual(["user"]);
+		expect(harness.session.messages.filter((m) => m.role !== "system").map((message) => message.role)).toEqual([
+			"user",
+		]);
 
 		// Continue with the prefill.
 		await harness.session.agent.continue(prefill!);
 
 		// returnPrefill was forwarded to the stream function.
 		expect(capturedReturnPrefill).toBe(true);
-		// The prefill was the last message in the LLM context.
-		expect(capturedContextMessages?.length).toBe(2);
-		const contextLast = capturedContextMessages?.[1];
+		// The prefill was the last assistant message in the LLM context (after the system message).
+		expect(capturedContextMessages?.length).toBe(3);
+		const contextLast = capturedContextMessages?.[2];
 		expect(contextLast?.role).toBe("assistant");
 		expect(getMessageText(contextLast)).toBe("Partial response");
 		// The session has the echoed prefill plus newly generated tokens.
-		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
-		expect(getMessageText(harness.session.messages[1]!)).toBe("Partial response continued");
+		expect(harness.session.messages.filter((m) => m.role !== "system").map((message) => message.role)).toEqual([
+			"user",
+			"assistant",
+		]);
+		expect(getMessageText(harness.session.messages[2]!)).toBe("Partial response continued");
 	});
 
 	it("falls back to normal continue when the last message is a user message", async () => {
@@ -90,11 +98,16 @@ describe("AgentSession continue with prefill", () => {
 		// assistant message is not the path here — we test user-last continue by
 		// deleting the assistant and continuing from the user message.
 		harness.session.deleteLastMessages(1);
-		expect(harness.session.messages.map((message) => message.role)).toEqual(["user"]);
+		expect(harness.session.messages.filter((m) => m.role !== "system").map((message) => message.role)).toEqual([
+			"user",
+		]);
 
 		await harness.session.agent.continue();
 
-		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
-		expect(getMessageText(harness.session.messages[1]!)).toBe("Second response");
+		expect(harness.session.messages.filter((m) => m.role !== "system").map((message) => message.role)).toEqual([
+			"user",
+			"assistant",
+		]);
+		expect(getMessageText(harness.session.messages[2]!)).toBe("Second response");
 	});
 });

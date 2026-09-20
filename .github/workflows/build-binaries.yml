@@ -182,7 +182,14 @@ jobs:
           esac
 
           mkdir -p extracted
-          tar -xf "${archive}" -C extracted
+          if [[ "${archive}" == *.zip ]]; then
+            export ARCHIVE_PATH="$(cygpath -w "${archive}")"
+            export DESTINATION_PATH="$(cygpath -w extracted)"
+            powershell.exe -NoProfile -NonInteractive -Command \
+              'Expand-Archive -LiteralPath $env:ARCHIVE_PATH -DestinationPath $env:DESTINATION_PATH -Force'
+          else
+            tar -xf "${archive}" -C extracted
+          fi
           echo "root=${root}" >> "${GITHUB_OUTPUT}"
           echo "binary=${binary}" >> "${GITHUB_OUTPUT}"
 
@@ -327,6 +334,9 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Smoke-test packed npm consumer
+        run: npm run check:package-install
 
       - name: Upgrade npm for trusted publishing
         run: |

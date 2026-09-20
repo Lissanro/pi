@@ -76,8 +76,8 @@ export function transformMessages<TApi extends Api>(
 
 	// First pass: transform messages (unsupported image downgrade, thinking blocks, tool call ID normalization)
 	const transformed = imageAwareMessages.map((msg) => {
-		// User messages pass through unchanged
-		if (msg.role === "user") {
+		// System and user messages pass through unchanged
+		if (msg.role === "system" || msg.role === "user") {
 			return msg;
 		}
 
@@ -142,7 +142,11 @@ export function transformMessages<TApi extends Api>(
 	const result: Message[] = [];
 	let pendingToolCalls: ToolCall[] = [];
 	let existingToolResultIds = new Set<string>();
-	const insertSyntheticToolResults = () => {
+	// System messages are transparent to tool-call accounting: one that lands between a tool
+	// call and its results is held back and emitted after the results (synthetic ones
+	// included), so it never causes a duplicate result for a call that is answered later.
+	const heldSystemMessages: Message[] = [];
+	const closePendingToolCalls = () => {
 		if (pendingToolCalls.length > 0) {
 			for (const tc of pendingToolCalls) {
 				if (!existingToolResultIds.has(tc.id)) {
@@ -159,6 +163,8 @@ export function transformMessages<TApi extends Api>(
 			pendingToolCalls = [];
 			existingToolResultIds = new Set();
 		}
+		result.push(...heldSystemMessages);
+		heldSystemMessages.length = 0;
 	};
 
 	for (let i = 0; i < transformed.length; i++) {
@@ -166,7 +172,7 @@ export function transformMessages<TApi extends Api>(
 
 		if (msg.role === "assistant") {
 			// If we have pending orphaned tool calls from a previous assistant, insert synthetic results now
-			insertSyntheticToolResults();
+			closePendingToolCalls();
 
 			const assistantMsg = msg as AssistantMessage;
 
@@ -181,9 +187,15 @@ export function transformMessages<TApi extends Api>(
 		} else if (msg.role === "toolResult") {
 			existingToolResultIds.add(msg.toolCallId);
 			result.push(msg);
+		} else if (msg.role === "system") {
+			if (pendingToolCalls.length > 0) {
+				heldSystemMessages.push(msg);
+			} else {
+				result.push(msg);
+			}
 		} else if (msg.role === "user") {
-			// User message interrupts tool flow - insert synthetic results for orphaned calls
-			insertSyntheticToolResults();
+			// A new user turn interrupts tool flow - insert synthetic results for orphaned calls
+			closePendingToolCalls();
 			result.push(msg);
 		} else {
 			result.push(msg);
@@ -197,7 +209,7 @@ export function transformMessages<TApi extends Api>(
 	// assistant and break the prefill (the server requires the assistant to
 	// be the trailing message).
 	if (!options?.skipTrailingToolResultSynthesis) {
-		insertSyntheticToolResults();
+		closePendingToolCalls();
 	}
 
 	return result;

@@ -7,6 +7,7 @@
 
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
+import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Args, type Mode, normalizeSessionName, parseArgs, printHelp } from "./cli/args.ts";
 import {
@@ -63,8 +64,9 @@ import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/tru
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
-import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
-import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
+import { validateThemeJson } from "./modes/interactive/theme/theme-json.ts";
+import { cleanupManagedInstall, handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
@@ -237,14 +239,13 @@ type ResolvedSession =
  * Resolve a session argument to a file path.
  * If it looks like a path, use as-is. Otherwise try to match as session ID prefix.
  */
-async function findLocalSessionByExactId(
+function findLocalSessionByExactId(
 	sessionId: string,
 	cwd: string,
 	sessionDir?: string,
-): Promise<{ type: "local"; path: string } | undefined> {
-	const localSessions = await SessionManager.list(cwd, sessionDir);
-	const localMatch = localSessions.find((s) => s.id === sessionId);
-	return localMatch ? { type: "local", path: localMatch.path } : undefined;
+): { type: "local"; path: string } | undefined {
+	const path = SessionManager.findById(cwd, sessionId, sessionDir);
+	return path ? { type: "local", path } : undefined;
 }
 
 async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: string): Promise<ResolvedSession> {
@@ -360,7 +361,7 @@ export async function createSessionManager(
 
 	if (parsed.fork) {
 		if (parsed.sessionId) {
-			const existingTarget = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
+			const existingTarget = findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 			if (existingTarget) {
 				console.error(chalk.red(`Session already exists with id '${parsed.sessionId}'`));
 				process.exit(1);
@@ -427,7 +428,7 @@ export async function createSessionManager(
 	}
 
 	if (parsed.sessionId) {
-		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
+		const existingSession = findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 		if (existingSession) {
 			return SessionManager.open(existingSession.path, sessionDir);
 		}
@@ -582,6 +583,7 @@ export async function main(args: string[], options?: MainOptions) {
 	if (process.platform === "win32") {
 		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
 	}
+	cleanupManagedInstall();
 
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
@@ -853,6 +855,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("createAgentSessionRuntime");
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRuntime, resourceLoader } = services;
+	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
 
@@ -888,6 +891,8 @@ export async function main(args: string[], options?: MainOptions) {
 		stdinContent,
 	);
 	time("prepareInitialMessage");
+	// pi reads user-authored themes, so it opts into full validation before any theme loads.
+	setThemeJsonValidator(validateThemeJson);
 	initTheme(settingsManager.getTheme(), appMode === "interactive");
 	time("initTheme");
 

@@ -54,7 +54,7 @@ describe("countTokens", () => {
 	it("sends a Bearer header from the API key when none is set", async () => {
 		let seenAuth: string | undefined;
 		const fetchFn = mockFetch(async (_url, init) => {
-			seenAuth = (init.headers as Record<string, string>)?.["Authorization"] as string | undefined;
+			seenAuth = (init.headers as Record<string, string>)?.Authorization as string | undefined;
 			return new Response(JSON.stringify({ tokens: [1] }), {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
@@ -67,7 +67,7 @@ describe("countTokens", () => {
 	it("prefers a pre-resolved Authorization header over the API key", async () => {
 		let seenAuth: string | undefined;
 		const fetchFn = mockFetch(async (_url, init) => {
-			seenAuth = (init.headers as Record<string, string>)?.["Authorization"] as string | undefined;
+			seenAuth = (init.headers as Record<string, string>)?.Authorization as string | undefined;
 			return new Response(JSON.stringify({ tokens: [1] }), {
 				status: 200,
 				headers: { "Content-Type": "application/json" },

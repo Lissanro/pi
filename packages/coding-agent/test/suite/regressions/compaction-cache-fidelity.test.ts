@@ -108,9 +108,12 @@ describe("compaction cache fidelity", () => {
 		await harness.session.compact({ keepRecentMessages: 1 });
 
 		expect(captured).toBeDefined();
-		// The first content message of the request MUST be the prior compactionSummary
-		// (so it byte-matches the cached normal-chat prefix). Skipping it is the 22K divergence.
-		expect(captured!.messages[0]).toEqual(expectedFirst);
+		// The system prompt is folded into a leading system message by the shared
+		// normalizeContext pipeline. The first CONTENT message of the request MUST be
+		// the prior compactionSummary (so it byte-matches the cached normal-chat prefix).
+		// Skipping it is the 22K divergence.
+		const capturedContent = captured!.messages.filter((message) => message.role !== "system");
+		expect(capturedContent[0]).toEqual(expectedFirst);
 	});
 
 	it("summarization request head is byte-identical to the normal chat prefix", async () => {
@@ -123,7 +126,6 @@ describe("compaction cache fidelity", () => {
 
 		// The normal chat the summary must byte-match: system prompt + the full
 		// session messages exactly as a normal turn would send them (pre-compaction).
-		const expectedSystem = agent.state.systemPrompt;
 		const transformed = agent.transformContext
 			? await agent.transformContext(agent.state.messages, undefined)
 			: agent.state.messages;
@@ -138,11 +140,14 @@ describe("compaction cache fidelity", () => {
 
 		expect(captured).toBeDefined();
 
-		expect(captured!.systemPrompt).toBe(expectedSystem);
-		// Drop the trailing summarize instruction; the rest must be a PREFIX of
-		// the normal chat (nothing injected before the head, nothing skipped).
-		const capturedHead = captured!.messages.slice(0, -1);
-		expect(capturedHead.length).toBeLessThanOrEqual(expectedLlm.length);
-		expect(capturedHead).toEqual(expectedLlm.slice(0, capturedHead.length));
+		// The system prompt is folded into a leading system message by the shared
+		// normalizeContext pipeline; verify it is present so the prefix starts with it.
+		expect(captured!.messages[0]?.role).toBe("system");
+		// Drop the leading system message and the trailing summarize instruction; the
+		// rest must be a PREFIX of the normal chat content (nothing injected before the
+		// head, nothing skipped).
+		const capturedHead = captured!.messages.filter((message) => message.role !== "system").slice(0, -1);
+		const expectedContent = expectedLlm.filter((message) => message.role !== "system");
+		expect(capturedHead).toEqual(expectedContent.slice(0, capturedHead.length));
 	});
 });

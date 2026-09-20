@@ -47,6 +47,20 @@ Pi Crystal started as a personal project for myself and my wife, tuned for long 
 * [Read the documentation](https://pi.dev/docs/latest) - most of it still applies to Pi Crystal, except the fork features described above; you can also ask the agent to explain itself
 * [Visit pi.dev](https://pi.dev) - website of the project Pi Crystal is forked from, big thanks to the original author for making Pi open source
 
+## Packages
+
+| Package | Description |
+|---------|-------------|
+| **[@earendil-works/chord](packages/chord)** | Standalone application-composition runtime for services, replicated state, RPC, and plugins |
+| **[@earendil-works/pi-telemetry](packages/telemetry)** | Vendor-neutral telemetry contracts, reference adapter, conformance tests, and typed schemas |
+| **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
+| **[@earendil-works/pi-durable](packages/durable)** | Durable conversation, task, and document runtime |
+| **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
+| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
+| **[@earendil-works/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
+
+The repo also carries internal workspace packages not in the table: `packages/client`, `packages/protocol`, `packages/server`, `packages/orchestrator`, `packages/session-backends`, and `packages/evals`. For Slack/chat automation see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).
+
 ## Permissions & Containerization
 
 Pi Crystal, just like the mainline Pi, does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it.
@@ -59,7 +73,7 @@ If you need stronger boundaries, containerize or sandbox Pi. See [packages/codin
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules. Longer term plans for Pi can also be found in [RFCs](https://rfc.earendil.com/keyword/pi/).
 
 ## Development
 
@@ -71,6 +85,19 @@ npm run check         # Lint, format, and type check
 ./test.sh            # Run tests (skips LLM-dependent tests without API keys)
 ./pi-test.sh         # Run pi from sources (can be run from any directory)
 ```
+
+## Building standalone binaries from release source
+
+GitHub releases include a versioned source archive covered by the release's `SHA256SUMS` file. Extract it and run the same build script used for the official standalone binaries:
+
+```bash
+VERSION="<release-version>"
+tar -xzf "pi-${VERSION}-source.tar.gz"
+cd "pi-${VERSION}"
+./scripts/build-binaries.sh --offline-model-data --platform linux-x64 --out "$PWD/out"
+```
+
+The archive includes release model data and native prebuilds. `--offline-model-data` uses that model data without refreshing provider catalogs. The script installs dependencies and builds the executable with its runtime assets; pass `--skip-install` if dependencies are already provided.
 
 ## Supply-chain hardening
 

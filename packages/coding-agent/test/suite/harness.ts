@@ -65,7 +65,6 @@ export interface HarnessOptions {
 	/** Override the faux provider API (e.g. "openai-completions" for prefill tests). */
 	fauxApi?: string;
 	settings?: Partial<Settings>;
-	systemPrompt?: string;
 	tools?: AgentTool[];
 	initialActiveToolNames?: string[];
 	allowedToolNames?: string[];
@@ -148,7 +147,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		streamFn: streamSimple,
 		initialState: {
 			model,
-			systemPrompt: options.systemPrompt ?? "You are a test assistant.",
+			systemPrompt: "",
 			tools: [],
 		},
 		convertToLlm,
