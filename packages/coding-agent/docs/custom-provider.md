@@ -733,6 +733,9 @@ interface ProviderModelConfig {
     cacheWrite: number;
   };
 
+  /** Best-effort prompt cache lifetime in seconds per retention tier. Unset disables cache warming. */
+  promptCache?: { short?: number; long?: number };
+
   /** Maximum context window size in tokens. */
   contextWindow: number;
 

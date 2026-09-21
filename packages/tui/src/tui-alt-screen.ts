@@ -1705,9 +1705,24 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		buffer += preparedKittyScreen.evictedImageDeletion;
 
+		// WezTerm erases intersecting Kitty image cells when a later EL clears a covered row.
+		// Only separate clearing from drawing for WezTerm frames that place images; preserve the
+		// existing interleaved output for text-only frames and every other terminal.
+		const clearRowsBeforeKittyImages =
+			redrawImages &&
+			this.imageProtocol === "kitty" &&
+			screen.some(isImageLine) &&
+			(Boolean(process.env.WEZTERM_PANE) || process.env.TERM_PROGRAM?.toLowerCase() === "wezterm");
+		if (clearRowsBeforeKittyImages) {
+			for (let row = 0; row < height; row++) {
+				if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;
+				buffer += `\x1b[${row + 1};1H\x1b[2K`;
+			}
+		}
+
 		for (let row = 0; row < height; row++) {
 			if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;
-			buffer += `\x1b[${row + 1};1H\x1b[2K${preparedKittyScreen.lines[row] ?? ""}`;
+			buffer += `\x1b[${row + 1};1H${clearRowsBeforeKittyImages ? "" : "\x1b[2K"}${preparedKittyScreen.lines[row] ?? ""}`;
 		}
 
 		if (cursorPos) {

@@ -124,6 +124,7 @@ For each built-in provider, pi maintains a list of tool-capable models. Configur
 - Together AI
 - Baseten
 - Kimi For Coding
+- Meta
 - MiniMax
 - Xiaomi MiMo
 - Xiaomi MiMo Token Plan (China)
@@ -189,6 +190,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/export [file]` | Export session to HTML or JSONL file |
 | `/import <file>` | Import and resume a session from a JSONL file |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
+| `/bug [description]` | Report a bug to the Pi developers; see [Sessions](docs/sessions.md#reporting-bugs) |
 | `/reload` | Reload keybindings, extensions, skills, prompts, themes, and context files |
 | `/update [all\|system-prompt\|skills]` | Update the system prompt and/or skills from current files |
 | `/hotkeys` | Show all keyboard shortcuts |

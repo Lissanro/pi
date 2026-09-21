@@ -35,6 +35,12 @@ describe("isContextOverflow", () => {
 		expect(isContextOverflow(message, 32768)).toBe(true);
 	});
 
+	it("detects z.ai prompt-too-long errors", () => {
+		// Regression for #9805.
+		const message = createErrorMessage('400 {"code":"1261","message":"Prompt too long"}', "zai");
+		expect(isContextOverflow(message, 1048576)).toBe(true);
+	});
+
 	it("detects Together AI context length errors", () => {
 		const message = createErrorMessage(
 			"400 The input (516368 tokens) is longer than the model's context length (262144 tokens).",

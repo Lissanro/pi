@@ -1,6 +1,6 @@
 {
 	"name": "@earendil-works/pi-evals",
-	"version": "0.85.1",
+	"version": "0.86.1",
 	"private": true,
 	"type": "module",
 	"scripts": {
@@ -12,8 +12,8 @@
 	},
 	"devDependencies": {
 		"autoevals": "0.3.0",
-		"@earendil-works/pi-ai": "^0.85.1",
-		"@earendil-works/pi-coding-agent": "^0.85.1",
+		"@earendil-works/pi-ai": "^0.86.1",
+		"@earendil-works/pi-coding-agent": "^0.86.1",
 		"@types/node": "22.19.19",
 		"@vitest-evals/core": "0.15.0",
 		"shx": "0.4.0",

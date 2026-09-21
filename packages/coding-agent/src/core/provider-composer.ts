@@ -65,6 +65,7 @@ export interface ProviderConfigInput {
 		thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
 		input: ("text" | "image")[];
 		cost: Model<Api>["cost"];
+		promptCache?: Model<Api>["promptCache"];
 		contextWindow: number;
 		maxTokens: number;
 		samplingParams?: Record<string, unknown>;
@@ -122,6 +123,7 @@ function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride
 					tiers: override.cost.tiers ?? model.cost.tiers,
 				}
 			: model.cost,
+		promptCache: override.promptCache ? { ...model.promptCache, ...override.promptCache } : model.promptCache,
 		contextWindow: override.contextWindow ?? model.contextWindow,
 		maxTokens: override.maxTokens ?? model.maxTokens,
 		samplingParams: override.samplingParams
@@ -161,6 +163,7 @@ function modelFromJson(
 		thinkingLevelMap: definition.thinkingLevelMap,
 		input: (definition.input ?? ["text"]) as ("text" | "image")[],
 		cost: definition.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		promptCache: definition.promptCache,
 		contextWindow: definition.contextWindow ?? 262144,
 		maxTokens: definition.maxTokens ?? 16384,
 		samplingParams: definition.samplingParams,

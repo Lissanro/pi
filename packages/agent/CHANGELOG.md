@@ -13,6 +13,10 @@
 
 - Fixed `Agent.continue(prefill)` to not throw a prefill echo mismatch when the model response itself ended in an error or abort (e.g., a connection error during the continuation). The echo check now only runs for successful responses.
 
+## [0.86.1] - 2026-09-20
+
+## [0.86.0] - 2026-09-19
+
 ## [0.85.1] - 2026-09-05
 
 ## [0.85.0] - 2026-09-04

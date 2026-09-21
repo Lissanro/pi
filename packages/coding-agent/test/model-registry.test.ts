@@ -796,6 +796,34 @@ describe("ModelRegistry", () => {
 			expect(opus?.samplingParams).toBeUndefined();
 		});
 
+		test("custom model and model override carry prompt cache lifetimes", async () => {
+			writeRawModelsJson({
+				openrouter: {
+					baseUrl: "https://my-proxy.example.com/v1",
+					api: "openai-completions",
+					models: [{ id: "custom/cached-model", promptCache: { short: 120 } }],
+					modelOverrides: {
+						"anthropic/claude-sonnet-4": { promptCache: { short: 300 } },
+					},
+				},
+				anthropic: {
+					modelOverrides: {
+						"claude-sonnet-4-6": { promptCache: { long: 1800 } },
+					},
+				},
+			});
+
+			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+			const openrouter = getModelsForProvider(registry, "openrouter");
+
+			expect(registry.getError()).toBeUndefined();
+			expect(openrouter.find((m) => m.id === "custom/cached-model")?.promptCache).toEqual({ short: 120 });
+			expect(openrouter.find((m) => m.id === "anthropic/claude-sonnet-4")?.promptCache).toEqual({ short: 300 });
+			expect(openrouter.find((m) => m.id === "anthropic/claude-opus-4")?.promptCache).toBeUndefined();
+			// Overrides merge per tier with the built-in catalog.
+			expect(registry.find("anthropic", "claude-sonnet-4-6")?.promptCache).toEqual({ short: 300, long: 1800 });
+		});
+
 		test("model override with compat.openRouterRouting", async () => {
 			writeRawModelsJson({
 				openrouter: {
