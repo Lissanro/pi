@@ -16,7 +16,11 @@ const SUMMARY_TEXT = "## Summary\n- The user started a task.";
  * A tool whose execution blocks until released, so a test can act mid-run
  * (while the agent is streaming) before letting the turn complete.
  */
-function createWaitTool(): { tool: AgentTool; release: () => void; waitForToolStart: (harness: Harness) => Promise<void> } {
+function createWaitTool(): {
+	tool: AgentTool;
+	release: () => void;
+	waitForToolStart: (harness: Harness) => Promise<void>;
+} {
 	let releaseTool: (() => void) | undefined;
 	const toolRelease = new Promise<void>((resolve) => {
 		releaseTool = resolve;
