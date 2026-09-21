@@ -24,6 +24,7 @@ import {
 	type AgentTool,
 	isHarnessMessage,
 	type PrepareNextTurnContext,
+	prefillEchoComplete,
 	stripTrailingHarnessMessages,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
@@ -1790,6 +1791,43 @@ export class AgentSession {
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
+
+		// Handle a pending prefill BEFORE the abort early-return. The prefill
+		// was removed from the transcript when the continuation started, so a
+		// continuation that failed or was aborted must not leave the transcript
+		// without it: keep the streamed replacement only when it fully contains
+		// the prefill (verified echo plus new tokens); otherwise restore the
+		// original, or the continued message is lost (the replacement may be a
+		// truncated echo or empty at the failure point).
+		let retryPrefill: AgentMessage | undefined;
+		if (this._pendingPrefill && msg && (msg.stopReason === "error" || msg.stopReason === "aborted")) {
+			const pendingPrefill = this._pendingPrefill as Extract<AgentMessage, { role: "assistant" }>;
+			if (msg.stopReason === "aborted" && prefillEchoComplete(msg, pendingPrefill)) {
+				// The abort arrived after the echo completed: keep the streamed
+				// replacement with its new tokens. The trailing entries were kept on
+				// the leaf path by removeMessage during capture.
+				this._pendingPrefill = undefined;
+				this._prefillRestorePoint = undefined;
+				this._prefillTrailingEntries = [];
+			} else {
+				// A prefill continuation failed or was aborted mid-echo. Restore the
+				// original partial message so the transcript is not left with a
+				// truncated or mismatched replacement; keep it as the retry prefill
+				// so a retry takes priority over queued steering messages.
+				this._restorePrefill(this._prefillRestorePoint ?? null, this._pendingPrefill);
+				retryPrefill = this._pendingPrefill;
+				this._pendingPrefill = undefined;
+				this._prefillRestorePoint = undefined;
+			}
+		} else if (msg && msg.stopReason !== "error" && msg.stopReason !== "aborted") {
+			// Continuation succeeded; the prefill has been replaced by the
+			// completed response, so clear the restore state. The trailing entries
+			// were kept on the leaf path by removeMessage during capture.
+			this._pendingPrefill = undefined;
+			this._prefillRestorePoint = undefined;
+			this._prefillTrailingEntries = [];
+		}
+
 		if (this._agentRunAbortRequested) {
 			this._finishCancelledRetry();
 			return false;
@@ -1801,27 +1839,6 @@ export class AgentSession {
 			// runs now that the run has ended. Nothing to resume.
 			await this._runQueuedCompact();
 			return false;
-		}
-
-		if (msg.stopReason !== "error") {
-			// Continuation succeeded; the prefill has been replaced by the
-			// completed response, so clear the restore state. The trailing entries
-			// were kept on the leaf path by removeMessage during capture.
-			this._pendingPrefill = undefined;
-			this._prefillRestorePoint = undefined;
-			this._prefillTrailingEntries = [];
-		}
-
-		let retryPrefill: AgentMessage | undefined;
-		if (msg.stopReason === "error" && this._pendingPrefill) {
-			// A prefill continuation failed (e.g., connection dropped during the
-			// retry continue). Restore the original partial message so the next
-			// retry can capture it again, and keep it as the retry prefill so
-			// it takes priority over queued steering messages.
-			this._restorePrefill(this._prefillRestorePoint ?? null, this._pendingPrefill);
-			retryPrefill = this._pendingPrefill;
-			this._pendingPrefill = undefined;
-			this._prefillRestorePoint = undefined;
 		}
 
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {

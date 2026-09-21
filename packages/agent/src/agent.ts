@@ -187,6 +187,61 @@ type ActiveRun = {
 	abortController: AbortController;
 };
 
+function extractThinkingText(message: Extract<AgentMessage, { role: "assistant" }>): string {
+	return message.content
+		.filter((block) => block.type === "thinking")
+		.map((block) => block.thinking)
+		.join("");
+}
+
+function extractText(message: Extract<AgentMessage, { role: "assistant" }>): string {
+	return message.content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("");
+}
+
+/**
+ * Whether a streamed assistant message fully contains a prefill: its
+ * reasoning and text start with the prefill's (at least as long), and its
+ * first tool calls reproduce the prefill's (raw-token prefix when raw is
+ * available, otherwise name). Used to decide whether a failed or aborted
+ * continuation may keep the streamed replacement, or must restore the
+ * original prefill message so no content is lost.
+ */
+export function prefillEchoComplete(
+	partial: Extract<AgentMessage, { role: "assistant" }>,
+	prefill: Extract<AgentMessage, { role: "assistant" }>,
+): boolean {
+	const partialThinking = extractThinkingText(partial);
+	const prefillThinking = extractThinkingText(prefill);
+	if (partialThinking.length < prefillThinking.length || !partialThinking.startsWith(prefillThinking)) {
+		return false;
+	}
+	const partialText = extractText(partial);
+	const prefillText = extractText(prefill);
+	if (partialText.length < prefillText.length || !partialText.startsWith(prefillText)) {
+		return false;
+	}
+	const prefillToolCalls = prefill.content.filter((b): b is AgentToolCall => b.type === "toolCall");
+	if (prefillToolCalls.length > 0) {
+		const partialToolCalls = partial.content.filter((b): b is AgentToolCall => b.type === "toolCall");
+		if (partialToolCalls.length < prefillToolCalls.length) return false;
+		for (let i = 0; i < prefillToolCalls.length; i++) {
+			const prefillTc = prefillToolCalls[i]!;
+			const partialTc = partialToolCalls[i]!;
+			if (prefillTc.name !== partialTc.name) return false;
+			if (typeof prefillTc.raw === "string" && prefillTc.raw.length > 0) {
+				if (typeof partialTc.raw !== "string" || partialTc.raw.length < prefillTc.raw.length) {
+					return false;
+				}
+				if (!partialTc.raw.startsWith(prefillTc.raw)) return false;
+			}
+		}
+	}
+	return true;
+}
+
 /**
  * Stateful wrapper around the low-level agent loop.
  *
@@ -480,20 +535,6 @@ export class Agent {
 		await this.runContinuation();
 	}
 
-	private extractThinkingText(message: Extract<AgentMessage, { role: "assistant" }>): string {
-		return message.content
-			.filter((block) => block.type === "thinking")
-			.map((block) => block.thinking)
-			.join("");
-	}
-
-	private extractText(message: Extract<AgentMessage, { role: "assistant" }>): string {
-		return message.content
-			.filter((block) => block.type === "text")
-			.map((block) => block.text)
-			.join("");
-	}
-
 	/**
 	 * Gatekept prefill echo verification.
 	 *
@@ -518,10 +559,10 @@ export class Agent {
 			return;
 		}
 
-		const prefillThinking = this.extractThinkingText(prefill);
-		const partialThinking = this.extractThinkingText(partial);
-		const prefillText = this.extractText(prefill);
-		const partialText = this.extractText(partial);
+		const prefillThinking = extractThinkingText(prefill);
+		const partialThinking = extractThinkingText(partial);
+		const prefillText = extractText(prefill);
+		const partialText = extractText(partial);
 
 		// Wait until the streamed response is at least as long as the prefill
 		// in both fields before comparing.

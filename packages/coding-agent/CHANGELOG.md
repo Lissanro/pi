@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed idle prompt-cache warming rebuilding expired caches when its timer or an extension decision is delayed.
+- Fixed an aborted prefill continuation losing the original message: the prefill was removed from the transcript when the continuation started, and an abort mid-echo left a truncated or empty replacement. The original is now restored unless the streamed replacement fully contains the prefill (verified echo plus new tokens), which is then kept.
 
 ## [0.86.1] - 2026-09-20
 

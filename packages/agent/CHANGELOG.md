@@ -8,6 +8,7 @@
 - `agentLoopContinue` and `runAgentLoopContinue` now allow an assistant last message when `returnPrefill` is set, with provider validation. Assistant messages with tool calls are supported: the raw tool-call tokens are sent via `tool_calls_raw` so the provider can resume both complete and partial tool calls.
 - `checkPrefillEcho` now verifies tool-call echo in addition to reasoning and content: the streamed response's first tool calls must reproduce the prefill's tool calls (raw-token prefix when `raw` is available, otherwise name). A mismatch throws so the original partial message is restored.
 - `streamAssistantResponse` now replaces the prefill (trailing assistant) with the streamed partial instead of appending, so a subsequent tool-result turn does not send a duplicate of the prefill's tool calls to the provider.
+- Exported `prefillEchoComplete` to check whether a streamed assistant message fully contains a prefill (verified echo plus new tokens), so a failed or aborted continuation can decide whether to keep the replacement or restore the original.
 
 ### Fixed
 
