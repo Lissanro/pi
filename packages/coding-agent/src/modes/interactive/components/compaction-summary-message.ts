@@ -1,91 +1,24 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { type AssistantMessage, contentText, type Message } from "@earendil-works/pi-ai";
-import { Box, Container, Markdown, type MarkdownTheme, MouseRegion, Spacer, Text } from "@earendil-works/pi-tui";
-import { type CompactionSummaryMessage, convertToLlm } from "../../../core/messages.ts";
+import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
+import type { CompactionSummaryMessage } from "../../../core/messages.ts";
 import { customMessageBg, customMessageSeparatorBg, getMarkdownTheme, theme } from "../theme/theme.ts";
-import { keyText } from "./keybinding-hints.ts";
-
-function roleLabel(role: string): string {
-	switch (role) {
-		case "user":
-			return "INCOMING";
-		case "assistant":
-			return "OUTGOING";
-		case "toolResult":
-			return "TOOL";
-		default:
-			return role.toUpperCase();
-	}
-}
-
-function formatContextMessages(messages: Message[]): string {
-	return messages
-		.map((m, index) => {
-			const label = roleLabel(m.role);
-			const text = messageToText(m);
-			return `**[${index + 1}] ${label}**\n${text}`;
-		})
-		.join("\n\n");
-}
-
-function messageToText(message: Message): string {
-	if (message.role === "toolResult") {
-		return message.content.map((c) => (c.type === "text" ? c.text : "[image]")).join("\n");
-	}
-	if (message.role === "user") {
-		if (typeof message.content === "string") {
-			return message.content;
-		}
-		return message.content.map((c) => (c.type === "text" ? c.text : "[image]")).join("\n");
-	}
-	if (message.role === "assistant") {
-		return assistantContentToText(message.content);
-	}
-	return contentText(message.content);
-}
-
-function assistantContentToText(content: AssistantMessage["content"]): string {
-	return content
-		.map((c) => {
-			switch (c.type) {
-				case "text":
-					return c.text;
-				case "toolCall":
-					return `\`${c.name}(${JSON.stringify(c.arguments)})\``;
-				case "thinking":
-					return c.redacted ? "[thinking redacted]" : `\n<thinking>\n${c.thinking}\n</thinking>\n`;
-				default:
-					return `[${(c as { type: string }).type}]`;
-			}
-		})
-		.join("\n");
-}
 
 /**
- * Component that renders a compaction message with collapsed/expanded state.
- * Uses same background color as custom messages for visual consistency.
+ * Component that renders a compaction message. The summary is always shown
+ * expanded: it sits at the top of the chat, before the preserved tail, so
+ * there is no reason to collapse it. The context mirror that duplicated the
+ * preserved tail was removed once the summary started rendering at its real
+ * position. Uses same background color as custom messages for visual
+ * consistency.
  */
 export class CompactionSummaryMessageComponent extends Box {
-	private expanded = false;
 	private message: CompactionSummaryMessage;
 	private markdownTheme: MarkdownTheme;
-	private contextMessages?: AgentMessage[];
 
-	constructor(
-		message: CompactionSummaryMessage,
-		markdownTheme: MarkdownTheme = getMarkdownTheme(),
-		contextMessages?: AgentMessage[],
-	) {
+	constructor(message: CompactionSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
 		super(1, 1, customMessageBg());
 		this.setSeparatorBg(customMessageSeparatorBg());
 		this.message = message;
 		this.markdownTheme = markdownTheme;
-		this.contextMessages = contextMessages;
-		this.updateDisplay();
-	}
-
-	setExpanded(expanded: boolean): void {
-		this.expanded = expanded;
 		this.updateDisplay();
 	}
 
@@ -102,36 +35,12 @@ export class CompactionSummaryMessageComponent extends Box {
 		const label = theme.fg("customMessageLabel", `\x1b[1m[compaction]\x1b[22m`);
 		content.addChild(new Text(label, 0, 0));
 		content.addChild(new Spacer(1));
-
-		if (this.expanded) {
-			let expandedText = `**Compacted from ${tokenStr} tokens**\n\n${this.message.summary}`;
-			if (this.contextMessages && this.contextMessages.length > 0) {
-				expandedText += "\n\n---\n\n**Context visible to the model:**\n\n";
-				expandedText += formatContextMessages(convertToLlm(this.contextMessages));
-			}
-			content.addChild(
-				new Markdown(expandedText, 0, 0, this.markdownTheme, {
-					color: (text: string) => theme.fg("customMessageText", text),
-				}),
-			);
-		} else {
-			content.addChild(
-				new Text(
-					theme.fg("customMessageText", `Compacted from ${tokenStr} tokens (`) +
-						theme.fg("dim", keyText("app.tools.expand")) +
-						theme.fg("customMessageText", " to expand)"),
-					0,
-					0,
-				),
-			);
-		}
-
-		this.addChild(
-			new MouseRegion(content, (event) => {
-				if (event.type !== "click" || event.button !== "left") return undefined;
-				this.setExpanded(!this.expanded);
-				return { handled: true };
+		content.addChild(
+			new Markdown(`**Compacted from ${tokenStr} tokens**\n\n${this.message.summary}`, 0, 0, this.markdownTheme, {
+				color: (text: string) => theme.fg("customMessageText", text),
 			}),
 		);
+
+		this.addChild(content);
 	}
 }

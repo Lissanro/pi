@@ -36,7 +36,7 @@ function clickRow(component: Box, marker: string): void {
 describe("collapsible message components", () => {
 	beforeAll(() => initTheme("dark"));
 
-	test("toggles a compaction summary when clicked", () => {
+	test("always shows a compaction summary expanded", () => {
 		const component = new CompactionSummaryMessageComponent({
 			role: "compactionSummary",
 			summary: "compaction details",
@@ -44,11 +44,7 @@ describe("collapsible message components", () => {
 			timestamp: Date.now(),
 		});
 
-		expect(renderText(component)).not.toContain("compaction details");
-		clickRow(component, "[compaction]");
 		expect(renderText(component)).toContain("compaction details");
-		clickRow(component, "[compaction]");
-		expect(renderText(component)).not.toContain("compaction details");
 	});
 
 	test("toggles a branch summary when clicked", () => {

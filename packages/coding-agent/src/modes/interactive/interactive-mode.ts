@@ -4173,12 +4173,7 @@ export class InteractiveMode {
 			}
 			case "compactionSummary": {
 				this.chatContainer.addChild(new Spacer(1));
-				const component = new CompactionSummaryMessageComponent(
-					message,
-					this.getMarkdownThemeWithSettings(),
-					this.session.messages,
-				);
-				component.setExpanded(this.toolOutputExpanded);
+				const component = new CompactionSummaryMessageComponent(message, this.getMarkdownThemeWithSettings());
 				this.chatContainer.addChild(component);
 				break;
 			}
