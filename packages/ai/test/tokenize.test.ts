@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { type CountTokensOptions, countTokens, tokenizeEndpointUrl } from "../src/tokenize.ts";
+import {
+	type CountTokensOptions,
+	countTokens,
+	countTokensWithRetry,
+	TokenizeTransientError,
+	tokenizeEndpointUrl,
+} from "../src/tokenize.ts";
 import type { Model } from "../src/types.ts";
+import type { RetryPolicy } from "../src/utils/retry.ts";
+
+const retryPolicy: RetryPolicy = {
+	enabled: true,
+	maxRetries: 3,
+	baseDelayMs: 1,
+	maxAgentDelayMs: 10,
+};
 
 function model(baseUrl: string): Model<any> {
 	return {
@@ -100,12 +114,77 @@ describe("countTokens", () => {
 		expect(count).toBeUndefined();
 	});
 
-	it("returns undefined on a network error", async () => {
+	it("throws a transient error on a network error", async () => {
 		const fetchFn = (async () => {
 			throw new Error("ECONNREFUSED");
 		}) as unknown as typeof globalThis.fetch;
-		const count = await countTokens(model("http://host:8080"), { text: "x", fetch: fetchFn });
+		await expect(countTokens(model("http://host:8080"), { text: "x", fetch: fetchFn })).rejects.toBeInstanceOf(
+			TokenizeTransientError,
+		);
+	});
+
+	it("throws a transient error on a non-404 HTTP error", async () => {
+		const fetchFn = mockFetch(async () => new Response("server error", { status: 503 }));
+		await expect(countTokens(model("http://host:8080"), { text: "x", fetch: fetchFn })).rejects.toBeInstanceOf(
+			TokenizeTransientError,
+		);
+	});
+
+	it("throws a transient error on a timeout", async () => {
+		const fetchFn = (async () => {
+			throw new Error("The operation was aborted due to timeout");
+		}) as unknown as typeof globalThis.fetch;
+		await expect(countTokens(model("http://host:8080"), { text: "x", fetch: fetchFn })).rejects.toBeInstanceOf(
+			TokenizeTransientError,
+		);
+	});
+
+	it("countTokensWithRetry returns undefined on a clear 404 without retrying", async () => {
+		let calls = 0;
+		const fetchFn = mockFetch(async () => {
+			calls++;
+			return new Response("no endpoint", { status: 404 });
+		});
+		const count = await countTokensWithRetry(model("http://host:8080"), { text: "x", fetch: fetchFn }, retryPolicy);
 		expect(count).toBeUndefined();
+		expect(calls).toBe(1);
+	});
+
+	it("countTokensWithRetry retries transient failures then succeeds", async () => {
+		let calls = 0;
+		const fetchFn = mockFetch(async () => {
+			calls++;
+			if (calls < 3) throw new Error("ECONNREFUSED");
+			return new Response(JSON.stringify({ tokens: [1, 2, 3] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+		const count = await countTokensWithRetry(model("http://host:8080"), { text: "x", fetch: fetchFn }, retryPolicy);
+		expect(count).toBe(3);
+		expect(calls).toBe(3);
+	});
+
+	it("countTokensWithRetry returns undefined after exhausting retries", async () => {
+		let calls = 0;
+		const fetchFn = (async () => {
+			calls++;
+			throw new Error("ECONNREFUSED");
+		}) as unknown as typeof globalThis.fetch;
+		const count = await countTokensWithRetry(model("http://host:8080"), { text: "x", fetch: fetchFn }, retryPolicy);
+		expect(count).toBeUndefined();
+		expect(calls).toBe(4);
+	});
+
+	it("countTokensWithRetry stops retrying when the signal aborts", async () => {
+		const controller = new AbortController();
+		const fetchFn = (async () => {
+			throw new Error("ECONNREFUSED");
+		}) as unknown as typeof globalThis.fetch;
+		const options: CountTokensOptions = { text: "x", fetch: fetchFn, signal: controller.signal };
+		const promise = countTokensWithRetry(model("http://host:8080"), options, retryPolicy);
+		controller.abort();
+		await expect(promise).resolves.toBeUndefined();
 	});
 
 	it("returns undefined when the request is aborted", async () => {

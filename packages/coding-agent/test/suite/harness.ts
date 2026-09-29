@@ -99,8 +99,22 @@ function createTempDir(): string {
 	return tempDir;
 }
 
+const realFetch = globalThis.fetch;
+
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 	const tempDir = createTempDir();
+	// The faux provider has no /tokenize endpoint, so a real fetch to its baseUrl
+	// (localhost:0) would fail with connection-refused, which the token-count
+	// retry treats as a transient error and retries indefinitely. Return a clear
+	// 404 for /tokenize so callers fall back to the estimate, matching a provider
+	// without the endpoint. Other requests delegate to the real fetch.
+	globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+		const url = String(input);
+		if (url.endsWith("/tokenize")) {
+			return new Response("no endpoint", { status: 404 });
+		}
+		return realFetch(input, init);
+	}) as typeof globalThis.fetch;
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
 		models: options.models,
 		api: options.fauxApi,
@@ -219,6 +233,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		cleanup() {
 			session.dispose();
 			fauxProvider.unregister();
+			globalThis.fetch = realFetch;
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true });
 			}

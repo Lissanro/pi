@@ -202,17 +202,22 @@ import { createInteractiveTui, createInteractiveTuiReference } from "./tui-rende
 
 export { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
 
-export function parseCompactArgs(args: string): {
+export function parseCompactArgs(
+	args: string,
+	tokenCountBase: 1000 | 1024 = 1024,
+): {
 	options: { keepRecentTokens?: number; keepRecentMessages?: number };
 	instructions: string;
 } {
 	const options: { keepRecentTokens?: number; keepRecentMessages?: number } = {};
 	// Budgets can be given as flags (--keep-tokens N / --keep-messages N), a bare
 	// integer ("10" => keep N messages), or an integer with a K/M suffix
-	// ("20K"/"1m" => token limit, case-insensitive). Anything else is free text
-	// (custom focus for the summary). The first count and first limit win; any
-	// remaining tokens become the instructions. When both a count and a limit are
-	// given, the one that keeps fewer messages wins (handled in findCutPoint).
+	// ("20K"/"1m" => token limit, case-insensitive). The K/M multiplier respects the
+	// configured tokenCountBase (1024 by default, or 1000), matching the footer
+	// display. Anything else is free text (custom focus for the summary). The first
+	// count and first limit win; any remaining tokens become the instructions.
+	// When both a count and a limit are given, the one that keeps fewer messages
+	// wins (handled in findCutPoint).
 	const tokens = args.match(/(?:--\S+|"[^"]*"|\S+)/g) ?? [];
 	const remaining: string[] = [];
 	const limitPattern = /^(\d+)([KkMm])$/;
@@ -230,7 +235,7 @@ export function parseCompactArgs(args: string): {
 			const limitMatch = bare.match(limitPattern);
 			if (limitMatch) {
 				const value = Number.parseInt(limitMatch[1]!, 10);
-				const multiplier = limitMatch[2]!.toUpperCase() === "M" ? 1_000_000 : 1000;
+				const multiplier = limitMatch[2]!.toUpperCase() === "M" ? tokenCountBase * tokenCountBase : tokenCountBase;
 				if (options.keepRecentTokens === undefined) options.keepRecentTokens = value * multiplier;
 				else remaining.push(bare);
 			} else if (/^\d+$/.test(bare)) {
@@ -3522,7 +3527,7 @@ export class InteractiveMode {
 			}
 			if (text === "/compact" || text.startsWith("/compact ")) {
 				const args = text.startsWith("/compact ") ? text.slice(9).trim() : "";
-				const { options, instructions } = parseCompactArgs(args);
+				const { options, instructions } = parseCompactArgs(args, this.settingsManager.getTokenCountBase());
 				this.editor.setText("");
 				if (this.session.isStreaming) {
 					// Do not interrupt the running turn. The compact runs at the next

@@ -384,10 +384,22 @@ export interface CutPointResult {
 }
 
 /**
- * Find the cut point in session entries that keeps approximately `keepRecentTokens`.
+ * Counts the tokens a batch of messages occupies. Providers that expose a
+ * `/tokenize` endpoint return the exact count via {@link countTokens}; providers
+ * without it fall back to the chars/4 estimate. `findCutPoint` uses this so the
+ * preserved tail matches the requested token limit instead of the rough estimate.
+ */
+export type TokenCounter = (messages: AgentMessage[]) => Promise<number>;
+
+/**
+ * Find the cut point in session entries that keeps as much recent context as
+ * fits within `keepRecentTokens`.
  *
- * Algorithm: Walk backwards from newest, accumulating estimated message sizes.
- * Stop when we've accumulated >= keepRecentTokens. Cut at that point.
+ * Algorithm: Walk backwards from newest, accumulating token counts. Include an
+ * entry only while it still fits within the budget; stop at the first entry that
+ * would push the accumulated total past it, and keep the newer entries already
+ * accumulated. With a very tight limit the newest message alone may not fit; it
+ * is still kept as a last resort, so the newest exchange is never dropped.
  *
  * Can cut at user OR assistant messages (never tool results). When cutting at an
  * assistant message with tool calls, its tool results come after and will be kept.
@@ -399,13 +411,14 @@ export interface CutPointResult {
  *
  * Only considers entries between `startIndex` and `endIndex` (exclusive).
  */
-export function findCutPoint(
+export async function findCutPoint(
 	entries: SessionEntry[],
 	startIndex: number,
 	endIndex: number,
 	keepRecentTokens?: number,
 	keepRecentMessages?: number,
-): CutPointResult {
+	tokenCounter?: TokenCounter,
+): Promise<CutPointResult> {
 	const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
 
 	if (cutPoints.length === 0) {
@@ -442,27 +455,29 @@ export function findCutPoint(
 		candidates.push(countCut);
 	}
 
-	// Token budget: keep roughly keepRecentTokens tokens of recent context.
+	// Token budget: keep as much recent context as fits within keepRecentTokens.
 	if (keepRecentTokens !== undefined && keepRecentTokens > 0) {
 		let accumulatedTokens = 0;
 		let tokenCut = keepAllIndex;
 		for (let i = endIndex - 1; i >= startIndex; i--) {
 			const entry = entries[i];
-			const messageTokens = sessionEntryToContextMessages(entry).reduce(
-				(sum, message) => sum + estimateTokens(message),
-				0,
-			);
+			const contextMessages = sessionEntryToContextMessages(entry);
+			const messageTokens = tokenCounter
+				? await tokenCounter(contextMessages)
+				: contextMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
 			if (messageTokens === 0) continue;
-			accumulatedTokens += messageTokens;
 
-			// Check if we've exceeded the budget.
-			if (accumulatedTokens >= keepRecentTokens) {
-				// Prefer the closest valid cut point at or after this entry. If trailing
-				// tool results exceed the budget by themselves, keep their preceding
-				// assistant tool call instead of falling back to the first message.
-				tokenCut = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
+			// Include this entry only if it still fits; otherwise stop and keep the
+			// newer entries already accumulated.
+			if (accumulatedTokens + messageTokens > keepRecentTokens) {
+				// Prefer the closest valid cut point strictly after this entry. If
+				// trailing tool results exceed the budget by themselves, keep their
+				// preceding assistant tool call instead of falling back to the first
+				// message.
+				tokenCut = cutPoints.find((candidate) => candidate > i) ?? cutPoints[cutPoints.length - 1];
 				break;
 			}
+			accumulatedTokens += messageTokens;
 		}
 		candidates.push(tokenCut);
 	}
@@ -791,11 +806,12 @@ export interface CompactionOverrides {
 	keepRecentMessages?: number;
 }
 
-export function prepareCompaction(
+export async function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
 	overrides?: CompactionOverrides,
-): CompactionPreparation | undefined {
+	tokenCounter?: TokenCounter,
+): Promise<CompactionPreparation | undefined> {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
 	}
@@ -827,7 +843,14 @@ export function prepareCompaction(
 	const keepRecentTokens =
 		overrides?.keepRecentTokens ??
 		(overrides?.keepRecentMessages === undefined ? settings.keepRecentTokens : undefined);
-	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, keepRecentTokens, keepRecentMessages);
+	const cutPoint = await findCutPoint(
+		pathEntries,
+		boundaryStart,
+		boundaryEnd,
+		keepRecentTokens,
+		keepRecentMessages,
+		tokenCounter,
+	);
 
 	// Get UUID of first kept entry
 	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];

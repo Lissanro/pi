@@ -297,7 +297,7 @@ describe("shouldCompact", () => {
 });
 
 describe("findCutPoint", () => {
-	it("should find cut point based on actual token differences", () => {
+	it("should find cut point based on actual token differences", async () => {
 		// Create entries with cumulative token counts
 		const entries: SessionEntry[] = [];
 		for (let i = 0; i < 10; i++) {
@@ -309,7 +309,7 @@ describe("findCutPoint", () => {
 
 		// 20 entries, last assistant has 10000 tokens
 		// keepRecentTokens = 2500: keep entries where diff < 2500
-		const result = findCutPoint(entries, 0, entries.length, 2500);
+		const result = await findCutPoint(entries, 0, entries.length, 2500);
 
 		// Should cut at a valid cut point (user or assistant message)
 		expect(entries[result.firstKeptEntryIndex].type).toBe("message");
@@ -317,13 +317,13 @@ describe("findCutPoint", () => {
 		expect(role === "user" || role === "assistant").toBe(true);
 	});
 
-	it("should return startIndex if no valid cut points in range", () => {
+	it("should return startIndex if no valid cut points in range", async () => {
 		const entries: SessionEntry[] = [createMessageEntry(createAssistantMessage("a"))];
-		const result = findCutPoint(entries, 0, entries.length, 1000);
+		const result = await findCutPoint(entries, 0, entries.length, 1000);
 		expect(result.firstKeptEntryIndex).toBe(0);
 	});
 
-	it("should keep everything if all messages fit within budget", () => {
+	it("should keep everything if all messages fit within budget", async () => {
 		const entries: SessionEntry[] = [
 			createMessageEntry(createUserMessage("1")),
 			createMessageEntry(createAssistantMessage("a", createMockUsage(0, 50, 500, 0))),
@@ -331,11 +331,11 @@ describe("findCutPoint", () => {
 			createMessageEntry(createAssistantMessage("b", createMockUsage(0, 50, 1000, 0))),
 		];
 
-		const result = findCutPoint(entries, 0, entries.length, 50000);
+		const result = await findCutPoint(entries, 0, entries.length, 50000);
 		expect(result.firstKeptEntryIndex).toBe(0);
 	});
 
-	it("should indicate split turn when cutting at assistant message", () => {
+	it("should indicate split turn when cutting at assistant message", async () => {
 		// Create a scenario where we cut at an assistant message mid-turn
 		const entries: SessionEntry[] = [
 			createMessageEntry(createUserMessage("Turn 1")),
@@ -347,7 +347,7 @@ describe("findCutPoint", () => {
 		];
 
 		// With keepRecentTokens = 3000, should cut somewhere in Turn 2
-		const result = findCutPoint(entries, 0, entries.length, 3000);
+		const result = await findCutPoint(entries, 0, entries.length, 3000);
 
 		// If cut at assistant message (not user), should indicate split turn
 		const cutEntry = entries[result.firstKeptEntryIndex] as SessionMessageEntry;
@@ -357,7 +357,7 @@ describe("findCutPoint", () => {
 		}
 	});
 
-	it("should budget context-visible custom message entries", () => {
+	it("should budget context-visible custom message entries", async () => {
 		const entries: SessionEntry[] = [
 			createMessageEntry(createUserMessage("hi")),
 			createMessageEntry(createAssistantMessage("hello")),
@@ -365,18 +365,18 @@ describe("findCutPoint", () => {
 			createMessageEntry(createAssistantMessage("ok")),
 		];
 
-		const tinyBudget = findCutPoint(entries, 0, entries.length, 1);
+		const tinyBudget = await findCutPoint(entries, 0, entries.length, 1);
 		expect(tinyBudget.firstKeptEntryIndex).toBe(3);
 		expect(tinyBudget.isSplitTurn).toBe(true);
 		expect(tinyBudget.turnStartIndex).toBe(2);
 
-		const customFitsBudget = findCutPoint(entries, 0, entries.length, 2);
-		expect(customFitsBudget.firstKeptEntryIndex).toBe(2);
-		expect(customFitsBudget.isSplitTurn).toBe(false);
-		expect(customFitsBudget.turnStartIndex).toBe(-1);
+		const customFitsBudget = await findCutPoint(entries, 0, entries.length, 2);
+		expect(customFitsBudget.firstKeptEntryIndex).toBe(3);
+		expect(customFitsBudget.isSplitTurn).toBe(true);
+		expect(customFitsBudget.turnStartIndex).toBe(2);
 	});
 
-	it("should keep the last N messages when keepRecentMessages is set", () => {
+	it("should keep the last N messages when keepRecentMessages is set", async () => {
 		const entries: SessionEntry[] = [
 			createMessageEntry(createUserMessage("1")),
 			createMessageEntry(createAssistantMessage("a")),
@@ -386,11 +386,11 @@ describe("findCutPoint", () => {
 			createMessageEntry(createAssistantMessage("c")),
 		];
 
-		const result = findCutPoint(entries, 0, entries.length, 20000, 3);
+		const result = await findCutPoint(entries, 0, entries.length, 20000, 3);
 		expect(result.firstKeptEntryIndex).toBe(3);
 	});
 
-	it("keeps the smaller window when both message count and token limit are given (shortest wins)", () => {
+	it("keeps the smaller window when both message count and token limit are given (shortest wins)", async () => {
 		// 6 tiny messages (~1 estimated token each).
 		const entries: SessionEntry[] = [
 			createMessageEntry(createUserMessage("1")),
@@ -402,15 +402,15 @@ describe("findCutPoint", () => {
 		];
 
 		// keepRecentMessages=4 -> keep last 4 (cut at index 2)
-		expect(findCutPoint(entries, 0, entries.length, undefined, 4).firstKeptEntryIndex).toBe(2);
+		expect((await findCutPoint(entries, 0, entries.length, undefined, 4)).firstKeptEntryIndex).toBe(2);
 		// keepRecentTokens=2 -> keep ~last 2 (cut at index 4)
-		expect(findCutPoint(entries, 0, entries.length, 2, undefined).firstKeptEntryIndex).toBe(4);
+		expect((await findCutPoint(entries, 0, entries.length, 2, undefined)).firstKeptEntryIndex).toBe(4);
 		// both: the token limit keeps fewer messages, so it wins (larger index)
-		expect(findCutPoint(entries, 0, entries.length, 2, 4).firstKeptEntryIndex).toBe(4);
+		expect((await findCutPoint(entries, 0, entries.length, 2, 4)).firstKeptEntryIndex).toBe(4);
 	});
 
 	// Regression test for #9740.
-	it("should fall back to the latest valid cut point before oversized trailing tool results", () => {
+	it("should fall back to the latest valid cut point before oversized trailing tool results", async () => {
 		const oldUser = createMessageEntry(createUserMessage("old history"));
 		const oldAssistant = createMessageEntry(createAssistantMessage("old answer"));
 		const currentUser = createMessageEntry(createUserMessage("read the large file"));
@@ -429,14 +429,14 @@ describe("findCutPoint", () => {
 		});
 		const entries = [oldUser, oldAssistant, currentUser, toolCall, toolResult];
 
-		const result = findCutPoint(entries, 0, entries.length, 1000);
+		const result = await findCutPoint(entries, 0, entries.length, 1000);
 		expect(result).toEqual({
 			firstKeptEntryIndex: 3,
 			turnStartIndex: 2,
 			isSplitTurn: true,
 		});
 
-		const preparation = prepareCompaction(entries, {
+		const preparation = await prepareCompaction(entries, {
 			...DEFAULT_COMPACTION_SETTINGS,
 			keepRecentTokens: 1000,
 		});
@@ -535,7 +535,7 @@ describe("buildSessionContext", () => {
 });
 
 describe("prepareCompaction", () => {
-	it("does not treat system messages as conversation history", () => {
+	it("does not treat system messages as conversation history", async () => {
 		const system = createMessageEntry({
 			role: "system",
 			content: "",
@@ -544,7 +544,7 @@ describe("prepareCompaction", () => {
 		});
 		const user = createMessageEntry(createUserMessage("one long turn"));
 		const assistant = createMessageEntry(createAssistantMessage("assistant suffix"));
-		const preparation = prepareCompaction([system, user, assistant], {
+		const preparation = await prepareCompaction([system, user, assistant], {
 			...DEFAULT_COMPACTION_SETTINGS,
 			keepRecentTokens: 1,
 		});
@@ -558,7 +558,7 @@ describe("prepareCompaction", () => {
 });
 
 describe("prepareCompaction with previous compaction", () => {
-	it("should skip repeated compactions when kept messages still fit", () => {
+	it("should skip repeated compactions when kept messages still fit", async () => {
 		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)"));
 		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1"));
 		const u2 = createMessageEntry(createUserMessage("user msg 2 - kept by compaction1"));
@@ -570,12 +570,12 @@ describe("prepareCompaction with previous compaction", () => {
 		const a4 = createMessageEntry(createAssistantMessage("assistant msg 4", createMockUsage(8000, 2000)));
 
 		const pathEntries = [u1, a1, u2, a2, u3, a3, compaction1, u4, a4];
-		const preparation = prepareCompaction(pathEntries, DEFAULT_COMPACTION_SETTINGS);
+		const preparation = await prepareCompaction(pathEntries, DEFAULT_COMPACTION_SETTINGS);
 
 		expect(preparation).toBeUndefined();
 	});
 
-	it("should re-summarize previously kept messages when the recent window moves past them", () => {
+	it("should re-summarize previously kept messages when the recent window moves past them", async () => {
 		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)".repeat(4)));
 		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1".repeat(4)));
 		const u2 = createMessageEntry(createUserMessage("user msg 2 - kept by compaction1 ".repeat(12)));
@@ -590,7 +590,7 @@ describe("prepareCompaction with previous compaction", () => {
 			...DEFAULT_COMPACTION_SETTINGS,
 			keepRecentTokens: 100,
 		};
-		const preparation = prepareCompaction([u1, a1, u2, a2, u3, a3, compaction1, u4, a4], settings);
+		const preparation = await prepareCompaction([u1, a1, u2, a2, u3, a3, compaction1, u4, a4], settings);
 
 		expect(preparation).toBeDefined();
 		// The summarization request must carry exactly what the chat contains before
@@ -607,7 +607,7 @@ describe("prepareCompaction with previous compaction", () => {
 		expect(preparation!.previousSummary).toBe("First summary");
 	});
 
-	it("prepends the previous compaction summary to messagesToSummarize for cache fidelity", () => {
+	it("prepends the previous compaction summary to messagesToSummarize for cache fidelity", async () => {
 		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)".repeat(4)));
 		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1".repeat(4)));
 		const u2 = createMessageEntry(createUserMessage("user msg 2 - kept by compaction1 ".repeat(12)));
@@ -622,7 +622,7 @@ describe("prepareCompaction with previous compaction", () => {
 			...DEFAULT_COMPACTION_SETTINGS,
 			keepRecentTokens: 100,
 		};
-		const preparation = prepareCompaction([u1, a1, u2, a2, u3, a3, compaction1, u4, a4], settings);
+		const preparation = await prepareCompaction([u1, a1, u2, a2, u3, a3, compaction1, u4, a4], settings);
 
 		expect(preparation).toBeDefined();
 		// The previous summary message leads messagesToSummarize exactly as it leads
@@ -637,7 +637,7 @@ describe("prepareCompaction with previous compaction", () => {
 		expect(preparation!.previousSummary).toBe("First summary");
 	});
 
-	it("prepends ALL visible previous summaries to messagesToSummarize (no folding)", () => {
+	it("prepends ALL visible previous summaries to messagesToSummarize (no folding)", async () => {
 		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)"));
 		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1"));
 		const compact1 = createCompactionEntry("First summary", u1.id);
@@ -653,7 +653,7 @@ describe("prepareCompaction with previous compaction", () => {
 			...DEFAULT_COMPACTION_SETTINGS,
 			keepRecentTokens: 100,
 		};
-		const preparation = prepareCompaction([u1, a1, compact1, u2, b, u3, c, compact2, u4, a4], settings);
+		const preparation = await prepareCompaction([u1, a1, compact1, u2, b, u3, c, compact2, u4, a4], settings);
 
 		expect(preparation).toBeDefined();
 		// Both summaries lead messagesToSummarize, oldest first, then the cut messages.
@@ -670,7 +670,7 @@ describe("prepareCompaction with previous compaction", () => {
 		expect(preparation!.previousSummary).toBe("Second summary");
 	});
 
-	it("summary block limit of 0 keeps only the most recent summary in messagesToSummarize", () => {
+	it("summary block limit of 0 keeps only the most recent summary in messagesToSummarize", async () => {
 		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)"));
 		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1"));
 		const compact1 = createCompactionEntry("First summary", u1.id);
@@ -687,7 +687,7 @@ describe("prepareCompaction with previous compaction", () => {
 			keepRecentTokens: 100,
 			summaryBlockMaxTokens: 0,
 		};
-		const preparation = prepareCompaction([u1, a1, compact1, u2, b, u3, c, compact2, u4, a4], settings);
+		const preparation = await prepareCompaction([u1, a1, compact1, u2, b, u3, c, compact2, u4, a4], settings);
 
 		expect(preparation).toBeDefined();
 		// Only the most recent summary survives in the request prefix.
@@ -710,9 +710,9 @@ describe("Large session fixture", () => {
 		expect(messageCount).toBeGreaterThan(100);
 	});
 
-	it("should find cut point in large session", () => {
+	it("should find cut point in large session", async () => {
 		const entries = loadLargeSessionEntries();
-		const result = findCutPoint(entries, 0, entries.length, DEFAULT_COMPACTION_SETTINGS.keepRecentTokens);
+		const result = await findCutPoint(entries, 0, entries.length, DEFAULT_COMPACTION_SETTINGS.keepRecentTokens);
 
 		// Cut point should be at a message entry (user or assistant)
 		expect(entries[result.firstKeptEntryIndex].type).toBe("message");
@@ -738,7 +738,7 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		const entries = loadLargeSessionEntries();
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
-		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
+		const preparation = await prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
 
 		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
@@ -759,7 +759,7 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		const loaded = buildSessionContext(entries);
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
-		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
+		const preparation = await prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
 
 		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);

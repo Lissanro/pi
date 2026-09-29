@@ -28,7 +28,14 @@ import {
 	stripTrailingHarnessMessages,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText, countTokens, getCurrentSystemMessage, retryDelayMs } from "@earendil-works/pi-ai";
+import type { RetryPolicy } from "@earendil-works/pi-ai";
+import {
+	contentText,
+	countTokens,
+	countTokensWithRetry,
+	getCurrentSystemMessage,
+	retryDelayMs,
+} from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -71,6 +78,7 @@ import {
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
+	type TokenCounter,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
@@ -341,6 +349,13 @@ export interface CompactOptions {
 	keepRecentTokens?: number;
 	/** Preserve the last N messages instead of using a token budget. */
 	keepRecentMessages?: number;
+}
+
+interface RequestAuth {
+	model: Model<any>;
+	apiKey?: string;
+	headers?: Record<string, string>;
+	env?: Record<string, string>;
 }
 
 interface ToolDefinitionEntry {
@@ -2712,12 +2727,6 @@ export class AgentSession {
 		usage: Usage | undefined,
 		signal?: AbortSignal,
 	): Promise<{ newEntries: SessionEntry[]; estimatedTokensAfter: number }> {
-		type RequestAuth = {
-			model: Model<any>;
-			apiKey?: string;
-			headers?: Record<string, string>;
-			env?: Record<string, string>;
-		};
 		let auth: RequestAuth | undefined;
 		if (this.model) {
 			try {
@@ -2729,13 +2738,17 @@ export class AgentSession {
 
 		let summaryTokens: number | undefined;
 		if (auth) {
-			summaryTokens = await countTokens(auth.model, {
-				text: summary,
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				env: auth.env,
-				signal,
-			});
+			try {
+				summaryTokens = await countTokens(auth.model, {
+					text: summary,
+					apiKey: auth.apiKey,
+					headers: auth.headers,
+					env: auth.env,
+					signal,
+				});
+			} catch {
+				summaryTokens = undefined;
+			}
 		}
 
 		this.sessionManager.appendCompaction(
@@ -2773,6 +2786,36 @@ export class AgentSession {
 		this._postCompactionContextTokens = contextTokens;
 
 		return { newEntries, estimatedTokensAfter };
+	}
+
+	/**
+	 * Build a {@link TokenCounter} for compaction cut-point finding that counts
+	 * entry messages with the model's real `/tokenize` endpoint, retrying transient
+	 * failures per the configured retry policy, and falling back to the chars/4
+	 * estimate only when the endpoint is unsupported or retries are exhausted.
+	 */
+	private _createCompactionTokenCounter(
+		auth: RequestAuth,
+		retryPolicy: RetryPolicy,
+		signal: AbortSignal,
+	): TokenCounter {
+		return async (messages) => {
+			const llmMessages = await this.agent.convertToLlm(messages);
+			const text = llmMessages.map((m) => contentText(m.content)).join("\n");
+			const count = await countTokensWithRetry(
+				auth.model,
+				{
+					text,
+					apiKey: auth.apiKey,
+					headers: auth.headers,
+					env: auth.env,
+					signal,
+				},
+				retryPolicy,
+			);
+			if (count !== undefined) return count;
+			return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		};
 	}
 
 	/**
@@ -2865,11 +2908,21 @@ export class AgentSession {
 			} = await this._getSummarizationRequestAuth(model, this._compactionAbortController.signal);
 
 			const pathEntries = this.sessionManager.getBranch();
+			const retryPolicy = this.settingsManager.getRetrySettings();
 
-			const preparation = prepareCompaction(pathEntries, settings, {
-				keepRecentTokens: opts.keepRecentTokens,
-				keepRecentMessages: opts.keepRecentMessages,
-			});
+			const preparation = await prepareCompaction(
+				pathEntries,
+				settings,
+				{
+					keepRecentTokens: opts.keepRecentTokens,
+					keepRecentMessages: opts.keepRecentMessages,
+				},
+				this._createCompactionTokenCounter(
+					{ model: requestModel, apiKey, headers, env },
+					retryPolicy,
+					this._compactionAbortController.signal,
+				),
+			);
 			if (!preparation) {
 				// Check why we can't compact
 				const lastEntry = pathEntries[pathEntries.length - 1];
@@ -3175,8 +3228,9 @@ export class AgentSession {
 			}
 
 			const pathEntries = this.sessionManager.getBranch();
-			const preparation = prepareCompaction(pathEntries, settings);
-			if (!preparation) {
+			// Cheap no-op guard before emitting compaction_start: an already-compacted
+			// tail returns without any event, matching the original flow.
+			if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 				return false;
 			}
 
@@ -3193,6 +3247,23 @@ export class AgentSession {
 				env,
 			} = await this._getSummarizationRequestAuth(model, abortController.signal);
 			abortController.signal.throwIfAborted();
+
+			const retryPolicy = this.settingsManager.getRetrySettings();
+			const preparation = await prepareCompaction(
+				pathEntries,
+				settings,
+				undefined,
+				this._createCompactionTokenCounter(
+					{ model: requestModel, apiKey, headers, env },
+					retryPolicy,
+					abortController.signal,
+				),
+			);
+			if (!preparation) {
+				// Session needs migration: the tail could not be mapped to kept entries.
+				this._autoCompactionAbortController = undefined;
+				return false;
+			}
 
 			let extensionCompaction: CompactionResult | undefined;
 

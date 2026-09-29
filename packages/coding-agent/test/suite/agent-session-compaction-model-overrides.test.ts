@@ -3,9 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionBeforeCompactEvent } from "../../src/core/extensions/index.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
-function seedHistory(harness: Harness, totalTokens = 650): string {
+function seedHistory(harness: Harness, totalTokens = 650): { recentUserId: string; recentAssistantId: string } {
 	const model = harness.session.model!;
 	let recentUserId = "";
+	let recentAssistantId = "";
 	for (const label of ["old", "recent"]) {
 		recentUserId = harness.sessionManager.appendMessage({
 			role: "user",
@@ -13,7 +14,7 @@ function seedHistory(harness: Harness, totalTokens = 650): string {
 			timestamp: Date.now() - 2000,
 		});
 		const assistant = fauxAssistantMessage(label.padEnd(400, "y"), { timestamp: Date.now() - 1000 });
-		harness.sessionManager.appendMessage({
+		recentAssistantId = harness.sessionManager.appendMessage({
 			...assistant,
 			api: model.api,
 			provider: model.provider,
@@ -22,7 +23,7 @@ function seedHistory(harness: Harness, totalTokens = 650): string {
 		});
 	}
 	harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
-	return recentUserId;
+	return { recentUserId, recentAssistantId };
 }
 
 // Regression coverage for #8133.
@@ -64,7 +65,7 @@ describe("AgentSession compaction model overrides", () => {
 				],
 			});
 			harnesses.push(harness);
-			const recentUserId = seedHistory(harness, path === "pre-prompt" ? 2500 : 650);
+			const { recentAssistantId } = seedHistory(harness, path === "pre-prompt" ? 2500 : 650);
 
 			if (path === "manual") {
 				await harness.session.compact();
@@ -91,7 +92,7 @@ describe("AgentSession compaction model overrides", () => {
 				path === "manual" ? "manual" : path === "overflow" ? "overflow" : "threshold",
 			);
 			if (path === "manual" || path === "pre-prompt") {
-				expect(preparations[0]?.preparation.firstKeptEntryId).toBe(recentUserId);
+				expect(preparations[0]?.preparation.firstKeptEntryId).toBe(recentAssistantId);
 			}
 			expect(harness.eventsOfType("compaction_end")).toHaveLength(1);
 			expect(harness.eventsOfType("compaction_end")[0]).toMatchObject({
@@ -115,7 +116,7 @@ describe("AgentSession compaction model overrides", () => {
 			},
 		});
 		harnesses.push(harness);
-		const recentUserId = seedHistory(harness, 2500);
+		const { recentAssistantId } = seedHistory(harness, 2500);
 		const budgets: Array<number | undefined> = [];
 		harness.setResponses([
 			(_context, options) => {
@@ -128,7 +129,7 @@ describe("AgentSession compaction model overrides", () => {
 		else await harness.session.prompt("continue");
 		expect(budgets).toEqual([1600]);
 		expect(harness.sessionManager.getEntries().find((entry) => entry.type === "compaction")).toMatchObject({
-			firstKeptEntryId: recentUserId,
+			firstKeptEntryId: recentAssistantId,
 			summary: "built-in summary",
 		});
 		expect(harness.getPendingResponseCount()).toBe(0);
