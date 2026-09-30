@@ -240,7 +240,7 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 // Cut point detection
 // ============================================================================
 
-const ESTIMATED_IMAGE_CHARS = 4800;
+export const ESTIMATED_IMAGE_CHARS = 4800;
 
 function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
 	if (typeof content === "string") {

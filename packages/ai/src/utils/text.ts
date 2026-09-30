@@ -11,6 +11,37 @@ export function contentText(content: string | readonly Content[], separator = "\
 		.join(separator);
 }
 
+/**
+ * Serialize message content into the text a model tokenizer would count, plus the
+ * number of image blocks. `contentText` only keeps `text` blocks, which is fine
+ * for display but drops reasoning (thinking), tool calls, and images - all of
+ * which occupy tokens in the real prompt. This includes thinking text and tool
+ * call names/arguments so the `/tokenize` count reflects what the model sees;
+ * images are not text and are counted separately (caller applies an estimate).
+ */
+export function contentToTokenizeText(content: string | readonly Content[]): { text: string; imageCount: number } {
+	if (typeof content === "string") return { text: content, imageCount: 0 };
+	let text = "";
+	let imageCount = 0;
+	for (const block of content) {
+		switch (block.type) {
+			case "text":
+				text += block.text;
+				break;
+			case "thinking":
+				text += block.thinking;
+				break;
+			case "toolCall":
+				text += `${block.name}\n${JSON.stringify(block.arguments)}`;
+				break;
+			case "image":
+				imageCount++;
+				break;
+		}
+	}
+	return { text, imageCount };
+}
+
 /** Render a system message as a complete prompt: its content followed by its sections. */
 export function getSystemMessageText(message: SystemMessage): string {
 	const parts = [contentText(message.content)];

@@ -31,6 +31,7 @@ import {
 import type { RetryPolicy } from "@earendil-works/pi-ai";
 import {
 	contentText,
+	contentToTokenizeText,
 	countTokens,
 	countTokensWithRetry,
 	getCurrentSystemMessage,
@@ -73,6 +74,7 @@ import {
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
+	ESTIMATED_IMAGE_CHARS,
 	estimateContextTokens,
 	estimateTokens,
 	generateBranchSummary,
@@ -2769,16 +2771,22 @@ export class AgentSession {
 		if (auth) {
 			try {
 				const llmMessages = await this.agent.convertToLlm(sessionContext.messages);
-				const fullText = [this.agent.state.systemPrompt, ...llmMessages.map((m) => contentText(m.content))].join(
-					"\n",
-				);
-				contextTokens = await countTokens(auth.model, {
-					text: fullText,
+				let text = this.agent.state.systemPrompt;
+				let imageCount = 0;
+				for (const m of llmMessages) {
+					const serialized = contentToTokenizeText(m.content);
+					text += "\n" + serialized.text;
+					imageCount += serialized.imageCount;
+				}
+				const count = await countTokens(auth.model, {
+					text,
 					apiKey: auth.apiKey,
 					headers: auth.headers,
 					env: auth.env,
 					signal,
 				});
+				// Images are not text and cannot be counted by /tokenize; add the estimate.
+				if (count !== undefined) contextTokens = count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
 			} catch {
 				contextTokens = undefined;
 			}
@@ -2801,7 +2809,13 @@ export class AgentSession {
 	): TokenCounter {
 		return async (messages) => {
 			const llmMessages = await this.agent.convertToLlm(messages);
-			const text = llmMessages.map((m) => contentText(m.content)).join("\n");
+			let text = "";
+			let imageCount = 0;
+			for (const m of llmMessages) {
+				const serialized = contentToTokenizeText(m.content);
+				text += serialized.text;
+				imageCount += serialized.imageCount;
+			}
 			const count = await countTokensWithRetry(
 				auth.model,
 				{
@@ -2813,7 +2827,8 @@ export class AgentSession {
 				},
 				retryPolicy,
 			);
-			if (count !== undefined) return count;
+			// Images are not text and cannot be counted by /tokenize; add the estimate.
+			if (count !== undefined) return count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
 			return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
 		};
 	}

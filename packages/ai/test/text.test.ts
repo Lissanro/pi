@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type AssistantMessage, contentText, type ToolResultMessage } from "../src/index.ts";
+import { type AssistantMessage, contentText, contentToTokenizeText, type ToolResultMessage } from "../src/index.ts";
 
 const content: AssistantMessage["content"] = [
 	{ type: "thinking", thinking: "reasoning" },
@@ -29,5 +29,30 @@ describe("contentText", () => {
 		];
 
 		expect(contentText(toolResultContent, "")).toBe("firstsecond");
+	});
+});
+
+describe("contentToTokenizeText", () => {
+	it("includes thinking and tool calls, and counts images", () => {
+		expect(contentToTokenizeText(content)).toEqual({
+			text: "reasoningfirstread\n{}second",
+			imageCount: 0,
+		});
+	});
+
+	it("counts image blocks and skips their base64 data", () => {
+		const imageContent: ToolResultMessage["content"] = [
+			{ type: "text", text: "look" },
+			{ type: "image", data: "BASE64DATA", mimeType: "image/png" },
+			{ type: "image", data: "MORE", mimeType: "image/jpeg" },
+		];
+		expect(contentToTokenizeText(imageContent)).toEqual({
+			text: "look",
+			imageCount: 2,
+		});
+	});
+
+	it("passes string content through", () => {
+		expect(contentToTokenizeText("hello")).toEqual({ text: "hello", imageCount: 0 });
 	});
 });
