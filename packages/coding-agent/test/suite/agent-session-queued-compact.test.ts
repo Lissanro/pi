@@ -189,6 +189,41 @@ describe("AgentSession queued /compact", () => {
 		expect(harness.sessionManager.getBranch().some((entry) => entry.type === "compaction")).toBe(true);
 	});
 
+	it("cancelQueuedCompact clears the queued compaction without interrupting the stream", async () => {
+		const { tool: waitTool, release, waitForToolStart } = createWaitTool();
+		const harness = await createHarness({
+			tools: [waitTool],
+			settings: { compaction: { keepRecentTokens: 1 } },
+		});
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("completed without compaction"),
+		]);
+
+		const promptPromise = harness.session.prompt("start");
+		await waitForToolStart(harness);
+
+		// Mid-run: a /compact is queued, then cancelled before the turn boundary.
+		expect(harness.session.isStreaming).toBe(true);
+		expect(harness.session.hasQueuedCompact).toBe(false);
+		harness.session.queueCompact();
+		expect(harness.session.hasQueuedCompact).toBe(true);
+		harness.session.cancelQueuedCompact();
+		expect(harness.session.hasQueuedCompact).toBe(false);
+
+		release();
+		await promptPromise;
+
+		// No compaction ran; the stream completed without interruption.
+		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
+		expect(harness.eventsOfType("compaction_end")).toHaveLength(0);
+		expect(getAssistantTexts(harness)).toContain("completed without compaction");
+		expect(harness.getPendingResponseCount()).toBe(0);
+		expect(harness.sessionManager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
+	});
+
 	it("does not resume the run when the queued compaction is cancelled", async () => {
 		const { tool: waitTool, release, waitForToolStart } = createWaitTool();
 		let markCompactionStarted = () => {};

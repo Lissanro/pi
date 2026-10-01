@@ -48,9 +48,9 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "new", description: "Start a new session" },
 	{
 		name: "compact",
-		description: "Manually compact the session context",
+		description: "Manually compact the session context (cancel cancels a queued compact)",
 		argumentHint:
-			"[N msgs] [K|M tokens] [--keep-tokens N] [--keep-messages N] [text]  e.g. /compact 10 20K (shortest wins)",
+			"[N msgs] [K|M tokens] [--keep-tokens N] [--keep-messages N] [text] | cancel  e.g. /compact 10 20K (shortest wins)",
 	},
 	{ name: "continue", description: "Continue the current session without adding a message" },
 	{

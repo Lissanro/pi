@@ -3292,7 +3292,13 @@ export class InteractiveMode {
 		// Set up handlers on defaultEditor - they use this.editor for text access
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
-			if (this.session.isStreaming) {
+			if (this.session.hasQueuedCompact) {
+				// A /compact queued while streaming: Escape cancels the upcoming
+				// compaction first and leaves the stream running. Only with no
+				// compaction queued or in progress does Escape interrupt the stream.
+				this.session.cancelQueuedCompact();
+				this.showStatus("Queued compact cancelled");
+			} else if (this.session.isStreaming) {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			} else if (this.session.isBashRunning) {
 				this.session.abortBash();
@@ -3527,8 +3533,19 @@ export class InteractiveMode {
 			}
 			if (text === "/compact" || text.startsWith("/compact ")) {
 				const args = text.startsWith("/compact ") ? text.slice(9).trim() : "";
-				const { options, instructions } = parseCompactArgs(args, this.settingsManager.getTokenCountBase());
 				this.editor.setText("");
+				if (args === "cancel") {
+					if (this.session.hasQueuedCompact) {
+						this.session.cancelQueuedCompact();
+						this.showStatus("Queued compact cancelled");
+					} else if (this.session.isCompacting) {
+						this.session.abortCompaction();
+					} else {
+						this.showStatus("No compaction queued or in progress");
+					}
+					return;
+				}
+				const { options, instructions } = parseCompactArgs(args, this.settingsManager.getTokenCountBase());
 				if (this.session.isStreaming) {
 					// Do not interrupt the running turn. The compact runs at the next
 					// turn boundary - once the current message and its related tool calls

@@ -2869,6 +2869,20 @@ export class AgentSession {
 		this._queuedCompactResume = false;
 	}
 
+	/** Whether a /compact is queued to run at the next turn boundary while streaming. */
+	get hasQueuedCompact(): boolean {
+		return this._queuedCompact !== undefined;
+	}
+
+	/**
+	 * Cancel a /compact queued while streaming. The stream continues; the next
+	 * turn boundary no longer stops for compaction.
+	 */
+	cancelQueuedCompact(): void {
+		this._queuedCompact = undefined;
+		this._queuedCompactResume = false;
+	}
+
 	/**
 	 * Run and consume a /compact queued while the agent was streaming, now that
 	 * the current message and its related tool calls have fully completed.
