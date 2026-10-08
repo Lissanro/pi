@@ -129,7 +129,8 @@ describe("AgentSession continue with prefill", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
-		harness.setResponses([fauxAssistantMessage("Partial response")]);
+		// An interrupted message is the prefill candidate for continuation.
+		harness.setResponses([fauxAssistantMessage("Partial response", { stopReason: "aborted" })]);
 		await harness.session.prompt("Hello");
 		const prefillText = getMessageText(harness.session.messages[2]!);
 		expect(prefillText).toBe("Partial response");
@@ -189,7 +190,8 @@ describe("AgentSession continue with prefill", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
-		harness.setResponses([fauxAssistantMessage("Partial response")]);
+		// An interrupted message is the prefill candidate for continuation.
+		harness.setResponses([fauxAssistantMessage("Partial response", { stopReason: "aborted" })]);
 		await harness.session.prompt("Hello");
 
 		setOpenaiCompletions(harness);

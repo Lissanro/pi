@@ -182,8 +182,11 @@ describe("AgentSession MCP integration", () => {
 			uiContext: createTestUiContext({ notify: (message) => notifications.push(message) }),
 		});
 		// The first prompt waits only for servers with direct tools; wait for the others here.
-		await vi.waitFor(() =>
-			expect(harness.session.getAllTools().some((tool) => tool.name === "mcp__docs__search")).toBe(true),
+		// The wait is generous because the MCP server tool listing is async and can lag
+		// under the load of a full-suite run (the tool registration has no direct trigger).
+		await vi.waitFor(
+			() => expect(harness.session.getAllTools().some((tool) => tool.name === "mcp__docs__search")).toBe(true),
+			{ timeout: 15000 },
 		);
 		return { harness, calls, servers, notifications };
 	}

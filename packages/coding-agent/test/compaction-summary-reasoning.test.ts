@@ -239,9 +239,14 @@ describe("generateSummary reasoning options", () => {
 
 		const result = await compact(preparation, createModel(false, 128000), "test-key");
 
-		// Split turns are summarized in a single call (turn-prefix messages are
-		// concatenated into the conversation), so usage is a single response's usage.
-		expect(result.usage).toEqual(mockSummaryResponse.usage);
-		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000]);
+		// Split turns are summarized in two calls (history + turn-prefix) so the byte-identical
+		// compaction prefix is reused; the summary usage is the combined usage of both calls.
+		expect(result.usage).toEqual({
+			...mockSummaryResponse.usage,
+			input: mockSummaryResponse.usage.input * 2,
+			output: mockSummaryResponse.usage.output * 2,
+			totalTokens: mockSummaryResponse.usage.totalTokens * 2,
+		});
+		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000, 128000]);
 	});
 });
