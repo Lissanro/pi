@@ -150,4 +150,55 @@ describe("compaction cache fidelity", () => {
 		const expectedContent = expectedLlm.filter((message) => message.role !== "system");
 		expect(capturedHead).toEqual(expectedContent.slice(0, capturedHead.length));
 	});
+
+	it("keeps image content byte-identical in the summarization request head", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		const now = Date.now();
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "look at this" }],
+			timestamp: now - 5000,
+		});
+		const a0 = fauxAssistantMessage("I will", { stopReason: "stop", timestamp: now - 4000 });
+		a0.usage = createUsage(10);
+		harness.sessionManager.appendMessage(a0);
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [
+				{ type: "text", text: "here is the image" },
+				{
+					type: "image",
+					data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4ZcAAAAASUVORK5CYII=",
+					mimeType: "image/png",
+				},
+			],
+			timestamp: now - 3000,
+		});
+		const a1 = fauxAssistantMessage("I see it", { stopReason: "stop", timestamp: now - 2000 });
+		a1.usage = createUsage(10);
+		harness.sessionManager.appendMessage(a1);
+		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+
+		const agent = harness.session.agent;
+		const transformed = agent.transformContext
+			? await agent.transformContext(agent.state.messages, undefined)
+			: agent.state.messages;
+		const expectedLlm = await agent.convertToLlm(transformed);
+
+		let captured: Context | undefined;
+		captureSummarizationRequest(harness, (ctx) => {
+			captured = ctx;
+		});
+
+		await harness.session.compact({ keepRecentMessages: 1 });
+
+		expect(captured).toBeDefined();
+		const capturedHead = captured!.messages.filter((message) => message.role !== "system").slice(0, -1);
+		const expectedContent = expectedLlm.filter((message) => message.role !== "system");
+		// The single-call summarization request head must byte-match the chat prefix,
+		// including the image content block. A split turn that drops the history before
+		// the image would diverge here and lose the cache for everything after it.
+		expect(capturedHead).toEqual(expectedContent.slice(0, capturedHead.length));
+	});
 });
