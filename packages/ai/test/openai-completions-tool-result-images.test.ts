@@ -69,6 +69,35 @@ function buildEmptyToolResult(toolCallId: string, timestamp: number): ToolResult
 }
 
 describe("openai-completions convertMessages", () => {
+	// Regression test for https://github.com/earendil-works/pi/issues/9797
+	it("omits empty text parts from user messages with images", () => {
+		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini");
+		const model: Model<"openai-completions"> = {
+			...baseModel,
+			api: "openai-completions",
+			input: ["text", "image"],
+		};
+		const context = normalizeContext({
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "" },
+						{ type: "image", data: "ZmFrZQ==", mimeType: "image/png" },
+					],
+					timestamp: Date.now(),
+				},
+			],
+		});
+
+		expect(convertMessages(model, context, compat)).toEqual([
+			{
+				role: "user",
+				content: [{ type: "image_url", image_url: { url: "data:image/png;base64,ZmFrZQ==" } }],
+			},
+		]);
+	});
+
 	it("batches tool-result images after consecutive tool results", () => {
 		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini");
 		const model: Model<"openai-completions"> = {

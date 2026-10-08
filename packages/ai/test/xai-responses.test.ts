@@ -132,7 +132,33 @@ describe("xAI Responses provider", () => {
 		}
 		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.5"])).toEqual(["low", "medium", "high"]);
 		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.6"])).toEqual(["low", "medium", "high", "xhigh"]);
+		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.7"])).toEqual(["low", "medium", "high", "xhigh"]);
 		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.3"])).toEqual(["off", "low", "medium", "high"]);
+	});
+
+	it("includes Grok 4.7 capabilities and long-context pricing", () => {
+		expect(XAI_MODELS["grok-4.7"]).toMatchObject({
+			api: "openai-responses",
+			reasoning: true,
+			input: ["text", "image"],
+			contextWindow: 500000,
+			maxTokens: 500000,
+			cost: {
+				input: 2,
+				output: 6,
+				cacheRead: 0.5,
+				cacheWrite: 0,
+				tiers: [
+					{
+						inputTokensAbove: 200000,
+						input: 4,
+						output: 12,
+						cacheRead: 1,
+						cacheWrite: 0,
+					},
+				],
+			},
+		});
 	});
 
 	it("uses /responses with bearer auth and xAI-compatible request fields", async () => {
@@ -188,9 +214,9 @@ describe("xAI Responses provider", () => {
 		expect(captured.body).not.toHaveProperty("reasoning");
 	});
 
-	it("uses /responses for Grok 4.6 with xhigh effort and encrypted reasoning", async () => {
+	it("uses /responses for Grok 4.7 with xhigh effort and encrypted reasoning", async () => {
 		const captured = await captureRequest(
-			XAI_MODELS["grok-4.6"],
+			XAI_MODELS["grok-4.7"],
 			{
 				systemPrompt: "You are a careful coding assistant.",
 				messages: [{ role: "user", content: "hello", timestamp: 1 }],
@@ -203,7 +229,7 @@ describe("xAI Responses provider", () => {
 
 		expect(captured.url).toBe("https://api.x.ai/v1/responses");
 		expect(captured.body).toMatchObject({
-			model: "grok-4.6",
+			model: "grok-4.7",
 			store: false,
 			stream: true,
 			reasoning: { effort: "xhigh" },

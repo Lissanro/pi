@@ -83,7 +83,6 @@ describe("AgentSession queued /compact", () => {
 			fauxAssistantMessage(SUMMARY_TEXT),
 			fauxAssistantMessage("resumed after compact"),
 		]);
-
 		const promptPromise = harness.session.prompt("start");
 		await waitForToolStart(harness);
 
@@ -101,7 +100,12 @@ describe("AgentSession queued /compact", () => {
 		const compactionEnds = harness.eventsOfType("compaction_end");
 		expect(compactionEnds).toHaveLength(1);
 		expect(compactionEnds[0].aborted).toBe(false);
-		expect(compactionEnds[0].result?.summary).toBe(SUMMARY_TEXT);
+		// The compaction happens mid-turn (split turn), so the summary is the
+		// history part (empty: "No prior history.") merged with the turn-prefix
+		// summary via the split-turn format.
+		expect(compactionEnds[0].result?.summary).toBe(
+			`No prior history.\n\n---\n\n**Turn Context (split turn):**\n\n${SUMMARY_TEXT}`,
+		);
 
 		// Ordering: compaction completed after the tool results and before the
 		// resumed assistant response, which itself completed before the run settled.

@@ -10,8 +10,8 @@ storage. Command failures and Pico events are folded into the view, so rendering
 result side channel.
 
 ```bash
-./node_modules/.bin/tsx --tsconfig tsconfig.json packages/coding-agent/src/experimental/micro/main.ts
-./node_modules/.bin/tsx --tsconfig tsconfig.json packages/coding-agent/src/experimental/micro/main.ts --continue
+node --import ./packages/coding-agent/src/experimental/source-resolver.ts packages/coding-agent/src/experimental/micro/main.ts
+node --import ./packages/coding-agent/src/experimental/source-resolver.ts packages/coding-agent/src/experimental/micro/main.ts --continue
 ```
 
 New sessions default to `openai-codex/gpt-5.6-sol`. `--continue` keeps the session's stored model and

@@ -2,9 +2,21 @@ import { describe, expect, it } from "vitest";
 import { lazyApi } from "../src/api/lazy.ts";
 import { envApiKeyAuth } from "../src/auth/helpers.ts";
 import type { AuthContext, AuthEvent } from "../src/auth/types.ts";
+import { getModel as getCompatModel, getModels as getCompatModels } from "../src/compat.ts";
 import { createModels, createProvider, getSupportedThinkingLevels } from "../src/models.ts";
 import { InMemoryModelsStore } from "../src/models-store.ts";
-import { builtinModels, builtinProviders, getBuiltinModel } from "../src/providers/all.ts";
+import {
+	builtinModels,
+	builtinProviders,
+	getAllBuiltinModels,
+	getBuiltinClassifierModel,
+	getBuiltinClassifierModels,
+	getBuiltinImageModel,
+	getBuiltinImageModels,
+	getBuiltinModel,
+	getBuiltinModels,
+	getBuiltinProviders,
+} from "../src/providers/all.ts";
 import { amazonBedrockProvider } from "../src/providers/amazon-bedrock.ts";
 import { anthropicProvider } from "../src/providers/anthropic.ts";
 import { cloudflareAIGatewayProvider } from "../src/providers/cloudflare-ai-gateway.ts";
@@ -33,6 +45,13 @@ const neverAbortedSignal = new AbortController().signal;
 
 const context = normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: Date.now() }] });
 
+const DEFAULT_IMAGE_RESIZE = {
+	maxWidth: 2000,
+	maxHeight: 2000,
+	maxBytes: 4.5 * 1024 * 1024,
+	jpegQuality: 80,
+};
+
 describe("builtin providers", () => {
 	it("builtinModels registers every builtin provider with models", async () => {
 		const models = builtinModels();
@@ -52,7 +71,7 @@ describe("builtin providers", () => {
 		}
 
 		for (const provider of providers) {
-			const list = models.getModels(provider.id);
+			const list = models.getAllModels(provider.id);
 			expect(list.length).toBeGreaterThan(0);
 			expect(list.every((m) => m.provider === provider.id)).toBe(true);
 		}
@@ -60,6 +79,21 @@ describe("builtin providers", () => {
 			api: "pi-messages",
 			provider: "radius",
 		});
+	});
+
+	it("returns empty results for unknown provider ids", () => {
+		const unknownProvider = "not-a-provider" as never;
+		const unknownModel = "x" as never;
+
+		expect(getBuiltinModel(unknownProvider, unknownModel)).toBeUndefined();
+		expect(getBuiltinImageModel(unknownProvider, unknownModel)).toBeUndefined();
+		expect(getBuiltinClassifierModel(unknownProvider, unknownModel)).toBeUndefined();
+		expect(getBuiltinModels(unknownProvider)).toEqual([]);
+		expect(getBuiltinImageModels(unknownProvider)).toEqual([]);
+		expect(getBuiltinClassifierModels(unknownProvider)).toEqual([]);
+		expect(getAllBuiltinModels(unknownProvider)).toEqual([]);
+		expect(getCompatModel(unknownProvider, unknownModel)).toBeUndefined();
+		expect(getCompatModels(unknownProvider)).toEqual([]);
 	});
 
 	it("stores native constrained-sampling capabilities in model metadata", () => {
@@ -71,6 +105,43 @@ describe("builtin providers", () => {
 			supportsOpenAIGrammarTools: true,
 		});
 		expect(getBuiltinModel("anthropic", "claude-haiku-4-5").compat?.supportsStrictTools).toBe(true);
+	});
+
+	it.skipIf(process.env.PI_DISABLE_CLOUD_PROVIDERS === "1")(
+		"keeps the conservative resize profile on every vision model",
+		() => {
+			const visionModels = getBuiltinProviders()
+				.flatMap((provider) => getBuiltinModels(provider))
+				.filter((model) => model.input.includes("image"));
+			expect(visionModels.length).toBeGreaterThan(0);
+			for (const model of visionModels) {
+				expect(model.inputLimits?.images?.resize).toEqual(DEFAULT_IMAGE_RESIZE);
+			}
+		},
+	);
+
+	it("records known direct-provider image request limits", () => {
+		expect(getBuiltinModel("anthropic", "claude-haiku-4-5").inputLimits).toMatchObject({
+			maxRequestBytes: 32 * 1024 * 1024,
+			images: { maxPerRequest: 100 },
+		});
+		expect(getBuiltinModel("anthropic", "claude-opus-5").inputLimits?.images?.maxPerRequest).toBe(600);
+		expect(getBuiltinModel("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0").inputLimits).toMatchObject({
+			images: { maxPerMessage: 20 },
+		});
+		expect(getBuiltinModel("openai", "gpt-4o").inputLimits).toMatchObject({
+			maxRequestBytes: 512 * 1024 * 1024,
+			images: { maxPerRequest: 1500 },
+		});
+		expect(getBuiltinModel("google", "gemini-2.5-flash").inputLimits).toMatchObject({
+			maxRequestBytes: 20 * 1024 * 1024,
+			images: { maxPerRequest: 3600 },
+		});
+	});
+
+	it("does not infer image limits from gateway API compatibility", () => {
+		const openRouterModel = getBuiltinModels("openrouter").find((model) => model.input.includes("image"));
+		expect(openRouterModel?.inputLimits).toEqual({ images: { resize: DEFAULT_IMAGE_RESIZE } });
 	});
 
 	it("uses models.dev effort levels for Google thinking models", () => {
@@ -131,7 +202,7 @@ describe("builtin providers", () => {
 				["openrouter", "openai/gpt-5.6-terra"],
 			] as const;
 			const unsupported = [
-				["fireworks", "accounts/fireworks/models/kimi-k2p6"],
+				["fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4"],
 				["openai", "gpt-4.1"],
 				["openai", "gpt-5.2"],
 				["anthropic", "claude-sonnet-4-5"],

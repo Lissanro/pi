@@ -240,7 +240,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 	});
 
 	describe("OpenAI Responses Provider", () => {
-		it.each(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"] as const)(
+		it.each(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol"] as const)(
 			"does not enable cache warming from the documented TTL alone for %s",
 			(modelId) => {
 				expect(getModel("openai", modelId).promptCache).toBeUndefined();
@@ -306,7 +306,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 
 			try {
 				const s = streamOpenAIResponses(proxyModel, context, {
-					apiKey: "fake-key",
+					apiKey: "sk-fake-key",
 					onPayload: stopAfterPayload((payload) => {
 						capturedPayload = payload;
 					}),
@@ -333,7 +333,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 
 			try {
 				const s = streamOpenAIResponses(model, context, {
-					apiKey: "fake-key",
+					apiKey: "sk-fake-key",
 					cacheRetention: "long",
 					sessionId: "session-compat-false",
 					onPayload: stopAfterPayload((payload) => {
@@ -358,7 +358,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 
 			try {
 				const s = streamOpenAIResponses(model, context, {
-					apiKey: "fake-key",
+					apiKey: "sk-fake-key",
 					cacheRetention: "none",
 					sessionId: "session-1",
 					onPayload: stopAfterPayload<OpenAIResponsesCachePayload>((payload) => {
@@ -385,7 +385,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 
 			try {
 				const s = streamOpenAIResponses(model, context, {
-					apiKey: "fake-key",
+					apiKey: "sk-fake-key",
 					cacheRetention: "none",
 					sessionId: "session-1",
 					onPayload: stopAfterPayload<OpenAIResponsesCachePayload>((payload) => {
@@ -408,13 +408,15 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 		it.each([
 			["gpt-4o-mini", "24h", undefined],
 			["gpt-6-astra", undefined, { ttl: "30m" }],
+			["gpt-6-sol", undefined, { ttl: "30m" }],
+			["gpt-6-luna", undefined, { ttl: "30m" }],
 		] as const)("should use the supported long cache field for %s", async (modelId, retention, cacheOptions) => {
 			const model = getModel("openai", modelId);
 			let capturedPayload: OpenAIResponsesCachePayload | undefined;
 
 			try {
 				const s = streamOpenAIResponses(model, context, {
-					apiKey: "fake-key",
+					apiKey: "sk-fake-key",
 					cacheRetention: "long",
 					sessionId: "session-2",
 					onPayload: stopAfterPayload<OpenAIResponsesCachePayload>((payload) => {
@@ -508,7 +510,6 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 			MODELS.opencode["kimi-k2.5"],
 			MODELS.opencode["kimi-k2.6"],
 			MODELS.opencode["minimax-m2.7"],
-			MODELS["opencode-go"]["kimi-k2.6"],
 		] as const)("should omit long cache retention for $provider/$id", async (metadata) => {
 			const model = metadata as Model<"openai-completions">;
 			let capturedPayload: OpenAICompletionsCachePayload | undefined;
@@ -591,7 +592,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 					// Expected to fail
 				}
 
-				expect(model.compat?.supportsStrictMode).toBe(false);
+				expect(model.compat?.supportsStrictMode).toBeUndefined();
 				expect(capturedPayload).toBeDefined();
 				const tools = capturedPayload?.tools as any[] | undefined;
 				expect(tools).toBeDefined();

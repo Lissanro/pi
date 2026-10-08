@@ -28,9 +28,13 @@ export type KnownApi =
 
 export type Api = KnownApi | (string & {});
 
-export type KnownImagesApi = "openrouter-images";
+export type KnownImageApi = "openrouter-images";
 
-export type ImagesApi = KnownImagesApi | (string & {});
+export type ImageApi = KnownImageApi | (string & {});
+
+export type KnownClassifierApi = "typesafe-system-one" | "cloudflare-workers-ai-system-one" | "llama-cpp-classify";
+
+export type ClassifierApi = KnownClassifierApi | (string & {});
 
 export type KnownProvider =
 	| "amazon-bedrock"
@@ -42,6 +46,7 @@ export type KnownProvider =
 	| "azure-openai-responses"
 	| "openai-codex"
 	| "radius"
+	| "typesafe"
 	| "nvidia"
 	| "deepseek"
 	| "github-copilot"
@@ -75,10 +80,6 @@ export type KnownProvider =
 	| "xiaomi-token-plan-ams"
 	| "xiaomi-token-plan-sgp";
 export type ProviderId = KnownProvider | string;
-
-export type KnownImagesProvider = "openrouter";
-
-export type ImagesProviderId = KnownImagesProvider | string;
 
 export type ToolChoice = "auto" | "none";
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -189,6 +190,12 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 * its body stream is consumed.
 	 */
 	onResponse?: (response: ProviderResponse, model: Model<Api>) => void | Promise<void>;
+	/**
+	 * Optional observer for each parsed provider stream event before Pi normalization.
+	 * Event data is adapter-owned and must be treated as read-only.
+	 * Adapter support is explicit; unsupported adapters do not invoke it.
+	 */
+	onProviderStreamEvent?: (data: unknown, model: Model<Api>) => void | Promise<void>;
 	temperature?: number;
 	/**
 	 * Arbitrary sampling parameters merged into the request body as-is, after the named request
@@ -313,18 +320,36 @@ export interface ProviderStreams {
 /**
  * The uniform contract of an image-generation API implementation module:
  * every image API module under `src/api/` exports exactly `generateImages`,
- * so the module itself satisfies this interface. Lazy wrappers and image
- * provider factories pass these around as values.
+ * so the module itself satisfies this interface. Lazy wrappers and
+ * `createProvider({ images })` pass these around as values.
  */
 export interface ProviderImages {
 	generateImages(
-		model: ImagesModel<ImagesApi>,
+		model: ImageModel<ImageApi>,
 		context: ImagesContext,
 		options?: ImagesOptions,
 	): Promise<AssistantImages>;
 }
 
-export interface ImagesOptions extends ProviderRequestOptions<ImagesModel<ImagesApi>> {
+/** The uniform contract implemented by classifier API modules. */
+export interface ProviderClassifier {
+	classify(
+		model: ClassifierModel<ClassifierApi>,
+		context: ClassifierContext,
+		options?: ClassifierOptions,
+	): Promise<ClassifierResult>;
+}
+
+export interface ClassifierOptions extends ProviderRequestOptions<ClassifierModel<ClassifierApi>> {
+	/**
+	 * Divides the answer logits by this value before they are normalized into probabilities.
+	 * Values above 1 soften the distribution; values below 1 sharpen it. Must be positive.
+	 * APIs that cannot apply it ignore it.
+	 */
+	temperature?: number;
+}
+
+export interface ImagesOptions extends ProviderRequestOptions<ImageModel<ImageApi>> {
 	/**
 	 * Optional metadata to include in API requests.
 	 * Providers extract the fields they understand and ignore the rest.
@@ -368,11 +393,17 @@ export type StreamFunction<TApi extends Api = Api, TOptions extends StreamOption
 	options?: TOptions,
 ) => AssistantMessageEventStream;
 
-export type ImagesFunction<TApi extends ImagesApi = ImagesApi, TOptions extends ImagesOptions = ImagesOptions> = (
-	model: ImagesModel<TApi>,
+export type ImagesFunction<TOptions extends ImagesOptions = ImagesOptions> = (
+	model: ImageModel<ImageApi>,
 	context: ImagesContext,
 	options?: TOptions,
 ) => Promise<AssistantImages>;
+
+export type ClassifierFunction<TOptions extends ClassifierOptions = ClassifierOptions> = (
+	model: ClassifierModel<ClassifierApi>,
+	context: ClassifierContext,
+	options?: TOptions,
+) => Promise<ClassifierResult>;
 
 export interface TextSignatureV1 {
 	v: 1;
@@ -550,6 +581,8 @@ export interface AssistantMessage {
 	responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
 	/** Exact provider-native effort level used for this response. Absent for legacy or unmanaged responses. */
 	providerThinkingLevel?: string;
+	/** Pi thinking level the agent loop requested for this response. Absent outside the agent loop and for legacy responses. */
+	thinkingLevel?: ModelThinkingLevel;
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;
@@ -564,6 +597,28 @@ export interface AssistantMessage {
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
+/** A tool call that another tool made while it ran, for example from a codemode script. */
+export interface NestedToolCallRecord {
+	id: string;
+	name: string;
+	/** Omitted when over the size limits; `argumentsBytes` then gives their size. */
+	arguments?: JsonObject;
+	/** UTF-8 size of the arguments as JSON, set when `arguments` is omitted. */
+	argumentsBytes?: number;
+	/** `unfinished`: the call was still running when the calling tool finished. */
+	status: "ok" | "error" | "unfinished";
+	durationMs?: number;
+	/** Error text, truncated. */
+	error?: string;
+}
+
+/** Bounded record of the nested calls a tool made. Results are not recorded. */
+export interface NestedToolCalls {
+	calls: NestedToolCallRecord[];
+	/** False when calls were dropped, arguments omitted, or calls had not finished. */
+	complete: boolean;
+}
+
 export type ToolResultMessage<TDetails = JsonValue> = IsJsonCompatible<TDetails> extends true
 	? {
 			role: "toolResult";
@@ -573,6 +628,8 @@ export type ToolResultMessage<TDetails = JsonValue> = IsJsonCompatible<TDetails>
 			details?: JsonRepresentation<TDetails>;
 			/** Usage from the tool execution itself, if available. Not part of main LLM context accounting. */
 			usage?: Usage;
+			/** Calls this tool made to other tools. Kept for the session record; not sent to the model. */
+			nestedCalls?: NestedToolCalls;
 			isError: boolean;
 			timestamp: number; // Unix timestamp in milliseconds
 		}
@@ -590,13 +647,71 @@ export interface ImagesContext {
 export type ImagesStopReason = "stop" | "error" | "aborted";
 
 export interface AssistantImages {
-	api: ImagesApi;
-	provider: ImagesProviderId;
+	api: ImageApi;
+	provider: ProviderId;
 	model: string;
 	output: ImagesOutputContent[];
 	responseId?: string;
 	usage?: Usage;
 	stopReason: ImagesStopReason;
+	errorMessage?: string;
+	timestamp: number; // Unix timestamp in milliseconds
+}
+
+export interface ClassifierChoiceQuestion {
+	type: "choice";
+	instructions: string;
+	criteria: Record<string, string>;
+}
+
+export interface ClassifierScoreQuestion {
+	type: "score";
+	instructions: string;
+	criteria: string[];
+}
+
+export interface ClassifierBoolQuestion {
+	type: "bool";
+	instructions: string;
+	criteria: { true: string; false: string };
+}
+
+export type ClassifierQuestion = ClassifierChoiceQuestion | ClassifierScoreQuestion | ClassifierBoolQuestion;
+
+export interface ClassifierContext {
+	state: JsonObject;
+	questions: Record<string, ClassifierQuestion>;
+}
+
+export interface ClassifierChoiceAnswer {
+	type: "choice";
+	choice: string;
+	probabilities: Record<string, number>;
+	confidence: number;
+}
+
+export interface ClassifierScoreAnswer {
+	type: "score";
+	score: number;
+	confidence: number;
+}
+
+export interface ClassifierBoolAnswer {
+	type: "bool";
+	probability: number;
+}
+
+export type ClassifierAnswer = ClassifierChoiceAnswer | ClassifierScoreAnswer | ClassifierBoolAnswer;
+export type ClassifierStopReason = "stop" | "error" | "aborted";
+
+export interface ClassifierResult {
+	api: ClassifierApi;
+	provider: ProviderId;
+	model: string;
+	answers: Record<string, ClassifierAnswer>;
+	/** Token usage and its cost at the model's catalog price, when the service reports token counts. */
+	usage?: Usage;
+	stopReason: ClassifierStopReason;
 	errorMessage?: string;
 	timestamp: number; // Unix timestamp in milliseconds
 }
@@ -759,7 +874,7 @@ export interface OpenAICompletionsCompat {
 	supportsMidConvoSystemMessages?: boolean;
 	/** Whether system messages can introduce additional tools mid-conversation. Requires `supportsMidConvoSystemMessages`. Default: false; the generated model catalog enables it for capable models. */
 	supportsMidConvoToolAdditions?: boolean;
-	/** Whether the provider supports the `strict` field in tool definitions. Default: true. */
+	/** Whether the provider supports the `strict` field in tool definitions. Default: false; generated capable models enable it explicitly. */
 	supportsStrictMode?: boolean;
 	/** Cache control convention for prompt caching. "anthropic" applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user, assistant, or tool-result text content. */
 	cacheControlFormat?: "anthropic";
@@ -983,28 +1098,63 @@ export interface ModelCost extends ModelCostRates {
 	tiers?: ModelCostTier[];
 }
 
-// Model interface for the unified model system
-export interface Model<TApi extends Api> {
+export interface ModelImageResizeOptions {
+	maxWidth?: number;
+	maxHeight?: number;
+	/** Maximum base64-encoded payload size in bytes. */
+	maxBytes?: number;
+	jpegQuality?: number;
+}
+
+export interface ModelImageInputLimits {
+	/** Cache-safe resize profile applied before a new image enters conversation history. */
+	resize?: ModelImageResizeOptions;
+	/** Maximum images accepted in one provider message. */
+	maxPerMessage?: number;
+	/** Maximum images accepted across one provider request. */
+	maxPerRequest?: number;
+}
+
+export interface ModelInputLimits {
+	/** Maximum serialized provider request size in bytes. */
+	maxRequestBytes?: number;
+	images?: ModelImageInputLimits;
+}
+
+/** Fields shared by every catalog entry, regardless of what you can do with it. */
+export interface BaseModel<TApi extends string> {
 	id: string;
 	name: string;
 	api: TApi;
 	provider: ProviderId;
 	baseUrl: string;
+	input: ("text" | "image")[];
+	/** Provider input limits and cache-safe preprocessing metadata. */
+	inputLimits?: ModelInputLimits;
+	cost: ModelCost;
+	headers?: Record<string, string>;
+}
+
+/** Chat model: usable with `stream()` and friends. */
+export interface Model<TApi extends Api> extends BaseModel<TApi> {
+	/**
+	 * Optional: chat is the default model type, so models without `type` are chat
+	 * models. Narrow mixed model lists with `isModelType()` instead of comparing
+	 * `type` directly.
+	 */
+	type?: "chat";
 	reasoning: boolean;
 	/**
 	 * Maps pi thinking levels to provider/model-specific values.
 	 * Missing keys use provider defaults. null marks a level as unsupported.
 	 */
 	thinkingLevelMap?: ThinkingLevelMap;
-	input: ("text" | "image")[];
-	cost: ModelCost;
 	/** Prompt cache lifetimes per retention tier. Unset when the provider's cache behavior is unknown. */
 	promptCache?: ModelPromptCache;
 	contextWindow: number;
 	maxTokens: number;
 	/** Default sampling parameters for this model. See {@link StreamOptions.samplingParams}; per-request keys override these. */
 	samplingParams?: Record<string, unknown>;
-	headers?: Record<string, string>;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat
@@ -1019,9 +1169,28 @@ export interface Model<TApi extends Api> {
 						: never;
 }
 
-export interface ImagesModel<TApi extends ImagesApi>
-	extends Omit<Model<Api>, "api" | "provider" | "reasoning" | "contextWindow" | "maxTokens" | "compat"> {
-	api: TApi;
-	provider: ImagesProviderId;
+/** Image-generation model: usable with `generateImages()` only. */
+export interface ImageModel<TApi extends ImageApi> extends BaseModel<TApi> {
+	type: "image";
+	/** Output modalities. Always includes `"image"`; `"text"` means the model can also return text blocks. */
 	output: ("text" | "image")[];
 }
+
+/** Structured classifier model: usable with `classify()` only. */
+export interface ClassifierModel<TApi extends ClassifierApi> extends BaseModel<TApi> {
+	type: "classifier";
+	contextWindow: number;
+}
+
+/** Model shape for each model type. */
+export interface ModelTypeMap {
+	chat: Model<Api>;
+	image: ImageModel<ImageApi>;
+	classifier: ClassifierModel<ClassifierApi>;
+}
+
+/** What a catalog entry is for. Decides which `Models` operation accepts it. */
+export type ModelType = keyof ModelTypeMap;
+
+/** Anything a provider can list. Narrow with `isModelType()`. */
+export type AnyModel = ModelTypeMap[ModelType];

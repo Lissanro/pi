@@ -499,11 +499,9 @@ rules are:
 - No `AsyncLocalStorage`: line re-entry is detected through the Chord context
   the Session hands to its callbacks (`hardening-handoff.md` §7).
 - Chord bridge (`plugins.md` §6.1): a bounded ordered adapter applies one raw
-  envelope's ops to the Chord `MutableReplicatedState` and calls `publish()` in
-  the same synchronous block (Chord's `subscribe()` publishes pending mutations
-  itself, so apply and publish must not be separated by an await); overflow or
-  publish failure closes and respawns that instance; a persisted commit is never
-  failed by a listener.
+  envelope's ops inside one Chord `MutableReplicatedState.change()` transaction;
+  overflow or publication failure closes and respawns that instance, and a
+  persisted commit is never failed by a listener.
 - Tests: for every row in §6, assert the exact ops and events of that commit
   (memory backend, fake provider), plus snapshot-equals-fold after every
   envelope and a head-in-parent capture case.

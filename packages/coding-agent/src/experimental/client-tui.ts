@@ -744,6 +744,7 @@ export async function runClientTui(command: ClientCommand, options: RunClientTui
 		tuiMode: "fullscreen",
 		showHardwareCursor: settingsManager.getShowHardwareCursor(),
 		logDirectory: agentDir,
+		fullscreenWheelScrollLines: settingsManager.getFullscreenWheelScrollLines(),
 	});
 	tui.setClearOnShrink(settingsManager.getClearOnShrink());
 	let component: ExperimentalClientTui | undefined;
@@ -783,7 +784,7 @@ export async function runClientTui(command: ClientCommand, options: RunClientTui
 		tui.setFocus(component);
 		tuiStarted = true;
 		tui.start();
-		await themeController.applyFromSettings();
+		themeController.applyFromSettings();
 		await finished;
 	} finally {
 		themeController.dispose();

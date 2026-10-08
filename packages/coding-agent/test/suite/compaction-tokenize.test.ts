@@ -119,8 +119,10 @@ describe("compaction tokenization", () => {
 		expect(compactionEntry).toBeDefined();
 		expect(compactionEntry!.summaryTokens).toBeUndefined();
 
-		// No /tokenize and no post-compaction usage: footer shows "?".
+		// No /tokenize and no post-compaction usage: footer falls back to the
+		// chars/4 estimate. Crystal never shows "?" - the count is always present.
 		const usage = harness.session.getContextUsage();
-		expect(usage?.percent).toBeNull();
+		expect(usage?.percent).not.toBeNull();
+		expect(usage?.tokens).toBeGreaterThan(0);
 	});
 });

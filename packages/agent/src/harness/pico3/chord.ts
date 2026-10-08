@@ -1,4 +1,10 @@
-import { type Context, defineService, type MutableReplicatedState, type ReplicatedState } from "@earendil-works/chord";
+import {
+	type Context,
+	type Draft,
+	defineService,
+	type MutableReplicatedState,
+	type ReplicatedState,
+} from "@earendil-works/chord";
 import type { Op, Path, Seg } from "@earendil-works/chord/delta";
 import type { ConversationHandle, Harness } from "./harness.ts";
 import type {
@@ -109,9 +115,10 @@ function bridgeWatch(
 		while (!closed && queue.length > 0) {
 			const envelope = queue.shift()!;
 			try {
-				applyTracked(view.state, envelope.ops);
-				view.state.commit.events = structuredClone(envelope.events);
-				view.publish(ctx);
+				view.change(ctx, (draft) => {
+					applyTracked(draft, envelope.ops);
+					draft.commit.events = envelope.events as Draft<ViewEvent[]>;
+				});
 			} catch (error) {
 				fail(error);
 			}
@@ -142,14 +149,29 @@ function bridgeWatch(
 	};
 }
 
-function applyTracked(root: PublishedConversationView, ops: readonly Op[]): void {
+function applyTracked(root: Draft<PublishedConversationView>, ops: readonly Op[]): void {
 	for (const op of ops) {
 		if (op[0] === "r") throw new Error("live Pico envelope unexpectedly replaced the view root");
 		const path = op[1];
 		if (op[0] === "p") {
 			const target = resolve(root, path);
 			if (!Array.isArray(target)) throw new Error(`Pico splice path is not an array: ${path.join(".")}`);
-			target.splice(op[2], op[3], ...structuredClone(op[4]));
+			(target as unknown[]).splice(op[2], op[3], ...op[4]);
+			continue;
+		}
+		if (op[0] === "m") {
+			const target = resolve(root, path);
+			if (!Array.isArray(target) || target.length !== op[2].length) {
+				throw new Error(`Pico permutation path is not a matching array: ${path.join(".")}`);
+			}
+			const array = target as unknown[];
+			const previous = array.slice();
+			const rank = new Map<unknown, number>();
+			for (let index = 0; index < op[2].length; index++) {
+				const value = previous[op[2][index]!]!;
+				if (!rank.has(value)) rank.set(value, index);
+			}
+			array.sort((left, right) => rank.get(left)! - rank.get(right)!);
 			continue;
 		}
 		const parent = resolve(root, path.slice(0, -1));
@@ -162,7 +184,7 @@ function applyTracked(root: PublishedConversationView, ops: readonly Op[]): void
 			continue;
 		}
 		const record = parent as Record<PropertyKey, unknown>;
-		if (op[0] === "s") record[key] = structuredClone(op[2]);
+		if (op[0] === "s") record[key] = op[2];
 		else if (op[0] === "a") record[key] = `${String(record[key])}${op[2]}`;
 		else record[key] = String(record[key]).slice(op[2]);
 	}

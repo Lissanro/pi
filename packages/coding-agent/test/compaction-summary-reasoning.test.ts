@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { type AssistantMessage, type Model, normalizeContext } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type Model, normalizeContext, type TranscriptContext } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CompactionPreparation,
@@ -126,6 +126,29 @@ describe("generateSummary reasoning options", () => {
 			cacheRetention: "none",
 			toolChoice: "auto",
 		});
+	});
+
+	it("preserves the previous summary without an empty history request for a split turn", async () => {
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "entry-keep",
+			messagesToSummarize: [],
+			turnPrefixMessages: messages,
+			isSplitTurn: true,
+			tokensBefore: 100,
+			previousSummary: "previous checkpoint",
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20 },
+		};
+
+		const result = await compact(preparation, createModel(false), "test-key");
+
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+		expect(result.summary).toContain("previous checkpoint");
+		const requestContext = completeSimpleMock.mock.calls[0][1] as TranscriptContext;
+		const prompt = JSON.stringify(requestContext.messages);
+		// Regression test for #9652: clear boundaries and continuation wording avoid the reasoning-extraction false positive.
+		expect(prompt).toContain("# Conversation\\n[User]: Summarize this.");
+		expect(prompt).toContain("# Instructions\\nThe messages above are earlier context from an ongoing conversation.");
 	});
 
 	it("rejects tool calls from conversation summaries", async () => {

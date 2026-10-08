@@ -14,6 +14,49 @@
 
 - Fixed `Agent.continue(prefill)` to not throw a prefill echo mismatch when the model response itself ended in an error or abort (e.g., a connection error during the continuation). The echo check now only runs for successful responses.
 
+## [0.99.2] - 2026-09-30
+
+## [0.99.1] - 2026-09-29
+
+## [0.99.0] - 2026-09-29
+
+### Added
+
+- Added the `onProviderStreamEvent` agent option, which is passed to provider streams to observe parsed provider events before normalization ([#9784](https://github.com/earendil-works/pi/issues/9784), [#9901](https://github.com/earendil-works/pi/pull/9901) by [@davidbrai](https://github.com/davidbrai)).
+- The agent loop now records the requested thinking level as `thinkingLevel` on each assistant message.
+
+## [0.87.1] - 2026-09-22
+
+## [0.87.0] - 2026-09-21
+
+### Breaking Changes
+
+- Removed `AgentOptions.shouldStopAfterTurn` and `AgentLoopConfig.shouldStopAfterTurn`. Use `finishTurn` and return `{ action: "end" }` to stop after the completed turn:
+
+  ```ts
+  // Before
+  shouldStopAfterTurn: async (turn, signal) => await shouldStop(turn, signal),
+
+  // After
+  finishTurn: async (turn, signal) => {
+    // shouldStopAfterTurn previously ran only for normal responses.
+    if (turn.message.stopReason === "error" || turn.message.stopReason === "aborted") return;
+    return (await shouldStop(turn, signal)) ? { action: "end" } : undefined;
+  },
+  ```
+
+  `finishTurn` runs after the assistant and all tool results are finalized but before `turn_end`; its decision is applied after `turn_end`. It also runs for error and aborted responses, whose decisions are ignored because those responses remain hard exits. The guard in the migration preserves the old hook's normal-response-only invocation, including avoiding predicate side effects on hard exits. Returning `{ action: "end" }` leaves steering and follow-up queues untouched and skips `prepareNextTurn`.
+
+### Added
+
+- Added `prepareRequest`, which runs before every provider request, including the first. For example, return `{ context: { ...context, messages: persistedMessages } }` to install canonical context after already-selected input is emitted without introducing another queue poll.
+- Added `finishTurn`, which runs after assistant/tool-result finalization and before `turn_end` for normal, error, and aborted responses. Return `{ action: "end" }` to end a normal run after `turn_end`, or `undefined` to preserve normal scheduling. `{ action: "continue" }` ensures one next provider request: existing tool-result, steering, or follow-up scheduling can satisfy that request without adding another one; otherwise the loop makes one context-only request. Error and aborted responses remain hard exits.
+- Added `Agent.peekQueuedMessages()` to preview the next queue-selected batch without consuming it.
+
+### Fixed
+
+- Fixed harness reads misclassifying text files beginning with `GIF` as images ([#9755](https://github.com/earendil-works/pi/issues/9755)).
+
 ## [0.86.1] - 2026-09-20
 
 ## [0.86.0] - 2026-09-19

@@ -121,6 +121,7 @@ describe("buildSystemPrompt", () => {
 				/When resolving relative doc paths, use .+ as the docs root and .+ as the examples root\./,
 			);
 			expect(prompt).toContain("- Environment variables: docs/environment-variables.md");
+			expect(prompt).toContain("- MCP servers: docs/mcp.md");
 		});
 	});
 

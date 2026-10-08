@@ -122,7 +122,9 @@ export class Box implements Component {
 		const contentWidth = padEnabled ? Math.max(1, width - this.paddingX * 2) : width;
 		const leftPad = " ".repeat(this.paddingX);
 
-		// Render all children
+		// Render all children. Keep the child lines unpadded: children usually return the same string
+		// objects every frame, so the cache check below is a cheap identity comparison per line.
+		// Padding here would create new strings that must be compared character by character.
 		const childLines: string[] = [];
 		const mouseChildren: Array<{ component: Component; height: number }> = [];
 		for (const child of this.children) {
@@ -155,7 +157,9 @@ export class Box implements Component {
 			result.push(this.applySeparatorBg("", width));
 		}
 
-		// Content
+		// Content. childLines already carry leftPad when padLinesToWidth is
+		// enabled, so applyBg must not add it again (that would double the padding
+		// when enabled and force padding when disabled).
 		for (const line of childLines) {
 			result.push(this.applyBg(line, width));
 		}

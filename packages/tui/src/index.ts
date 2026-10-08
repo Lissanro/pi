@@ -9,6 +9,33 @@ export {
 	CombinedAutocompleteProvider,
 	type SlashCommand,
 } from "./autocomplete.ts";
+// Colors and styling
+export {
+	backgroundAnsi,
+	type Color,
+	type ColorMixSpace,
+	colorToHex,
+	colorToOkhsl,
+	colorToOklch,
+	colorToRgb,
+	foregroundAnsi,
+	type IndexedColor,
+	indexedColor,
+	mixColors,
+	type OkhslChannels,
+	type OklchChannels,
+	type OklchColorValue,
+	okhslColor,
+	oklchColor,
+	parseColor,
+	type RgbColorValue,
+	rgbColor,
+	styleText,
+	styleTextWithAnsi,
+	type TerminalColorMode,
+	type TextAttributes,
+	type TextStyle,
+} from "./colors.ts";
 // Components
 export { Box } from "./components/box.ts";
 export { CancellableLoader } from "./components/cancellable-loader.ts";
@@ -77,16 +104,17 @@ export {
 export { type RenderLatexOptions, renderLatex } from "./latex.ts";
 // Native platform integration
 export { getNativeClipboard, type NativeClipboard } from "./native-platform.ts";
+export { oklabToOkhslLightness } from "./oklab.ts";
 // Input buffering for batch splitting
 export { StdinBuffer, type StdinBufferEventMap, type StdinBufferOptions } from "./stdin-buffer.ts";
 // Terminal interface and implementations
 export { ProcessTerminal, type Terminal } from "./terminal.ts";
 // Terminal colors
 export {
-	parseOsc11BackgroundColor,
 	parseTerminalColorSchemeReport,
 	type RgbColor,
 	type TerminalColorScheme,
+	type TerminalColors,
 } from "./terminal-colors.ts";
 // Terminal image support
 export {
@@ -104,6 +132,7 @@ export {
 	getImageDimensions,
 	getJpegDimensions,
 	getPngDimensions,
+	getTerminalColorMode,
 	getWebpDimensions,
 	hyperlink,
 	type ImageDimensions,
@@ -159,3 +188,4 @@ export {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "./utils.ts";
+export type { WheelScrollLines } from "./wheel-scroll.ts";

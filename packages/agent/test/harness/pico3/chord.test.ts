@@ -87,11 +87,11 @@ test("Chord publication failure closes only the bridge and never rejects the per
 				get value() {
 					return state.value;
 				},
-				get state() {
-					return state.state;
-				},
 				subscribe: (listener) => state.subscribe(listener),
-				publish() {
+				change() {
+					throw new Error("publish failed");
+				},
+				replace() {
 					throw new Error("publish failed");
 				},
 			};

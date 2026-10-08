@@ -453,7 +453,7 @@ export const harnessSessionFacet = defineFacet({
       await handle.open(storage, { models, processHost }, ctx);
       handle.onConversation((c) => {                            // existing at open, and every fork/subagent created later
         const view = env.replicatedState(c.snapshot());         // built on the line
-        c.attachView(view);                                     // bounded ordered adapter: raw envelopes → view.state + publish(), off the line (below)
+        c.attachView(view);                                     // bounded ordered adapter: raw envelopes → one view.change(), off the line (below)
         env.own(conversations.spawn(String(c.id), { view, send: (i, cx) => c.send(i, cx).then((r) => r.id), /* … */ }));
       });
     });
@@ -467,14 +467,12 @@ replicated member; a subscriber reads `value.commit.events` after each delivery.
 No revision or storage sequence is placed in the view: Chord's
 `ReplicatedStateDelivery.sequence` is contiguous per member and plays that role.
 
-Publication must not happen on the Session line. Chord's `publish()` invokes
+Publication must not happen on the Session line. Chord's `change()` invokes
 source and subscriber listeners synchronously and a subscriber may throw or be
-slow, and `subscribe()` itself publishes pending mutations. The bridge is a
-bounded ordered adapter: the kernel enqueues raw envelopes from its own view
-tracker; the adapter, off the line, applies one envelope's ops to
-`view.state`, sets `commit.events`, and calls `publish(ctx)` in the **same
-synchronous block** (no await between apply and publish). One raw envelope =
-one publish = one Chord sequence. If the queue overflows or `publish` throws,
+slow. The bridge is a bounded ordered adapter: the kernel enqueues raw envelopes
+from its own view tracker; the adapter, off the line, applies one envelope's ops
+and sets `commit.events` inside one `view.change(ctx, callback)` transaction.
+One raw envelope = one change = one Chord sequence. If the queue overflows or `change` throws,
 close that keyed instance and respawn it with a fresh snapshot; a persisted Pico
 commit is never turned into a failure. Chord's subscription snapshot then gives
 late joiners the member at its current sequence, so §9 of

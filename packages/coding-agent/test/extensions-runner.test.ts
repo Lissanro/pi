@@ -88,6 +88,7 @@ describe("ExtensionRunner", () => {
 		setLabel: () => {},
 		getActiveTools: () => [],
 		getAllTools: () => [],
+		getSettings: () => ({}),
 		setActiveTools: () => {},
 		refreshTools: () => {},
 		getCommands: () => [],
@@ -884,6 +885,149 @@ describe("ExtensionRunner", () => {
 			expect(errors).toEqual([]);
 			expect(chained.messages).toEqual([]);
 			expect(buildSystemPrompt(chained.systemPromptOptions)).toMatch(/base[\s\S]*\nfirst\nsecond$/);
+		});
+	});
+
+	describe("boundary chaining", () => {
+		it("chains shared draft proposals and preserves omitted result fields", async () => {
+			const runtime = createExtensionRuntime();
+			const eventBus = createEventBus();
+			const observations: Array<{ entries: number; continuation: boolean; preview: number }> = [];
+			const first = await loadExtensionFromFactory(
+				(pi) => {
+					pi.on("agent_before_settle", (event) => {
+						observations.push({
+							entries: event.entries.length,
+							continuation: event.continue,
+							preview: event.context.contextEntries.length,
+						});
+						event.entries.push({ type: "custom", customType: "first", data: 1 });
+						return { continue: true };
+					});
+				},
+				tempDir,
+				eventBus,
+				runtime,
+				"<inline:first>",
+			);
+			const second = await loadExtensionFromFactory(
+				(pi) => {
+					pi.on("agent_before_settle", (event) => {
+						observations.push({
+							entries: event.entries.length,
+							continuation: event.continue,
+							preview: event.context.contextEntries.length,
+						});
+						return { entries: [] };
+					});
+				},
+				tempDir,
+				eventBus,
+				runtime,
+				"<inline:second>",
+			);
+			const runner = new ExtensionRunner([first, second], runtime, tempDir, sessionManager, modelRegistry);
+
+			const result = await runner.emitBoundary({ type: "agent_before_settle", outcome: "completed" }, (entries) => ({
+				contextEntries: entries.map((entry, index) => ({
+					sourceEntry: {
+						type: "custom",
+						id: `draft-${index}`,
+						parentId: null,
+						timestamp: "",
+						customType: entry.type,
+					},
+					messages: [],
+				})),
+				contextMessages: [],
+				llmMessages: [],
+				pendingMessages: [],
+				canContinue: false,
+			}));
+
+			expect(observations).toEqual([
+				{ entries: 0, continuation: false, preview: 0 },
+				{ entries: 1, continuation: true, preview: 1 },
+			]);
+			expect(result.entries).toEqual([]);
+			expect(result.continue).toBe(true);
+		});
+
+		it("reports invalid boundary previews and lets later handlers repair the proposal", async () => {
+			const runtime = createExtensionRuntime();
+			let secondRan = false;
+			const first = await loadExtensionFromFactory(
+				(pi) => {
+					pi.on("agent_before_settle", () => ({
+						entries: [{ type: "context_edit", targetId: "missing", replacement: null }],
+					}));
+				},
+				tempDir,
+				createEventBus(),
+				runtime,
+				"<inline:invalid>",
+			);
+			const second = await loadExtensionFromFactory(
+				(pi) => {
+					pi.on("agent_before_settle", (event) => {
+						secondRan = true;
+						expect(event.entries).toHaveLength(1);
+						return { entries: [] };
+					});
+				},
+				tempDir,
+				createEventBus(),
+				runtime,
+				"<inline:repair>",
+			);
+			const runner = new ExtensionRunner([first, second], runtime, tempDir, sessionManager, modelRegistry);
+			const errors: string[] = [];
+			runner.onError((error) => errors.push(error.error));
+
+			const result = await runner.emitBoundary({ type: "agent_before_settle", outcome: "completed" }, (entries) => {
+				if (entries.some((entry) => entry.type === "context_edit")) throw new Error("Entry missing not found");
+				return {
+					contextEntries: [],
+					contextMessages: [],
+					llmMessages: [],
+					pendingMessages: [],
+					canContinue: false,
+				};
+			});
+
+			expect(secondRan).toBe(true);
+			expect(errors).toContain("Invalid boundary entries: Entry missing not found");
+			expect(result.entries).toEqual([]);
+			expect(result.valid).toBe(true);
+		});
+
+		it("keeps shared mutations made before a handler throws", async () => {
+			const runtime = createExtensionRuntime();
+			const extension = await loadExtensionFromFactory(
+				(pi) => {
+					pi.on("agent_before_settle", (event) => {
+						event.entries.push({ type: "custom", customType: "kept" });
+						throw new Error("boundary failed");
+					});
+				},
+				tempDir,
+				createEventBus(),
+				runtime,
+			);
+			const runner = new ExtensionRunner([extension], runtime, tempDir, sessionManager, modelRegistry);
+			const errors: string[] = [];
+			runner.onError((error) => errors.push(error.error));
+
+			const result = await runner.emitBoundary({ type: "agent_before_settle", outcome: "completed" }, () => ({
+				contextEntries: [],
+				contextMessages: [],
+				llmMessages: [],
+				pendingMessages: [],
+				canContinue: false,
+			}));
+
+			expect(result.entries).toMatchObject([{ type: "custom", customType: "kept" }]);
+			expect(errors).toEqual(["boundary failed"]);
 		});
 	});
 

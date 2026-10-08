@@ -399,12 +399,12 @@ export default defineFacet({
       state,
       async toggle({ active }, ctx) {
         await c.value(planMode).set(active, ctx);          // durable
-        state.state.active = active; state.publish(ctx);    // live
+        state.change(ctx, (draft) => { draft.active = active; }); // live
       },
     });
     env.onActivate(async () => {                           // reopen: rebuild the projection from Pico
-      state.state.active = (await c.value(planMode).get(BACKGROUND_CONTEXT)) ?? false;
-      state.publish(BACKGROUND_CONTEXT);
+      const active = (await c.value(planMode).get(BACKGROUND_CONTEXT)) ?? false;
+      state.change(BACKGROUND_CONTEXT, (draft) => { draft.active = active; });
     });
   },
 });

@@ -258,6 +258,8 @@ export class Markdown implements Component {
 	private cachedText?: string;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
+	// Parsed tokens depend only on the source, so they survive theme and width invalidation.
+	private cachedTokens?: { source: string; tokens: Token[] };
 
 	constructor(
 		text: string,
@@ -316,8 +318,12 @@ export class Markdown implements Component {
 		const normalizedText = text.replace(/\t/g, "   ");
 
 		// Parse markdown to HTML-like tokens
-		const tokens = markdownParser.lexer(normalizedText);
-		trimPartialClosingFences(tokens);
+		let tokens = this.cachedTokens?.source === normalizedText ? this.cachedTokens.tokens : undefined;
+		if (!tokens) {
+			tokens = markdownParser.lexer(normalizedText);
+			trimPartialClosingFences(tokens);
+			this.cachedTokens = { source: normalizedText, tokens };
+		}
 
 		// Convert tokens to styled terminal output
 		const renderedLines: string[] = [];

@@ -140,6 +140,22 @@ const ModelPromptCacheSchema = Type.Object({
 	short: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
 	long: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
 });
+const ImageResizeSchema = Type.Object({
+	maxWidth: Type.Optional(Type.Integer({ minimum: 1 })),
+	maxHeight: Type.Optional(Type.Integer({ minimum: 1 })),
+	maxBytes: Type.Optional(Type.Integer({ minimum: 1 })),
+	jpegQuality: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+});
+const ModelInputLimitsSchema = Type.Object({
+	maxRequestBytes: Type.Optional(Type.Integer({ minimum: 1 })),
+	images: Type.Optional(
+		Type.Object({
+			resize: Type.Optional(ImageResizeSchema),
+			maxPerMessage: Type.Optional(Type.Integer({ minimum: 1 })),
+			maxPerRequest: Type.Optional(Type.Integer({ minimum: 1 })),
+		}),
+	),
+});
 
 const AnthropicMessagesCompatSchema = Type.Object({
 	supportsEagerToolInputStreaming: Type.Optional(Type.Boolean()),
@@ -177,6 +193,7 @@ const ModelDefinitionSchema = Type.Object({
 	reasoning: Type.Optional(Type.Boolean()),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
+	inputLimits: Type.Optional(ModelInputLimitsSchema),
 	cost: Type.Optional(ModelCostSchema),
 	promptCache: Type.Optional(ModelPromptCacheSchema),
 	contextWindow: Type.Optional(Type.Number()),
@@ -191,6 +208,7 @@ const ModelOverrideSchema = Type.Object({
 	reasoning: Type.Optional(Type.Boolean()),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
+	inputLimits: Type.Optional(ModelInputLimitsSchema),
 	cost: Type.Optional(
 		Type.Object({
 			input: Type.Optional(Type.Number()),
