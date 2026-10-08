@@ -123,19 +123,15 @@ describe("AgentSession compaction model overrides", () => {
 				budgets.push(options?.maxTokens);
 				return fauxAssistantMessage("built-in summary");
 			},
-			(_context, options) => {
-				budgets.push(options?.maxTokens);
-				return fauxAssistantMessage("turn context");
-			},
 			...(path === "automatic" ? [fauxAssistantMessage("done")] : []),
 		]);
 		if (path === "manual") await harness.session.compact();
 		else await harness.session.prompt("continue");
-		// Split-turn compaction summarizes history and turn prefix in separate calls.
-		expect(budgets).toEqual([1600, 1000]);
+		// Compaction summarizes the whole replaced tail (history + turn prefix) in one call.
+		expect(budgets).toEqual([1600]);
 		expect(harness.sessionManager.getEntries().find((entry) => entry.type === "compaction")).toMatchObject({
 			firstKeptEntryId: recentAssistantId,
-			summary: "built-in summary\n\n---\n\n**Turn Context (split turn):**\n\nturn context",
+			summary: "built-in summary",
 		});
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
@@ -206,16 +202,9 @@ describe("AgentSession compaction model overrides", () => {
 				requests.push({ id: model.id, maxTokens: options?.maxTokens });
 				return fauxAssistantMessage("summary");
 			},
-			(_context, options, _state, model) => {
-				requests.push({ id: model.id, maxTokens: options?.maxTokens });
-				return fauxAssistantMessage("summary");
-			},
 		]);
 		await harness.session.compact();
-		// Split-turn compaction resolves the model once and uses it for both calls.
-		expect(requests).toEqual([
-			{ id: "first", maxTokens: 1600 },
-			{ id: "first", maxTokens: 1000 },
-		]);
+		// Compaction resolves the model once for the single summarization call.
+		expect(requests).toEqual([{ id: "first", maxTokens: 1600 }]);
 	});
 });

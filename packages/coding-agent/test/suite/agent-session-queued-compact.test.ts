@@ -100,12 +100,10 @@ describe("AgentSession queued /compact", () => {
 		const compactionEnds = harness.eventsOfType("compaction_end");
 		expect(compactionEnds).toHaveLength(1);
 		expect(compactionEnds[0].aborted).toBe(false);
-		// The compaction happens mid-turn (split turn), so the summary is the
-		// history part (empty: "No prior history.") merged with the turn-prefix
-		// summary via the split-turn format.
-		expect(compactionEnds[0].result?.summary).toBe(
-			`No prior history.\n\n---\n\n**Turn Context (split turn):**\n\n${SUMMARY_TEXT}`,
-		);
+		// The compaction happens mid-turn (split turn) but the whole replaced tail
+		// (history + turn prefix) is summarized in a single call, so the summary is
+		// that call's output.
+		expect(compactionEnds[0].result?.summary).toBe(SUMMARY_TEXT);
 
 		// Ordering: compaction completed after the tool results and before the
 		// resumed assistant response, which itself completed before the run settled.

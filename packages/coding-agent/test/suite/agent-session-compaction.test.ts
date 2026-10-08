@@ -359,8 +359,8 @@ describe("AgentSession compaction characterization", () => {
 		expect(transformContext).toHaveBeenCalled();
 		expect(getCurrentSystemPrompt(requestContext?.messages ?? [])).toBe(harness.session.agent.state.systemPrompt);
 		expect(getCurrentTools(requestContext?.messages ?? [])).toEqual(harness.session.agent.state.tools);
-		// Regression test for #9652: split-turn summaries use a clear Markdown conversation boundary.
-		expect(JSON.stringify(requestContext?.messages)).toContain("# Conversation\\n[User]: message to compact");
+		// The replaced tail (the user message) stays in the request prefix byte-identical to the chat.
+		expect(JSON.stringify(requestContext?.messages)).toContain("message to compact");
 		// The one-off summary still avoids cache writes and uses fresh routing.
 		expect(requestOptions).toMatchObject({ cacheRetention: "none" });
 		expect(requestOptions?.sessionId).not.toBe("active-routing-session");

@@ -36,7 +36,6 @@ import {
 	type SessionProjection,
 	sessionEntryToContextMessages,
 } from "../session-manager.ts";
-import { combineUsage } from "../usage-totals.ts";
 import {
 	computeFileLists,
 	createFileOps,
@@ -44,7 +43,6 @@ import {
 	type FileOperations,
 	formatFileOperations,
 	SUMMARIZATION_SYSTEM_PROMPT,
-	serializeConversation,
 } from "./utils.ts";
 
 // ============================================================================
@@ -1097,21 +1095,6 @@ export async function prepareCompaction(
 // Main compaction function
 // ============================================================================
 
-const TURN_PREFIX_SUMMARIZATION_PROMPT = `The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.
-
-Create a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.
-
-## Original Request
-[What did the user ask for?]
-
-## Progress So Far
-- [Key decisions and work completed in these messages]
-
-## Context Needed to Continue
-- [Information from these messages needed to understand the later work]
-
-Only summarize information explicitly present above. Do not infer or recreate later messages.`;
-
 /**
  * Generate summaries for compaction using prepared data.
  * Returns CompactionResult - SessionManager adds uuid/parentUuid when saving.
@@ -1147,77 +1130,36 @@ export async function compact(
 		settings,
 	} = preparation;
 
-	// Generate summaries and merge into one
-	let summary: string;
-	let summaryUsage: Usage;
-
-	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		let historyText = previousSummary ?? "No prior history.";
-		let historyUsage: Usage | undefined;
-		if (messagesToSummarize.length > 0) {
-			const historyResult = await generateSummaryWithUsage(
-				messagesToSummarize,
-				model,
-				settings.reserveTokens,
-				apiKey,
-				headers,
-				signal,
-				customInstructions,
-				previousSummary,
-				thinkingLevel,
-				streamFn,
-				env,
-				retry,
-				callbacks,
-				sessionId,
-				systemPrompt,
-				agent,
-			);
-			historyText = historyResult.text;
-			historyUsage = historyResult.usage;
-		}
-		const turnPrefixResult = await generateTurnPrefixSummary(
-			turnPrefixMessages,
-			model,
-			settings.reserveTokens,
-			apiKey,
-			headers,
-			env,
-			signal,
-			thinkingLevel,
-			streamFn,
-			retry,
-			callbacks,
-			sessionId,
-			systemPrompt,
-			agent,
-		);
-		// Merge into single summary
-		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
-		summaryUsage = historyUsage ? combineUsage(historyUsage, turnPrefixResult.usage) : turnPrefixResult.usage;
-	} else {
-		// Just generate history summary
-		const result = await generateSummaryWithUsage(
-			messagesToSummarize,
-			model,
-			settings.reserveTokens,
-			apiKey,
-			headers,
-			signal,
-			customInstructions,
-			previousSummary,
-			thinkingLevel,
-			streamFn,
-			env,
-			retry,
-			callbacks,
-			sessionId,
-			systemPrompt,
-			agent,
-		);
-		summary = result.text;
-		summaryUsage = result.usage;
-	}
+	// Summarize exactly the chat messages being replaced (previous summaries + history + turn
+	// prefix) in a single call. The request is byte-identical to a normal chat request up to the
+	// cut point (only the summarization instruction is appended at the end), so the provider KV
+	// cache is reused. A split turn is NOT split into separate history/turn-prefix calls: the
+	// turn prefix must stay in the same request as the history, otherwise the request head
+	// diverges from the chat and the cache drops everything after the divergence.
+	const allMessages =
+		isSplitTurn && turnPrefixMessages.length > 0
+			? [...messagesToSummarize, ...turnPrefixMessages]
+			: messagesToSummarize;
+	const result = await generateSummaryWithUsage(
+		allMessages,
+		model,
+		settings.reserveTokens,
+		apiKey,
+		headers,
+		signal,
+		customInstructions,
+		previousSummary,
+		thinkingLevel,
+		streamFn,
+		env,
+		retry,
+		callbacks,
+		sessionId,
+		systemPrompt,
+		agent,
+	);
+	let summary = result.text;
+	const summaryUsage = result.usage;
 
 	// Compute file lists and append to summary
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
@@ -1233,68 +1175,5 @@ export async function compact(
 		tokensBefore,
 		usage: summaryUsage,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
-	};
-}
-
-/**
- * Generate a summary for a turn prefix (when splitting a turn).
- */
-async function generateTurnPrefixSummary(
-	messages: AgentMessage[],
-	model: Model<any>,
-	reserveTokens: number,
-	apiKey: string | undefined,
-	headers?: Record<string, string>,
-	env?: Record<string, string>,
-	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-	streamFn?: StreamFn,
-	retry?: RetryPolicy,
-	callbacks?: RetryCallbacks,
-	sessionId?: string,
-	systemPrompt?: string,
-	agent?: Agent,
-): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = Math.min(
-		Math.floor(0.5 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	); // Smaller budget for turn prefix
-	const { systemMessage: effectiveSystemMessage, messages: llmMessages } = await buildAgentSummarizationContext(
-		agent,
-		messages,
-		signal,
-		systemPrompt,
-	);
-	const conversationText = serializeConversation(llmMessages);
-	const instructionText = `# Conversation\n${conversationText}\n\n# Instructions\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-	const summarizationMessages: Message[] = [
-		...llmMessages,
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: instructionText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const response = await completeSummarization(
-		model,
-		{ messages: [effectiveSystemMessage, ...summarizationMessages] } as TranscriptContext,
-		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId, agent),
-		streamFn,
-		retry,
-		callbacks,
-	);
-
-	const failure = getSummarizationFailure(response, "Turn prefix summarization");
-	if (failure) {
-		throw new Error(failure);
-	}
-	if (response.content.some((block) => block.type === "toolCall")) {
-		throw new Error("Turn prefix summarization attempted to call a tool");
-	}
-
-	return {
-		text: contentText(response.content),
-		usage: response.usage,
 	};
 }

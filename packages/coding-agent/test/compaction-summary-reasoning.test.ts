@@ -8,6 +8,7 @@ import {
 	generateSummary,
 	generateSummaryWithUsage,
 } from "../src/core/compaction/index.ts";
+import { createCompactionSummaryMessage } from "../src/core/messages.ts";
 
 const { completeSimpleMock } = vi.hoisted(() => ({
 	completeSimpleMock: vi.fn(),
@@ -131,7 +132,9 @@ describe("generateSummary reasoning options", () => {
 	it("preserves the previous summary without an empty history request for a split turn", async () => {
 		const preparation: CompactionPreparation = {
 			firstKeptEntryId: "entry-keep",
-			messagesToSummarize: [],
+			// The previous summary stays in the request prefix as its own message, exactly as the
+			// chat carries it (the compaction replaces only the tail being cut).
+			messagesToSummarize: [createCompactionSummaryMessage("previous checkpoint", 100, "2024-01-01T00:00:00.000Z")],
 			turnPrefixMessages: messages,
 			isSplitTurn: true,
 			tokensBefore: 100,
@@ -140,15 +143,18 @@ describe("generateSummary reasoning options", () => {
 			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20 },
 		};
 
-		const result = await compact(preparation, createModel(false), "test-key");
+		await compact(preparation, createModel(false), "test-key");
 
 		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
-		expect(result.summary).toContain("previous checkpoint");
 		const requestContext = completeSimpleMock.mock.calls[0][1] as TranscriptContext;
-		const prompt = JSON.stringify(requestContext.messages);
-		// Regression test for #9652: clear boundaries and continuation wording avoid the reasoning-extraction false positive.
-		expect(prompt).toContain("# Conversation\\n[User]: Summarize this.");
-		expect(prompt).toContain("# Instructions\\nThe messages above are earlier context from an ongoing conversation.");
+		const requestMessages = requestContext.messages.filter((message) => message.role !== "system");
+		const prompt = JSON.stringify(requestMessages);
+		// The previous summary message and the turn prefix stay in the request prefix, so the
+		// summarization request byte-matches the chat up to the cut point. The summarization
+		// instruction is appended at the end.
+		expect(prompt).toContain("previous checkpoint");
+		expect(prompt).toContain("Summarize this.");
+		expect(prompt).toContain("The messages above are a conversation to summarize.");
 	});
 
 	it("rejects tool calls from conversation summaries", async () => {
@@ -239,14 +245,9 @@ describe("generateSummary reasoning options", () => {
 
 		const result = await compact(preparation, createModel(false, 128000), "test-key");
 
-		// Split turns are summarized in two calls (history + turn-prefix) so the byte-identical
-		// compaction prefix is reused; the summary usage is the combined usage of both calls.
-		expect(result.usage).toEqual({
-			...mockSummaryResponse.usage,
-			input: mockSummaryResponse.usage.input * 2,
-			output: mockSummaryResponse.usage.output * 2,
-			totalTokens: mockSummaryResponse.usage.totalTokens * 2,
-		});
-		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000, 128000]);
+		// The replaced tail (history + turn prefix) is summarized in one call, so the summary usage
+		// is the single call's usage and the maxTokens is clamped to the model output cap once.
+		expect(result.usage).toEqual(mockSummaryResponse.usage);
+		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000]);
 	});
 });

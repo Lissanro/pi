@@ -390,23 +390,17 @@ describe("AgentSession virtual models", () => {
 			summaries.push(`${model.id}:${options?.reasoning ?? "off"}:${options?.maxTokens}`);
 			return fauxAssistantMessage("summary");
 		};
-		// Compaction summarizes the history and the split turn prefix with one routed model.
-		harness.setResponses([
-			fauxAssistantMessage("first answer"),
-			fauxAssistantMessage("second answer"),
-			summary,
-			summary,
-		]);
+		// Compaction summarizes the whole replaced tail (history + turn prefix) with one routed model.
+		harness.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("second answer"), summary]);
 		await harness.session.prompt("first");
 		await harness.session.prompt("second");
 
 		const result = await harness.session.compact();
 
 		expect(result.summary).toContain("summary");
-		// The split-turn summarizes history and turn prefix (one route per half) plus
-		// the post-compaction token count.
+		// The single summarization call plus the cut-point and post-compaction token counts.
 		expect(reasons()).toEqual(["user", "user", "direct", "direct", "direct"]);
 		// The router's thinking level applies, and the output budget respects the large model's 4000 tokens.
-		expect(summaries).toEqual(["large:low:4000", "large:low:4000"]);
+		expect(summaries).toEqual(["large:low:4000"]);
 	});
 });
