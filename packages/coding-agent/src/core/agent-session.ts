@@ -3427,7 +3427,7 @@ export class AgentSession {
 		let summaryTokens: number | undefined;
 		if (auth) {
 			try {
-				const summaryCount = await countTokensWithRetry(
+				summaryTokens = await countTokensWithRetry(
 					auth.model,
 					{
 						text: summary,
@@ -3438,9 +3438,6 @@ export class AgentSession {
 					},
 					retryPolicy,
 				);
-				// A zero count (empty token array) is not usable; leave it undefined so the
-				// summaries-block falls back to the estimate.
-				if (summaryCount !== undefined && summaryCount > 0) summaryTokens = summaryCount;
 			} catch {
 				summaryTokens = undefined;
 			}
@@ -3486,18 +3483,13 @@ export class AgentSession {
 					retryPolicy,
 				);
 				// Images are not text and cannot be counted by /tokenize; add the estimate.
-				// A zero count means the tokenizer produced no tokens for the text (empty
-				// token array), which is not a usable count; treat it like an unsupported
-				// endpoint and fall back to the estimate rather than leaving the footer "?".
-				if (count !== undefined && count > 0)
-					contextTokens = count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
+				if (count !== undefined) contextTokens = count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
 			} catch {
 				contextTokens = undefined;
 			}
 		}
 		// Never leave the footer count undefined (mainline's "?"): fall back to the
-		// chars/4 estimate when /tokenize is unsupported, aborted, retries exhaust,
-		// or returns a zero token count.
+		// chars/4 estimate when /tokenize is unsupported, aborted, or retries exhaust.
 		this._postCompactionContextTokens = contextTokens ?? estimatedTokensAfter;
 
 		return { newEntries, estimatedTokensAfter };
@@ -3535,8 +3527,7 @@ export class AgentSession {
 				retryPolicy,
 			);
 			// Images are not text and cannot be counted by /tokenize; add the estimate.
-			// A zero count (empty token array) is not usable; fall back to the estimate.
-			if (count !== undefined && count > 0) return count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
+			if (count !== undefined) return count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
 			return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
 		};
 	}
@@ -3735,6 +3726,7 @@ export class AgentSession {
 				fromExtension,
 				usage,
 				this._compactionAbortController.signal,
+				retryPolicy,
 			);
 
 			// Get the saved compaction entry for the extension event
@@ -4097,6 +4089,7 @@ export class AgentSession {
 				fromExtension,
 				usage,
 				this._autoCompactionAbortController.signal,
+				retryPolicy,
 			);
 
 			// Get the saved compaction entry for the extension event

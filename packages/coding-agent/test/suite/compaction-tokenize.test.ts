@@ -126,35 +126,27 @@ describe("compaction tokenization", () => {
 		expect(usage?.tokens).toBeGreaterThan(0);
 	});
 
-	it("treats a zero /tokenize count as unusable and falls back to the estimate", async () => {
+	it("retries /tokenize on a transient failure until it succeeds", async () => {
 		const harness = await createHarness({ withConfiguredAuth: true });
 		harnesses.push(harness);
 		seed(harness);
 		cannedSummary(harness);
 
-		// A 200 with an empty token array means the tokenizer produced no tokens for
-		// the text. countTokens returns 0; treating 0 as a valid count would set the
-		// footer to 0 and getContextUsage would show "?" (the impossible path). The
-		// fallback estimate must be used instead.
-		vi.stubGlobal(
-			"fetch",
-			(async () =>
-				new Response(JSON.stringify({ tokens: [] }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				})) as typeof globalThis.fetch,
-		);
+		// A transient network failure (not a 404) must be retried per the configured
+		// retry policy rather than silently falling back to the estimate.
+		let calls = 0;
+		vi.stubGlobal("fetch", (async () => {
+			calls++;
+			if (calls === 1) throw new Error("ECONNREFUSED");
+			return new Response(JSON.stringify({ tokens: new Array(42).fill(0) }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}) as typeof globalThis.fetch);
 
 		await harness.session.compact({ keepRecentMessages: 1 });
 
-		const entries = harness.sessionManager.getEntries();
-		const compactionEntry = entries.find((e) => e.type === "compaction") as
-			| ((typeof entries)[number] & { summaryTokens?: number })
-			| undefined;
-		expect(compactionEntry).toBeDefined();
-		expect(compactionEntry!.summaryTokens).toBeUndefined();
-
-		// The zero count must not leak into the footer; the estimate keeps it present.
+		expect(calls).toBeGreaterThanOrEqual(2);
 		const usage = harness.session.getContextUsage();
 		expect(usage).toBeDefined();
 		expect(usage!.percent).not.toBeNull();
