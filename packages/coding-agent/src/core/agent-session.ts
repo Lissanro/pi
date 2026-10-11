@@ -34,11 +34,10 @@ import {
 	stripTrailingHarnessMessages,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { RetryPolicy } from "@earendil-works/pi-ai";
 import {
 	contentText,
 	contentToTokenizeText,
-	countTokensWithRetry,
+	countTokens,
 	getCurrentSystemMessage,
 	retryDelayMs,
 } from "@earendil-works/pi-ai";
@@ -3413,7 +3412,6 @@ export class AgentSession {
 		fromExtension: boolean,
 		usage: Usage | undefined,
 		signal?: AbortSignal,
-		retryPolicy?: RetryPolicy,
 	): Promise<{ newEntries: SessionEntry[]; estimatedTokensAfter: number }> {
 		let auth: RequestAuth | undefined;
 		if (this.model) {
@@ -3427,17 +3425,13 @@ export class AgentSession {
 		let summaryTokens: number | undefined;
 		if (auth) {
 			try {
-				summaryTokens = await countTokensWithRetry(
-					auth.model,
-					{
-						text: summary,
-						apiKey: auth.apiKey,
-						headers: auth.headers,
-						env: auth.env,
-						signal,
-					},
-					retryPolicy,
-				);
+				summaryTokens = await countTokens(auth.model, {
+					text: summary,
+					apiKey: auth.apiKey,
+					headers: auth.headers,
+					env: auth.env,
+					signal,
+				});
 			} catch {
 				summaryTokens = undefined;
 			}
@@ -3471,17 +3465,13 @@ export class AgentSession {
 					text += `\n${serialized.text}`;
 					imageCount += serialized.imageCount;
 				}
-				const count = await countTokensWithRetry(
-					auth.model,
-					{
-						text,
-						apiKey: auth.apiKey,
-						headers: auth.headers,
-						env: auth.env,
-						signal,
-					},
-					retryPolicy,
-				);
+				const count = await countTokens(auth.model, {
+					text,
+					apiKey: auth.apiKey,
+					headers: auth.headers,
+					env: auth.env,
+					signal,
+				});
 				// Images are not text and cannot be counted by /tokenize; add the estimate.
 				if (count !== undefined) contextTokens = count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
 			} catch {
@@ -3501,11 +3491,7 @@ export class AgentSession {
 	 * failures per the configured retry policy, and falling back to the chars/4
 	 * estimate only when the endpoint is unsupported or retries are exhausted.
 	 */
-	private _createCompactionTokenCounter(
-		auth: RequestAuth,
-		retryPolicy: RetryPolicy,
-		signal: AbortSignal,
-	): TokenCounter {
+	private _createCompactionTokenCounter(auth: RequestAuth, signal: AbortSignal): TokenCounter {
 		return async (messages) => {
 			const llmMessages = await this.agent.convertToLlm(messages);
 			let text = "";
@@ -3515,20 +3501,22 @@ export class AgentSession {
 				text += serialized.text;
 				imageCount += serialized.imageCount;
 			}
-			const count = await countTokensWithRetry(
-				auth.model,
-				{
+			try {
+				const count = await countTokens(auth.model, {
 					text,
 					apiKey: auth.apiKey,
 					headers: auth.headers,
 					env: auth.env,
 					signal,
-				},
-				retryPolicy,
-			);
-			// Images are not text and cannot be counted by /tokenize; add the estimate.
-			if (count !== undefined) return count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
-			return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+				});
+				// Images are not text and cannot be counted by /tokenize; add the estimate.
+				if (count !== undefined) return count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
+				return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+			} catch {
+				// A transient /tokenize failure must not break the compaction; fall back
+				// to the chars/4 estimate.
+				return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+			}
 		};
 	}
 
@@ -3636,7 +3624,6 @@ export class AgentSession {
 			} = await this._getSummarizationRequestAuth(model, this._compactionAbortController.signal);
 
 			const pathEntries = this.sessionManager.getBranch();
-			const retryPolicy = this.settingsManager.getRetrySettings();
 
 			const preparation = await prepareCompaction(
 				pathEntries,
@@ -3647,7 +3634,6 @@ export class AgentSession {
 				},
 				this._createCompactionTokenCounter(
 					{ model: requestModel, apiKey, headers, env },
-					retryPolicy,
 					this._compactionAbortController.signal,
 				),
 			);
@@ -3726,7 +3712,6 @@ export class AgentSession {
 				fromExtension,
 				usage,
 				this._compactionAbortController.signal,
-				retryPolicy,
 			);
 
 			// Get the saved compaction entry for the extension event
@@ -4008,16 +3993,11 @@ export class AgentSession {
 			} = await this._getSummarizationRequestAuth(model, abortController.signal);
 			abortController.signal.throwIfAborted();
 
-			const retryPolicy = this.settingsManager.getRetrySettings();
 			const preparation = await prepareCompaction(
 				pathEntries,
 				settings,
 				undefined,
-				this._createCompactionTokenCounter(
-					{ model: requestModel, apiKey, headers, env },
-					retryPolicy,
-					abortController.signal,
-				),
+				this._createCompactionTokenCounter({ model: requestModel, apiKey, headers, env }, abortController.signal),
 			);
 			if (!preparation) {
 				// Session needs migration: the tail could not be mapped to kept entries.
@@ -4089,7 +4069,6 @@ export class AgentSession {
 				fromExtension,
 				usage,
 				this._autoCompactionAbortController.signal,
-				retryPolicy,
 			);
 
 			// Get the saved compaction entry for the extension event

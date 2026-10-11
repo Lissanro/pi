@@ -126,27 +126,25 @@ describe("compaction tokenization", () => {
 		expect(usage?.tokens).toBeGreaterThan(0);
 	});
 
-	it("retries /tokenize on a transient failure until it succeeds", async () => {
+	it("does not retry /tokenize on a transient failure and falls back to the estimate", async () => {
 		const harness = await createHarness({ withConfiguredAuth: true });
 		harnesses.push(harness);
 		seed(harness);
 		cannedSummary(harness);
 
-		// A transient network failure (not a 404) must be retried per the configured
-		// retry policy rather than silently falling back to the estimate.
+		// /tokenize is a single attempt with no retry: a transient failure must not
+		// hang the compaction. It falls back to the chars/4 estimate instead.
 		let calls = 0;
 		vi.stubGlobal("fetch", (async () => {
 			calls++;
-			if (calls === 1) throw new Error("ECONNREFUSED");
-			return new Response(JSON.stringify({ tokens: new Array(42).fill(0) }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			});
+			throw new Error("ECONNREFUSED");
 		}) as typeof globalThis.fetch);
 
 		await harness.session.compact({ keepRecentMessages: 1 });
 
-		expect(calls).toBeGreaterThanOrEqual(2);
+		// Two /tokenize operations (summary + context), each a single attempt: no
+		// retry on the transient failure.
+		expect(calls).toBe(2);
 		const usage = harness.session.getContextUsage();
 		expect(usage).toBeDefined();
 		expect(usage!.percent).not.toBeNull();
