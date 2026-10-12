@@ -298,6 +298,15 @@ async function runLoop(
 			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
 			newMessages.push(message);
 
+			// returnPrefill applies only to the first response of a prefill
+			// continuation: it echoes the captured prefill back with new tokens.
+			// Later turns (after tool execution) continue from the transcript, so
+			// sending return_prefill again would make the provider re-echo the last
+			// assistant message instead of answering the tool results.
+			if (config.returnPrefill) {
+				config = { ...config, returnPrefill: false };
+			}
+
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
 				lastCompletedTurn = {
 					message,

@@ -1,5 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall, type Message } from "@earendil-works/pi-ai/compat";
+import {
+	type AssistantMessage,
+	fauxAssistantMessage,
+	fauxText,
+	fauxThinking,
+	fauxToolCall,
+	type Message,
+} from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	formatMessageContent,
@@ -391,7 +398,9 @@ describe("AgentSession.applyMessageEdits", () => {
 			{ type: "text", text: "ok" },
 			{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "/foo" } },
 		]);
-		expect((assistantMessage as { stopReason?: string }).stopReason).toBe("toolUse");
+		// The edited message is trailing and its tool call has no result, so it
+		// is marked aborted: /continue can resume it via prefill continuation.
+		expect((assistantMessage as { stopReason?: string }).stopReason).toBe("aborted");
 	});
 
 	it("preserves harness messages when editing earlier messages", async () => {
@@ -521,6 +530,80 @@ describe("AgentSession.applyMessageEdits", () => {
 		expect(() => harness.session.applyMessageEdits('<pi_edit id="0" role="user">x</pi_edit>')).toThrow(
 			"Cannot edit messages while the agent is running",
 		);
+	});
+
+	it("marks a trailing edited assistant message without tool calls aborted", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("original answer")]);
+		await harness.session.prompt("question");
+
+		harness.session.applyMessageEdits(
+			'<pi_edit id="0" role="assistant"><pi_content>edited answer</pi_content></pi_edit>',
+		);
+		const edited = harness.session.messages.filter((m) => m.role === "assistant").at(-1) as AssistantMessage;
+		expect(getMessageText(edited)).toBe("edited answer");
+		// Trailing and interrupted: /continue resumes it via prefill continuation.
+		expect(edited.stopReason).toBe("aborted");
+	});
+
+	it("marks an edited assistant message with an unanswered tool call aborted", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("original answer")]);
+		await harness.session.prompt("question");
+
+		harness.session.applyMessageEdits(
+			'<pi_edit id="0" role="assistant"><pi_content>edited</pi_content><pi_tool_call id="tc1" name="read">{"path":"/a"}</pi_tool_call></pi_edit>',
+		);
+		const edited = harness.session.messages.filter((m) => m.role === "assistant").at(-1) as AssistantMessage;
+		expect(edited.stopReason).toBe("aborted");
+	});
+
+	it("keeps toolUse on an edited assistant message whose last tool call has a result", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("original answer")]);
+		await harness.session.prompt("question");
+
+		// A tool result answering tc1 follows the assistant message: it is complete.
+		harness.sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: "tc1",
+			toolName: "read",
+			content: [{ type: "text", text: "file contents" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		harness.session.agent.state.messages = harness.session.sessionManager.buildSessionContext().messages;
+
+		harness.session.applyMessageEdits(
+			'<pi_edit id="0" role="assistant"><pi_content>edited</pi_content><pi_tool_call id="tc1" name="read">{"path":"/a"}</pi_tool_call></pi_edit>',
+		);
+		const edited = harness.session.messages.filter((m) => m.role === "assistant").at(-1) as AssistantMessage;
+		expect(edited.stopReason).toBe("toolUse");
+	});
+
+	it("keeps stop on a mid-transcript edited assistant message without tool calls", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("second answer")]);
+		await harness.session.prompt("first question");
+		await harness.session.prompt("second question");
+
+		// Edit the first assistant message (from-latest index 2 over editable
+		// user+assistant messages: user1=3, asst1=2, user2=1, asst2=0). More
+		// messages follow it, so it stays a completed message.
+		harness.session.applyMessageEdits(
+			'<pi_edit id="2" role="assistant"><pi_content>edited first</pi_content></pi_edit>',
+		);
+		const first = harness.session.messages.filter((m) => m.role === "assistant")[0] as AssistantMessage;
+		expect(getMessageText(first)).toBe("edited first");
+		expect(first.stopReason).toBe("stop");
 	});
 });
 

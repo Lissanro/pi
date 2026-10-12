@@ -51,6 +51,7 @@ import type {
 	ProviderHeaders,
 	SystemMessage,
 	TextContent,
+	ToolCall,
 	ToolResultMessage,
 	Usage,
 } from "@earendil-works/pi-ai/compat";
@@ -126,7 +127,13 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { editBlockToMessage, formatMessageContent, formatMessageForEdit, parseMessageEdits } from "./message-edit.ts";
+import {
+	editBlockToMessage,
+	formatMessageContent,
+	formatMessageForEdit,
+	type ParsedEditBlock,
+	parseMessageEdits,
+} from "./message-edit.ts";
 import { type BashExecutionMessage, bashExecutionToText, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -869,8 +876,12 @@ export class AgentSession {
 		// discarded message is still a real transcript message and must not leak
 		// back as a prefill.
 		const lastOriginal = originalMessages?.[originalMessages.length - 1];
+		// Once the echo is confirmed, the continued message fully represents the
+		// prefill and is persisted in the transcript. Appending the pending prefill
+		// again would re-send the old partial on every later turn of the same run
+		// (the projection does not contain it, it was removed on capture).
 		const prefill =
-			this._pendingPrefill ??
+			(this._pendingPrefill !== undefined && !this._prefillEchoConfirmed ? this._pendingPrefill : undefined) ??
 			(lastOriginal?.role === "assistant" &&
 			messages[messages.length - 1] !== lastOriginal &&
 			!this._isRealTranscriptMessage(lastOriginal)
@@ -1898,6 +1909,20 @@ export class AgentSession {
 		const replacements: Array<{ entryId: string; message: Message }> = [];
 		const newMessages: Message[] = [];
 
+		// Visible-context position of each entry's projected message, used to tell
+		// whether an edited assistant message is complete (its last tool call has
+		// a result, or more messages follow it) or interrupted (nothing follows -
+		// it can be continued via /continue prefill).
+		const projection = this.sessionManager.buildSessionProjection();
+		const flatIndexByEntryId = new Map<string, number>();
+		let flatIndex = 0;
+		for (const projectedEntry of projection.entries) {
+			for (let i = 0; i < projectedEntry.messages.length; i++) {
+				flatIndexByEntryId.set(projectedEntry.sourceEntry.id, flatIndex);
+				flatIndex++;
+			}
+		}
+
 		for (const block of blocks) {
 			if (block.id >= 0) {
 				const target = editableEntries[editableEntries.length - 1 - block.id];
@@ -1906,10 +1931,22 @@ export class AgentSession {
 				}
 				const baseAssistant =
 					target.message.role === "assistant" ? (target.message as AssistantMessage) : undefined;
-				replacements.push({ entryId: target.entryId, message: editBlockToMessage(block, baseAssistant) });
+				const replacement = editBlockToMessage(block, baseAssistant);
+				if (replacement.role === "assistant") {
+					const targetIndex = flatIndexByEntryId.get(target.entryId);
+					const after = targetIndex === undefined ? [] : projection.messages.slice(targetIndex + 1);
+					replacement.stopReason = this._editedAssistantStopReason(block, after);
+				}
+				replacements.push({ entryId: target.entryId, message: replacement });
 			} else {
 				const baseAssistant = this._createBaseAssistantMessage();
-				newMessages.push(editBlockToMessage(block, baseAssistant));
+				const message = editBlockToMessage(block, baseAssistant);
+				// New messages append at the end of the transcript: nothing follows
+				// them, so an assistant message is always continuable.
+				if (message.role === "assistant") {
+					message.stopReason = this._editedAssistantStopReason(block, []);
+				}
+				newMessages.push(message);
 			}
 		}
 
@@ -1925,6 +1962,26 @@ export class AgentSession {
 		this.agent.state.messages = sessionContext.messages;
 
 		return { edited: replacements.length, added: newMessages.length };
+	}
+
+	/**
+	 * Stop reason for an assistant message produced by /edit. An edited message
+	 * is complete only when its last tool call already has a tool result later
+	 * in the visible context (toolUse), or when more messages follow it (stop).
+	 * A trailing edited message - mid-thought, mid-text, or with an unanswered
+	 * tool call - is marked aborted so /continue picks it up as a prefill
+	 * continuation candidate and resumes it from the edit point.
+	 */
+	private _editedAssistantStopReason(block: ParsedEditBlock, after: AgentMessage[]): AssistantMessage["stopReason"] {
+		const toolCalls = block.content.filter((c): c is ToolCall => c.type === "toolCall");
+		if (toolCalls.length > 0) {
+			const lastToolCallId = toolCalls[toolCalls.length - 1].id;
+			const hasResult = after.some(
+				(message) => message.role === "toolResult" && (message as ToolResultMessage).toolCallId === lastToolCallId,
+			);
+			return hasResult ? "toolUse" : "aborted";
+		}
+		return after.length === 0 ? "aborted" : "stop";
 	}
 
 	private getEditableMessageEntries(): Array<{ entryId: string; message: AgentMessage }> {

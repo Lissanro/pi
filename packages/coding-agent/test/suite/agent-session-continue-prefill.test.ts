@@ -4,6 +4,8 @@ import {
 	type AssistantMessageEvent,
 	EventStream,
 	fauxAssistantMessage,
+	fauxText,
+	fauxToolCall,
 	type Message,
 } from "@earendil-works/pi-ai/compat";
 
@@ -215,5 +217,101 @@ describe("AgentSession continue with prefill", () => {
 
 		// The original message is restored; the mismatched echo is not kept.
 		expect(getMessageText(harness.session.messages[2]!)).toBe("Partial response");
+	});
+
+	it("does not re-send the prefill on later turns of a multi-turn continuation", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		// An interrupted message: text plus one tool call, aborted mid-run.
+		harness.setResponses([
+			fauxAssistantMessage([fauxText("partial "), fauxToolCall("doesnotexist", {}, { id: "tc1" })], {
+				stopReason: "aborted",
+			}),
+		]);
+		await harness.session.prompt("Hello");
+
+		setOpenaiCompletions(harness);
+		const turnCaptures: Array<{ returnPrefill: boolean | undefined; lastRole: string }> = [];
+		harness.session.agent.streamFunction = ((_model, context, options) => {
+			turnCaptures.push({
+				returnPrefill: options?.returnPrefill,
+				lastRole: context.messages[context.messages.length - 1]?.role ?? "none",
+			});
+			const stream = new EventStream<AssistantMessageEvent, AssistantMessage>(
+				(event) => event.type === "done" || event.type === "error",
+				(event) => {
+					if (event.type === "done") return event.message;
+					if (event.type === "error") return event.error;
+					throw new Error("Unexpected event type");
+				},
+			);
+			queueMicrotask(() => {
+				if (turnCaptures.length === 1) {
+					// Turn 1 of the continuation: echo the prefill and finish the tool call.
+					stream.push({
+						type: "done",
+						reason: "toolUse",
+						message: fauxAssistantMessage(
+							[fauxText("partial "), fauxToolCall("doesnotexist", {}, { id: "tc1" })],
+							{ stopReason: "toolUse" },
+						),
+					});
+				} else {
+					stream.push({ type: "done", reason: "stop", message: fauxAssistantMessage("answer") });
+				}
+			});
+			return stream;
+		}) as StreamFn;
+
+		await harness.session.continue();
+
+		expect(turnCaptures.length).toBe(2);
+		// Turn 1 carries the prefill continuation request.
+		expect(turnCaptures[0].returnPrefill).toBe(true);
+		expect(turnCaptures[0].lastRole).toBe("assistant");
+		// Turn 2 must not carry returnPrefill, and the request must not end with
+		// the stale prefill assistant message re-appended after the tool result.
+		// With both bugs the provider kept re-echoing the old partial on every
+		// turn of the continued run instead of answering the tool result.
+		expect(turnCaptures[1].returnPrefill).toBeFalsy();
+		expect(turnCaptures[1].lastRole).toBe("toolResult");
+		expect(getMessageText(harness.session.messages.at(-1)!)).toBe("answer");
+	});
+
+	it("continues a trailing edited assistant message via prefill", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("original answer")]);
+		await harness.session.prompt("question");
+
+		// A trailing edited message is marked aborted, so /continue resumes it
+		// from the edit point via prefill continuation instead of regenerating.
+		harness.session.applyMessageEdits(
+			'<pi_edit id="0" role="assistant"><pi_content>edited answer</pi_content></pi_edit>',
+		);
+
+		setOpenaiCompletions(harness);
+		let capturedReturnPrefill: boolean | undefined;
+		harness.session.agent.streamFunction = ((_model, _context, options) => {
+			capturedReturnPrefill = options?.returnPrefill;
+			const stream = new EventStream<AssistantMessageEvent, AssistantMessage>(
+				(event) => event.type === "done" || event.type === "error",
+				(event) => {
+					if (event.type === "done") return event.message;
+					if (event.type === "error") return event.error;
+					throw new Error("Unexpected event type");
+				},
+			);
+			queueMicrotask(() => {
+				stream.push({ type: "done", reason: "stop", message: fauxAssistantMessage("edited answer continued") });
+			});
+			return stream;
+		}) as StreamFn;
+
+		await harness.session.continue();
+		expect(capturedReturnPrefill).toBe(true);
+		expect(getMessageText(harness.session.messages.at(-1)!)).toBe("edited answer continued");
 	});
 });
