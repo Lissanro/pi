@@ -71,7 +71,12 @@ import {
 	getDocsPath,
 	VERSION,
 } from "../../config.ts";
-import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	type DeletableUnit,
+	parseSkillBlock,
+} from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
 import {
@@ -6817,13 +6822,30 @@ export class InteractiveMode {
 	}
 
 	/**
+	 * Human-readable summary of consumed/restored deletable units for status
+	 * messages: a single unit names its kind (message, tool call, compaction
+	 * boundary); multiple units are counted as items.
+	 */
+	private deletedUnitsSummary(units: DeletableUnit[]): string {
+		if (units.length === 1) {
+			const unit = units[0];
+			if (unit.toolCallId !== undefined) return "tool call";
+			if (unit.entry.type === "compaction") return "compaction boundary";
+			return "1 message";
+		}
+		return `${units.length} items`;
+	}
+
+	/**
 	 * Soft-delete messages from the session. Numeric argument deletes the last N
-	 * deletable entries of the visible context; a substring argument deletes the
-	 * single editable message whose text contains it, failing when more than one
-	 * message matches. Deleted entries stay in the session file but are hidden
-	 * from the chat, from model context, and from edit indices; /restore brings
-	 * them back. Harness messages (aborts/errors with no real content) are
-	 * skipped when counting and do not participate in substring matching.
+	 * deletable units of the visible context (each tool result, each tool call,
+	 * then the message itself once no tool calls remain, and each compaction
+	 * boundary); a substring argument deletes the single editable message whose
+	 * text contains it, failing when more than one message matches. Deleted
+	 * units stay in the session file but are hidden from the chat, from model
+	 * context, and from edit indices; /restore brings them back. Harness
+	 * messages (aborts/errors with no real content) are skipped when counting
+	 * and do not participate in substring matching.
 	 */
 	private async handleDeleteCommand(arg: string): Promise<void> {
 		if (this.session.isStreaming) {
@@ -6857,20 +6879,20 @@ export class InteractiveMode {
 			this.showStatus("Usage: /delete [count|substring]");
 			return;
 		}
-		const removed = this.session.softDeleteLastMessages(count);
-		if (removed === 0) {
+		const deleted = this.session.softDeleteLastMessages(count);
+		if (deleted.length === 0) {
 			this.showStatus("No messages to delete");
 			return;
 		}
 		this.chatContainer.clear();
 		this.renderInitialMessages();
-		this.showStatus(`Deleted ${removed} message${removed === 1 ? "" : "s"} (/restore to undo)`);
+		this.showStatus(`Deleted ${this.deletedUnitsSummary(deleted)} (/restore to undo)`);
 		void this.flushCompactionQueue({ willRetry: false });
 	}
 
 	/**
-	 * Restore soft-deleted entries. A numeric argument restores the latest N
-	 * deleted entries (latest deletion first); the default is 1.
+	 * Restore soft-deleted units. A numeric argument restores the latest N
+	 * deleted units (latest deletion first); the default is 1.
 	 */
 	private async handleRestoreCommand(arg: string): Promise<void> {
 		if (this.session.isStreaming) {
@@ -6884,24 +6906,22 @@ export class InteractiveMode {
 			return;
 		}
 		const restored = this.session.restoreDeletedMessages(count);
-		if (restored === 0) {
+		if (restored.length === 0) {
 			this.showStatus("No deleted messages to restore");
 			return;
 		}
 		this.chatContainer.clear();
 		this.renderInitialMessages();
-		this.showStatus(`Restored ${restored} message${restored === 1 ? "" : "s"}`);
+		this.showStatus(`Restored ${this.deletedUnitsSummary(restored)}`);
 		void this.flushCompactionQueue({ willRetry: false });
 	}
 
 	/**
-	 * Permanently remove messages from the session file (the pre-soft-delete
-	 * /delete behavior). Numeric argument removes the last N messages; a
-	 * substring argument removes the single editable message whose text
-	 * contains it, failing when more than one message matches. Harness messages
-	 * (aborts/errors with no real content) are skipped when counting and do not
-	 * participate in substring matching. There is no undo; /delete keeps entries
-	 * recoverable instead.
+	 * Permanently remove units from the session file (no undo; /delete keeps
+	 * them recoverable instead). Uses the same granularity as /delete: numeric
+	 * argument removes the last N deletable units; a substring argument removes
+	 * the single editable message whose text contains it, failing when more
+	 * than one message matches.
 	 */
 	private async handleShredCommand(arg: string): Promise<void> {
 		if (this.session.isStreaming) {
@@ -6935,14 +6955,14 @@ export class InteractiveMode {
 			this.showStatus("Usage: /shred [count|substring]");
 			return;
 		}
-		const removed = this.session.deleteLastMessages(count);
-		if (removed === 0) {
+		const shredded = this.session.shredLastMessages(count);
+		if (shredded.length === 0) {
 			this.showStatus("No messages to shred");
 			return;
 		}
 		this.chatContainer.clear();
 		this.renderInitialMessages();
-		this.showStatus(`Shredded ${removed} message${removed === 1 ? "" : "s"}`);
+		this.showStatus(`Shredded ${this.deletedUnitsSummary(shredded)}`);
 		void this.flushCompactionQueue({ willRetry: false });
 	}
 

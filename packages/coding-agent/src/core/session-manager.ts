@@ -73,6 +73,12 @@ export interface SessionEntryBase {
 export interface SessionMessageEntry extends SessionEntryBase {
 	type: "message";
 	message: AgentMessage;
+	/**
+	 * Tool call blocks soft-deleted from this assistant message: toolCallId →
+	 * deletion timestamp. The message itself stays visible with the remaining
+	 * content; /restore can bring individual tool calls back.
+	 */
+	deletedToolCalls?: Record<string, string>;
 }
 
 export interface ThinkingLevelChangeEntry extends SessionEntryBase {
@@ -559,6 +565,23 @@ export interface BuildContextOptions {
 }
 
 /**
+ * Strip soft-deleted tool call blocks from an assistant message entry.
+ * Returns the entry unchanged when nothing is deleted from it; otherwise a
+ * copy whose message content excludes the deleted blocks (the stored entry
+ * keeps them for /restore).
+ */
+function filterDeletedToolCallBlocks(entry: SessionEntry): SessionEntry {
+	if (entry.type !== "message") return entry;
+	const deleted = entry.deletedToolCalls;
+	if (!deleted) return entry;
+	const message = entry.message;
+	if (message.role !== "assistant") return entry;
+	if (!message.content.some((block) => block.type === "toolCall" && deleted[block.id] !== undefined)) return entry;
+	const content = message.content.filter((block) => block.type !== "toolCall" || deleted[block.id] === undefined);
+	return { ...entry, message: { ...message, content } };
+}
+
+/**
  * Build the active, compaction-aware session entry list.
  *
  * This follows the current leaf path. When the path contains compaction entries,
@@ -585,7 +608,7 @@ export function buildContextEntries(
 		}
 	}
 	if (compactions.length === 0) {
-		return visiblePath;
+		return visiblePath.map(filterDeletedToolCallBlocks);
 	}
 
 	const latestCompaction = compactions[compactions.length - 1];
@@ -611,7 +634,7 @@ export function buildContextEntries(
 		if (entry.type === "message" && entry.message.role === "system") continue;
 		contextEntries.push(entry);
 	}
-	return contextEntries;
+	return contextEntries.map(filterDeletedToolCallBlocks);
 }
 
 /**
@@ -1864,21 +1887,31 @@ export class SessionManager {
 	}
 
 	/**
-	 * Soft-delete entries: mark them deleted with an increasing timestamp (in
-	 * the order given) so a restore brings back earlier-deleted entries first
-	 * across separate deletes, and context-earlier entries first within one
-	 * batch. Deleted entries stay in the session file but are hidden from the
+	 * Soft-delete units: mark them deleted with an increasing timestamp (in
+	 * the order given) so a restore brings back earlier-deleted units first
+	 * across separate deletes, and context-earlier units first within one
+	 * batch. Deleted units stay in the session file but are hidden from the
 	 * chat, from model context (buildContextEntries/buildSessionContext), and
-	 * from edit indices. The session file is rewritten.
+	 * from edit indices; tool-call-level deletions hide only that block from
+	 * the message. The session file is rewritten. Returns the number marked.
 	 */
-	softDeleteEntries(entries: SessionEntry[]): number {
+	softDeleteUnits(units: Array<{ entryId: string; toolCallId?: string }>): number {
 		const base = Date.now();
 		let marked = 0;
-		for (const entry of entries) {
-			const target = this.byId.get(entry.id);
+		for (const unit of units) {
+			const target = this.byId.get(unit.entryId);
 			if (!target || target.deletedAt !== undefined) continue;
-			target.deletedAt = new Date(base + marked).toISOString();
-			marked++;
+			if (unit.toolCallId !== undefined) {
+				if (target.type !== "message" || target.message.role !== "assistant") continue;
+				(target as SessionMessageEntry).deletedToolCalls ??= {};
+				const deletedToolCalls = (target as SessionMessageEntry).deletedToolCalls!;
+				if (deletedToolCalls[unit.toolCallId] !== undefined) continue;
+				deletedToolCalls[unit.toolCallId] = new Date(base + marked).toISOString();
+				marked++;
+			} else {
+				target.deletedAt = new Date(base + marked).toISOString();
+				marked++;
+			}
 		}
 		if (marked > 0) {
 			this._rewriteFile();
@@ -1887,33 +1920,53 @@ export class SessionManager {
 	}
 
 	/**
-	 * Currently soft-deleted entries, ordered by deletion time (latest first).
+	 * Currently soft-deleted units, ordered by deletion time (latest first).
+	 * Tool-call deletions of an entry that is itself deleted are folded into
+	 * the entry-level unit (restoring the entry restores the whole message).
 	 */
-	getDeletedEntries(): SessionEntry[] {
-		const deleted: SessionEntry[] = [];
+	getDeletedUnits(): Array<{ entryId: string; toolCallId?: string; deletedAt: string }> {
+		const units: Array<{ entryId: string; toolCallId?: string; deletedAt: string }> = [];
 		for (const entry of this.byId.values()) {
 			if (entry.deletedAt !== undefined) {
-				deleted.push(entry);
+				units.push({ entryId: entry.id, deletedAt: entry.deletedAt });
+				continue;
+			}
+			if (entry.type !== "message") continue;
+			const deletedToolCalls = entry.deletedToolCalls;
+			if (!deletedToolCalls) continue;
+			for (const [toolCallId, deletedAt] of Object.entries(deletedToolCalls)) {
+				units.push({ entryId: entry.id, toolCallId, deletedAt });
 			}
 		}
-		deleted.sort((a, b) => Date.parse(b.deletedAt!) - Date.parse(a.deletedAt!));
-		return deleted;
+		units.sort((a, b) => Date.parse(b.deletedAt) - Date.parse(a.deletedAt));
+		return units;
 	}
 
 	/**
-	 * Restore the latest `count` soft-deleted entries (latest deletion first).
-	 * The session file is rewritten. Returns the number of entries restored.
+	 * Restore the latest `count` soft-deleted units (latest deletion first).
+	 * The session file is rewritten. Returns the restored units.
 	 */
-	restoreDeletedEntries(count: number): number {
-		if (count < 1) return 0;
-		const deleted = this.getDeletedEntries();
-		let restored = 0;
-		for (const entry of deleted) {
-			if (restored >= count) break;
-			delete entry.deletedAt;
-			restored++;
+	restoreDeletedUnits(count: number): Array<{ entryId: string; toolCallId?: string }> {
+		if (count < 1) return [];
+		const deleted = this.getDeletedUnits();
+		const restored: Array<{ entryId: string; toolCallId?: string }> = [];
+		for (const unit of deleted) {
+			if (restored.length >= count) break;
+			const entry = this.byId.get(unit.entryId);
+			if (!entry) continue;
+			if (unit.toolCallId !== undefined) {
+				if (entry.type !== "message" || !entry.deletedToolCalls) continue;
+				delete entry.deletedToolCalls[unit.toolCallId];
+				if (Object.keys(entry.deletedToolCalls).length === 0) {
+					delete entry.deletedToolCalls;
+				}
+				restored.push({ entryId: unit.entryId, toolCallId: unit.toolCallId });
+			} else {
+				delete entry.deletedAt;
+				restored.push({ entryId: unit.entryId });
+			}
 		}
-		if (restored > 0) {
+		if (restored.length > 0) {
 			this._rewriteFile();
 		}
 		return restored;
@@ -2004,35 +2057,89 @@ export class SessionManager {
 
 	/**
 	 * Remove a single message entry from the active leaf path while preserving
-	 * all surrounding entries (later messages, model changes, compaction,
-	 * labels, etc.). The session is branched at the parent of the target entry,
-	 * the tail is cloned with new ids skipping the target, and references to
-	 * cloned entries (compaction firstKeptEntryId, branch summary fromId, label
-	 * targetId) are updated to point to the new ids. References to the removed
-	 * entry itself are moved to the entry that followed it (or dropped, for
-	 * labels). The session file is rewritten. Returns false if the entry is not
-	 * a message on the active leaf path.
+	 * all surrounding entries. Thin wrapper over removeEntries(); returns false
+	 * if the entry is not a message on the active leaf path.
 	 */
 	removeMessage(entryId: string): boolean {
-		const path = this.getBranch();
-		const targetIdx = path.findIndex((entry) => entry.id === entryId);
-		if (targetIdx < 0) return false;
-		const target = path[targetIdx];
-		if (target.type !== "message") return false;
+		const target = this.getBranch().find((entry) => entry.id === entryId);
+		if (!target || target.type !== "message") return false;
+		return this.removeEntries([entryId]) > 0;
+	}
 
-		const branchPoint = target.parentId;
+	/**
+	 * Remove specific entries from the active leaf path while preserving all
+	 * surrounding entries (later messages, model changes, compaction, labels,
+	 * etc.). The session is branched at the parent of the earliest affected
+	 * entry, the tail is cloned with new ids skipping the removed entries, and
+	 * references to cloned entries (compaction firstKeptEntryId, branch summary
+	 * fromId, label targetId) are updated to point to the new ids. References
+	 * to a removed entry are moved to the first entry that followed it and was
+	 * not removed (or dropped, for labels).
+	 *
+	 * Removing a compaction entry un-compacts the range it summarized: with the
+	 * entry gone, buildContextEntries no longer treats the range as summarized.
+	 *
+	 * @param entryIds Entries to remove. Entries not on the active leaf path
+	 * are ignored.
+	 * @param toolCallRemovals Tool call blocks to remove from assistant message
+	 * entries that stay on the path (entry id → tool call ids). Used to shred
+	 * individual tool calls while keeping the rest of the message.
+	 * @returns The number of removed units (entries plus removed tool calls).
+	 */
+	removeEntries(entryIds: string[], toolCallRemovals?: Map<string, Set<string>>): number {
+		const path = this.getBranch();
+		const removedSet = new Set<string>();
+		for (const id of entryIds) {
+			if (path.some((entry) => entry.id === id)) {
+				removedSet.add(id);
+			}
+		}
+		// Tool call removals for entries that are themselves removed are moot.
+		const filteredToolCallRemovals = new Map<string, Set<string>>();
+		for (const [entryId, toolCallIds] of toolCallRemovals ?? []) {
+			if (removedSet.has(entryId)) continue;
+			if (path.some((entry) => entry.id === entryId)) {
+				filteredToolCallRemovals.set(entryId, toolCallIds);
+			}
+		}
+		const affectedSet = new Set<string>([...removedSet, ...filteredToolCallRemovals.keys()]);
+		if (affectedSet.size === 0) return 0;
+
+		let firstAffectedIdx = -1;
+		for (let i = 0; i < path.length; i++) {
+			if (affectedSet.has(path[i].id)) {
+				firstAffectedIdx = i;
+				break;
+			}
+		}
+
+		const branchPoint = path[firstAffectedIdx].parentId;
 		if (branchPoint) {
 			this.branch(branchPoint);
 		} else {
 			this.resetLeaf();
 		}
 
-		// Clone the tail, skipping the target entry.
+		// For each removed entry, the first entry after it that is not also
+		// removed: dangling references to the removed entry move to its clone.
+		const followerOldIdByRemovedId = new Map<string, string>();
+		for (let i = 0; i < path.length; i++) {
+			if (!removedSet.has(path[i].id)) continue;
+			for (let j = i + 1; j < path.length; j++) {
+				if (!removedSet.has(path[j].id)) {
+					followerOldIdByRemovedId.set(path[i].id, path[j].id);
+					break;
+				}
+			}
+		}
+
+		// Clone the tail, skipping removed entries and filtering removed tool
+		// call blocks out of assistant messages that stay.
 		const idMap = new Map<string, string>();
-		let followerId: string | undefined;
-		for (let i = targetIdx; i < path.length; i++) {
+		let removedToolCallCount = 0;
+		for (let i = firstAffectedIdx; i < path.length; i++) {
 			const entry = path[i];
-			if (entry.id === entryId) continue;
+			if (removedSet.has(entry.id)) continue;
 			const newId = generateId(this.byId);
 			idMap.set(entry.id, newId);
 
@@ -2041,27 +2148,48 @@ export class SessionManager {
 				const oldFromId = (entry as BranchSummaryEntry).fromId;
 				(newEntry as BranchSummaryEntry).fromId = idMap.get(oldFromId) ?? oldFromId;
 			}
+			const toolCallIds = filteredToolCallRemovals.get(entry.id);
+			if (toolCallIds && newEntry.type === "message" && newEntry.message.role === "assistant") {
+				const message = newEntry.message;
+				const content = message.content.filter((block) => block.type !== "toolCall" || !toolCallIds.has(block.id));
+				removedToolCallCount += message.content.length - content.length;
+				newEntry.message = { ...message, content };
+				// Soft-deletion marks for shredded blocks no longer mean anything.
+				if (newEntry.deletedToolCalls) {
+					const remaining = { ...newEntry.deletedToolCalls };
+					for (const toolCallId of toolCallIds) {
+						delete remaining[toolCallId];
+					}
+					if (Object.keys(remaining).length > 0) {
+						newEntry.deletedToolCalls = remaining;
+					} else {
+						delete newEntry.deletedToolCalls;
+					}
+				}
+			}
 
 			this.fileEntries.push(newEntry);
 			this.byId.set(newId, newEntry);
 			this.leafId = newId;
-			followerId ??= newId;
 		}
 
 		// Update references in all entries that point into the cloned tail.
-		// References to the removed entry move to its follower so they stay valid.
 		for (const entry of this.fileEntries) {
 			if (entry.type === "compaction" && entry.firstKeptEntryId) {
 				if (idMap.has(entry.firstKeptEntryId)) {
 					entry.firstKeptEntryId = idMap.get(entry.firstKeptEntryId)!;
-				} else if (entry.firstKeptEntryId === entryId && followerId) {
-					entry.firstKeptEntryId = followerId;
+				} else if (removedSet.has(entry.firstKeptEntryId)) {
+					const follower = followerOldIdByRemovedId.get(entry.firstKeptEntryId);
+					const newFollower = follower ? idMap.get(follower) : undefined;
+					if (newFollower) entry.firstKeptEntryId = newFollower;
 				}
 			} else if (entry.type === "branch_summary") {
 				if (idMap.has(entry.fromId)) {
 					entry.fromId = idMap.get(entry.fromId)!;
-				} else if (entry.fromId === entryId && followerId) {
-					entry.fromId = followerId;
+				} else if (removedSet.has(entry.fromId)) {
+					const follower = followerOldIdByRemovedId.get(entry.fromId);
+					const newFollower = follower ? idMap.get(follower) : undefined;
+					if (newFollower) entry.fromId = newFollower;
 				}
 			} else if (entry.type === "label" && idMap.has(entry.targetId)) {
 				entry.targetId = idMap.get(entry.targetId)!;
@@ -2084,7 +2212,7 @@ export class SessionManager {
 		}
 
 		this._rewriteFile();
-		return true;
+		return removedSet.size + removedToolCallCount;
 	}
 
 	/**

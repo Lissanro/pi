@@ -375,6 +375,18 @@ export interface ModelCycleResult {
 }
 
 /** Session statistics for /session command */
+/**
+ * One deletable unit of the active visible context: a whole session entry
+ * (user message, non-harness assistant message, tool result, bash execution,
+ * or compaction boundary), or one tool call block inside an assistant message
+ * entry (its message stays, minus that block).
+ */
+export interface DeletableUnit {
+	entry: SessionEntry;
+	/** Restricts the deletion to one tool call block within the entry. */
+	toolCallId?: string;
+}
+
 export interface SessionStats {
 	sessionFile: string | undefined;
 	sessionId: string;
@@ -1813,49 +1825,71 @@ export class AgentSession {
 	}
 
 	/**
-	 * Deletable entries of the active visible context in chronological order:
-	 * user messages, non-harness assistant messages, tool results, and bash
-	 * executions. Soft-deleted entries are already excluded from the context,
-	 * so every listed entry is currently visible.
+	 * Deletable units of the active visible context in chronological order. A
+	 * unit is a whole entry (user message, non-harness assistant message, tool
+	 * result, bash execution, or compaction boundary), or one tool call block
+	 * inside an assistant message entry (its message stays, minus that block).
+	 * For an assistant message, the message unit comes first, followed by one
+	 * unit per (remaining) tool call block, so consuming from the end deletes
+	 * the latest tool call before the message itself; the message unit is only
+	 * reached once no tool calls remain. Soft-deleted units are already
+	 * excluded from the context, so every listed unit is currently visible.
 	 */
-	getDeletableEntries(): SessionEntry[] {
-		const entries = this.sessionManager.buildContextEntries();
-		const deletable: SessionEntry[] = [];
-		for (const entry of entries) {
+	getDeletableUnits(): DeletableUnit[] {
+		const units: DeletableUnit[] = [];
+		for (const entry of this.sessionManager.buildContextEntries()) {
+			if (entry.type === "compaction") {
+				units.push({ entry });
+				continue;
+			}
 			if (entry.type !== "message") continue;
 			const message = entry.message;
-			if (
-				message.role !== "user" &&
-				message.role !== "assistant" &&
-				message.role !== "toolResult" &&
-				message.role !== "bashExecution"
-			)
+			if (message.role === "assistant") {
+				if (isHarnessMessage(message)) continue;
+				units.push({ entry });
+				for (const block of message.content) {
+					if (block.type === "toolCall") {
+						units.push({ entry, toolCallId: block.id });
+					}
+				}
 				continue;
-			if (message.role === "assistant" && isHarnessMessage(message)) continue;
-			deletable.push(entry);
+			}
+			if (message.role === "user" || message.role === "toolResult" || message.role === "bashExecution") {
+				units.push({ entry });
+			}
 		}
-		return deletable;
+		return units;
+	}
+
+	private _consumeDeletableUnits(count: number): DeletableUnit[] {
+		if (count < 1) return [];
+		const units = this.getDeletableUnits();
+		// Consumption order is latest-in-context first. Stamping deletions in
+		// this order makes a later restore bring back context-earlier units
+		// first, so every intermediate context state stays coherent.
+		return units.slice(Math.max(0, units.length - count)).reverse();
+	}
+
+	private _rebuildMessagesFromSession(): void {
+		const sessionContext = this.sessionManager.buildSessionContext();
+		this.agent.state.messages = sessionContext.messages;
 	}
 
 	/**
-	 * Soft-delete the last `count` deletable entries of the visible context.
-	 * Deleted entries stay in the session file but are hidden from the chat,
+	 * Soft-delete the last `count` deletable units of the visible context.
+	 * Deleted units stay in the session file but are hidden from the chat,
 	 * from model context, and from edit indices; /restore brings them back.
-	 * Rebuilds the agent's message state. Returns the number of entries marked.
+	 * Returns the consumed units (empty when nothing was deletable).
 	 */
-	softDeleteLastMessages(count: number): number {
-		if (count < 1) return 0;
-		const deletable = this.getDeletableEntries();
-		// Consumption order is latest-in-context first. Stamping deletions in
-		// this order makes a later restore bring back context-earlier entries
-		// first, so every intermediate context state stays coherent.
-		const targets = deletable.slice(Math.max(0, deletable.length - count)).reverse();
-		const marked = this.sessionManager.softDeleteEntries(targets);
+	softDeleteLastMessages(count: number): DeletableUnit[] {
+		const targets = this._consumeDeletableUnits(count);
+		const marked = this.sessionManager.softDeleteUnits(
+			targets.map((unit) => ({ entryId: unit.entry.id, toolCallId: unit.toolCallId })),
+		);
 		if (marked > 0) {
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
+			this._rebuildMessagesFromSession();
 		}
-		return marked;
+		return targets.slice(0, marked);
 	}
 
 	/**
@@ -1866,25 +1900,58 @@ export class AgentSession {
 		const entry = this.sessionManager.getEntry(entryId);
 		if (!entry || entry.deletedAt !== undefined) return false;
 		if (!this.sessionManager.getBranch().some((branchEntry) => branchEntry.id === entryId)) return false;
-		const marked = this.sessionManager.softDeleteEntries([entry]);
+		const marked = this.sessionManager.softDeleteUnits([{ entryId }]);
 		if (marked > 0) {
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
+			this._rebuildMessagesFromSession();
 		}
 		return marked > 0;
 	}
 
 	/**
-	 * Restore the latest `count` soft-deleted entries (latest deletion first).
-	 * Rebuilds the agent's message state. Returns the number restored.
+	 * Permanently remove the last `count` deletable units of the visible
+	 * context (no undo; /delete keeps units recoverable instead). Whole-entry
+	 * units are removed from the session file; tool-call units are removed
+	 * from their message content. Returns the consumed units.
 	 */
-	restoreDeletedMessages(count: number): number {
-		const restored = this.sessionManager.restoreDeletedEntries(count);
-		if (restored > 0) {
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
+	shredLastMessages(count: number): DeletableUnit[] {
+		const targets = this._consumeDeletableUnits(count);
+		if (targets.length === 0) return [];
+		const entryIds = targets.filter((unit) => unit.toolCallId === undefined).map((unit) => unit.entry.id);
+		const toolCallRemovals = new Map<string, Set<string>>();
+		for (const unit of targets) {
+			if (unit.toolCallId === undefined) continue;
+			let set = toolCallRemovals.get(unit.entry.id);
+			if (!set) {
+				set = new Set();
+				toolCallRemovals.set(unit.entry.id, set);
+			}
+			set.add(unit.toolCallId);
 		}
-		return restored;
+		const removed = this.sessionManager.removeEntries(entryIds, toolCallRemovals);
+		if (removed > 0) {
+			this._rebuildMessagesFromSession();
+		}
+		return targets;
+	}
+
+	/**
+	 * Restore the latest `count` soft-deleted units (latest deletion first).
+	 * Returns the restored units.
+	 */
+	restoreDeletedMessages(count: number): DeletableUnit[] {
+		const restored = this.sessionManager.restoreDeletedUnits(count);
+		if (restored.length > 0) {
+			this._rebuildMessagesFromSession();
+		}
+		const units: DeletableUnit[] = [];
+		for (const unit of restored) {
+			const entry = this.sessionManager.getEntry(unit.entryId);
+			// The entry can be gone if it was shredded after the deletion.
+			if (entry) {
+				units.push({ entry, toolCallId: unit.toolCallId });
+			}
+		}
+		return units;
 	}
 
 	/**
