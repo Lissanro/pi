@@ -78,6 +78,11 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		argumentHint: "[count]",
 	},
 	{
+		name: "swipe",
+		description: "Regenerate the latest response or navigate versions (/swipe N forward, /swipe -N back)",
+		argumentHint: "[count]",
+	},
+	{
 		name: "shred",
 		description:
 			"Permanently remove the last message, no undo (or N messages: /shred N, or unique match: /shred substring)",

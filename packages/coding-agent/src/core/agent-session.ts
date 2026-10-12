@@ -148,6 +148,7 @@ import {
 	getLatestCompactionEntry,
 	type SessionEntry,
 	SessionManager,
+	type SessionMessageEntry,
 	type SessionProjection,
 } from "./session-manager.ts";
 import { type CacheWarmingMode, DEFAULT_TOOL_NAMES, type SettingsManager } from "./settings-manager.ts";
@@ -385,6 +386,18 @@ export interface DeletableUnit {
 	entry: SessionEntry;
 	/** Restricts the deletion to one tool call block within the entry. */
 	toolCallId?: string;
+}
+
+/**
+ * The alternative versions of the latest response for /swipe.
+ */
+export interface SwipeGroup {
+	/** Entry right before the latest response; each version is a direct child of it. */
+	anchorEntryId: string;
+	/** First assistant message entry of each version, oldest first. */
+	versions: SessionMessageEntry[];
+	/** 0-based index of the current version. */
+	currentIndex: number;
 }
 
 export interface SessionStats {
@@ -1932,6 +1945,101 @@ export class AgentSession {
 			this._rebuildMessagesFromSession();
 		}
 		return targets;
+	}
+
+	/**
+	 * Alternative versions of the latest response. Each version roots at an
+	 * assistant message entry that is a direct child of the anchor entry (the
+	 * entry right before the latest response); a version's subtree holds the
+	 * rest of that branch (tool results, later turns, any later conversation).
+	 */
+	getSwipeGroup(): SwipeGroup | undefined {
+		const entries = this.sessionManager.buildContextEntries();
+		// Find the swipe unit at the visible tail: skip trailing harness
+		// messages, tool results (part of the turn), and state entries; the
+		// first non-harness assistant message met is the latest response. A
+		// user/custom/bash message before it means there is no response at the
+		// tail to swipe.
+		let unit: SessionMessageEntry | undefined;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type !== "message") continue;
+			const message = entry.message;
+			if (message.role === "toolResult") continue;
+			if (message.role === "assistant") {
+				if (isHarnessMessage(message)) continue;
+				unit = entry;
+			}
+			break;
+		}
+		if (!unit || unit.parentId === null) return undefined;
+		const anchorEntryId = unit.parentId;
+
+		// Every non-harness, non-deleted assistant message that is a direct
+		// child of the anchor roots one version of the response.
+		const versions: SessionMessageEntry[] = [];
+		for (const entry of this.sessionManager.getEntries()) {
+			if (entry.type !== "message") continue;
+			if (entry.parentId !== anchorEntryId) continue;
+			if (entry.deletedAt !== undefined) continue;
+			if (entry.message.role !== "assistant" || isHarnessMessage(entry.message)) continue;
+			versions.push(entry);
+		}
+		versions.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+		const currentIndex = versions.findIndex((entry) => entry.id === unit.id);
+		if (currentIndex < 0) return undefined;
+		return { anchorEntryId, versions, currentIndex };
+	}
+
+	/**
+	 * Switch the session to another version of the latest response. The leaf
+	 * moves to the latest (most recent) leaf of the version's subtree, so the
+	 * branch resumes with everything that followed the version.
+	 */
+	goToSwipeVersion(group: SwipeGroup, index: number): boolean {
+		if (index < 0 || index >= group.versions.length || index === group.currentIndex) return false;
+		const versionRoot = group.versions[index];
+
+		const childrenByParent = new Map<string, SessionEntry[]>();
+		for (const entry of this.sessionManager.getEntries()) {
+			if (entry.parentId === null) continue;
+			const siblings = childrenByParent.get(entry.parentId);
+			if (siblings) {
+				siblings.push(entry);
+			} else {
+				childrenByParent.set(entry.parentId, [entry]);
+			}
+		}
+		let leaf: SessionEntry = versionRoot;
+		const stack: SessionEntry[] = [versionRoot];
+		while (stack.length > 0) {
+			const node = stack.pop()!;
+			const children = childrenByParent.get(node.id);
+			if (!children || children.length === 0) {
+				if (node.timestamp >= leaf.timestamp) {
+					leaf = node;
+				}
+				continue;
+			}
+			stack.push(...children);
+		}
+
+		this.sessionManager.branch(leaf.id);
+		this._refreshFinalizedContext();
+		this._restoreToolsFromTranscript();
+		return true;
+	}
+
+	/**
+	 * Regenerate the latest response: branch the session at the swipe-group
+	 * anchor (the current version's subtree stays in the file as a branch) and
+	 * continue from there, producing a new version.
+	 */
+	async regenerateSwipe(group: SwipeGroup): Promise<void> {
+		this.sessionManager.branch(group.anchorEntryId);
+		this._refreshFinalizedContext();
+		this._restoreToolsFromTranscript();
+		await this.continue();
 	}
 
 	/**

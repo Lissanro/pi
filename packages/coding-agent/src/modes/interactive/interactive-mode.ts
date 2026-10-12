@@ -76,6 +76,7 @@ import {
 	type AgentSessionEvent,
 	type DeletableUnit,
 	parseSkillBlock,
+	type SwipeGroup,
 } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
@@ -3696,6 +3697,12 @@ export class InteractiveMode {
 				await this.handleRestoreCommand(arg);
 				return;
 			}
+			if (text === "/swipe" || (text.startsWith("/swipe") && /^\s/.test(text.slice(6)))) {
+				const arg = text === "/swipe" ? "" : text.slice(6);
+				this.editor.setText("");
+				await this.handleSwipeCommand(arg);
+				return;
+			}
 			if (text === "/edit" || (text.startsWith("/edit") && /^\s/.test(text.slice(5)))) {
 				const arg = text === "/edit" ? "" : text.slice(5);
 				this.editor.setText("");
@@ -6818,6 +6825,83 @@ export class InteractiveMode {
 			} else {
 				this.showError(errorMessage);
 			}
+		}
+	}
+
+	/**
+	 * Regenerate the latest response or navigate between its versions. A bare
+	 * /swipe (or a positive count past the existing versions) regenerates
+	 * once: each version may start a long agentic session, so regenerating
+	 * more than once per command is unsafe. /swipe N goes N versions forward
+	 * when they exist; /swipe -N goes N versions back, doing nothing when
+	 * already at the first. Prints the version stats (e.g. 3/3).
+	 */
+	private async handleSwipeCommand(arg: string): Promise<void> {
+		if (this.session.isCompacting) {
+			this.showStatus("Cannot swipe while compaction is in progress");
+			return;
+		}
+		if (this.session.isStreaming) {
+			this.showStatus("Cannot swipe while streaming is in progress");
+			return;
+		}
+		const trimmed = arg.trim();
+		const count = trimmed === "" ? 1 : Number.parseInt(trimmed, 10);
+		if (!Number.isInteger(count) || count === 0) {
+			this.showStatus("Usage: /swipe [count]");
+			return;
+		}
+		const group = this.session.getSwipeGroup();
+		if (!group) {
+			this.showStatus("No response to swipe");
+			return;
+		}
+		const stats = (g: SwipeGroup) => `Swipe ${g.currentIndex + 1}/${g.versions.length}`;
+
+		if (count < 0) {
+			const targetIndex = group.currentIndex + count;
+			if (targetIndex < 0) {
+				this.showStatus(`${stats(group)} (already at first)`);
+				return;
+			}
+			this.session.goToSwipeVersion(group, targetIndex);
+			this.chatContainer.clear();
+			this.renderInitialMessages();
+			const updated = this.session.getSwipeGroup();
+			this.showStatus(stats(updated ?? group));
+			return;
+		}
+
+		// Forward: navigate through existing versions; regenerate once when
+		// there are not enough of them.
+		const forwardAvailable = group.versions.length - 1 - group.currentIndex;
+		if (forwardAvailable >= count) {
+			this.session.goToSwipeVersion(group, group.currentIndex + count);
+			this.chatContainer.clear();
+			this.renderInitialMessages();
+			const updated = this.session.getSwipeGroup();
+			this.showStatus(stats(updated ?? group));
+			return;
+		}
+
+		try {
+			this.chatContainer.clear();
+			this.renderInitialMessages();
+			await this.session.regenerateSwipe(group);
+		} catch (error: unknown) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			if (errorMessage.includes("No messages to continue from")) {
+				this.showStatus("No messages to continue from");
+			} else if (errorMessage.includes("Cannot continue from message role: assistant")) {
+				this.showStatus("Cannot swipe: the message before the response is an assistant message");
+			} else {
+				this.showError(errorMessage);
+			}
+			return;
+		}
+		const updated = this.session.getSwipeGroup();
+		if (updated) {
+			this.showStatus(stats(updated));
 		}
 	}
 
