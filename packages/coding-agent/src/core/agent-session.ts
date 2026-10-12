@@ -37,6 +37,7 @@ import {
 import {
 	contentText,
 	contentToTokenizeText,
+	countChatTokens,
 	countTokens,
 	getCurrentSystemMessage,
 	retryDelayMs,
@@ -3455,25 +3456,28 @@ export class AgentSession {
 		if (auth) {
 			try {
 				const llmMessages = await this.agent.convertToLlm(sessionContext.messages);
-				// text already carries the leading system prompt (state.systemPrompt); skip
-				// system messages in the loop so the context is counted once, not twice.
-				let text = this.agent.state.systemPrompt;
-				let imageCount = 0;
-				for (const m of llmMessages) {
-					if (m.role === "system") continue;
-					const serialized = contentToTokenizeText(m.content);
-					text += `\n${serialized.text}`;
-					imageCount += serialized.imageCount;
+				// The chat tokenize endpoint applies the chat template and counts
+				// multimodal content, so send the exact messages a real inference
+				// request would use. If the converted messages do not already carry a
+				// leading system message (the session projection may omit it), prepend
+				// the system prompt so the count matches the chat request.
+				let chatMessages: unknown[];
+				if (llmMessages.some((m) => m.role === "system")) {
+					chatMessages = llmMessages;
+				} else {
+					const systemPrompt = this.agent.state.systemPrompt;
+					chatMessages =
+						systemPrompt.length > 0 ? [{ role: "system", content: systemPrompt }, ...llmMessages] : llmMessages;
 				}
-				const count = await countTokens(auth.model, {
-					text,
+				const count = await countChatTokens(auth.model, {
+					messages: chatMessages,
 					apiKey: auth.apiKey,
 					headers: auth.headers,
 					env: auth.env,
 					signal,
 				});
-				// Images are not text and cannot be counted by /tokenize; add the estimate.
-				if (count !== undefined) contextTokens = count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
+				// The endpoint already counts images/audio; no image heuristic needed.
+				if (count !== undefined) contextTokens = count;
 			} catch {
 				contextTokens = undefined;
 			}

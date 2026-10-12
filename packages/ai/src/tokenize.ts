@@ -26,6 +26,21 @@ export interface CountTokensOptions {
 	timeoutMs?: number;
 }
 
+/** Options for {@link countChatTokens}. Messages are the full chat request content. */
+export interface CountChatTokensOptions {
+	/** The chat messages exactly as they would be sent to /v1/chat/completions. */
+	messages: unknown[];
+	apiKey?: string;
+	headers?: Record<string, string>;
+	env?: Record<string, string>;
+	/** Custom fetch (for tests). Defaults to global fetch. */
+	fetch?: typeof globalThis.fetch;
+	/** AbortSignal (for tests). */
+	signal?: AbortSignal;
+	/** Request timeout in milliseconds. Default 30000. */
+	timeoutMs?: number;
+}
+
 /**
  * Derive the `/tokenize` URL from a model base URL.
  *
@@ -38,6 +53,20 @@ export function tokenizeEndpointUrl(baseUrl: string): string | undefined {
 	if (!trimmed) return undefined;
 	const root = /\/v\d+$/.test(trimmed) ? trimmed.replace(/\/v\d+$/, "") : trimmed;
 	return `${root}/tokenize`;
+}
+
+/**
+ * Derive the `/chat/completions/input_tokens` URL from a model base URL.
+ *
+ * llama.cpp (and other OpenAI-compatible servers) expose an input-token counting
+ * variant of the chat endpoint. Unlike `/tokenize`, it applies the chat template
+ * and handles multimodal content (images, audio), so the count matches what a
+ * real inference request would produce. Returns undefined for empty base URLs.
+ */
+export function chatTokenizeEndpointUrl(baseUrl: string): string | undefined {
+	const trimmed = baseUrl.replace(/\/+$/, "");
+	if (!trimmed) return undefined;
+	return `${trimmed}/chat/completions/input_tokens`;
 }
 
 /**
@@ -109,6 +138,70 @@ export async function countTokens(model: Model<any>, options: CountTokensOptions
 		const data = (await res.json()) as { tokens?: unknown };
 		if (Array.isArray(data?.tokens)) return data.tokens.length;
 		// 200 without a token array: the endpoint is present but not usable for counting.
+		return undefined;
+	} catch (error) {
+		if (options.signal?.aborted) return undefined;
+		if (error instanceof TokenizeTransientError) throw error;
+		throw new TokenizeTransientError(error instanceof Error ? error.message : String(error));
+	}
+}
+
+/**
+ * Count the tokens a full chat request occupies according to the model server's
+ * own tokenizer, via the `/chat/completions/input_tokens` endpoint.
+ *
+ * The request body carries the exact messages that would be sent to
+ * `/chat/completions` (system message, tool calls, images), so the count includes
+ * everything the inference request would consume - including multimodal content
+ * that `/tokenize` cannot count. Returns undefined when the endpoint is missing
+ * (clear 404), the body is empty, or the response lacks `input_tokens`, so the
+ * caller can fall back to an estimate.
+ */
+export async function countChatTokens(model: Model<any>, options: CountChatTokensOptions): Promise<number | undefined> {
+	const url = chatTokenizeEndpointUrl(model.baseUrl);
+	if (!url || options.messages.length === 0) return undefined;
+
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+		"User-Agent": getPiUserAgent(),
+		...model.headers,
+	};
+	const hasAuthHeader = Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+	if (options.apiKey && !hasAuthHeader) {
+		headers.Authorization = `Bearer ${options.apiKey}`;
+	}
+	if (options.headers) {
+		Object.assign(headers, options.headers);
+	}
+
+	const fetchFn = options.fetch ?? globalThis.fetch;
+	const timeout = options.timeoutMs ?? 30000;
+
+	try {
+		const controller = new AbortController();
+		const onAbort = () => controller.abort();
+		if (options.signal) {
+			if (options.signal.aborted) return undefined;
+			options.signal.addEventListener("abort", onAbort, { once: true });
+		}
+		const timer = setTimeout(() => controller.abort(), timeout);
+		const res = await fetchFn(url, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ messages: options.messages, model: model.id }),
+			signal: controller.signal,
+		});
+		clearTimeout(timer);
+		if (options.signal) options.signal.removeEventListener("abort", onAbort);
+
+		if (!res.ok) {
+			// A clear 404 means the endpoint is not there; not a transient failure.
+			if (res.status === 404) return undefined;
+			throw new TokenizeTransientError(`chat tokenize endpoint returned ${res.status}`);
+		}
+		const data = (await res.json()) as { input_tokens?: unknown };
+		if (typeof data?.input_tokens === "number") return data.input_tokens;
+		// 200 without input_tokens: the endpoint is present but not usable for counting.
 		return undefined;
 	} catch (error) {
 		if (options.signal?.aborted) return undefined;
