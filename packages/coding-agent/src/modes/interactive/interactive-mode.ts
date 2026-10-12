@@ -3679,6 +3679,18 @@ export class InteractiveMode {
 				await this.handleDeleteCommand(arg);
 				return;
 			}
+			if (text === "/shred" || (text.startsWith("/shred") && /^\s/.test(text.slice(6)))) {
+				const arg = text === "/shred" ? "" : text.slice(6);
+				this.editor.setText("");
+				await this.handleShredCommand(arg);
+				return;
+			}
+			if (text === "/restore" || (text.startsWith("/restore") && /^\s/.test(text.slice(8)))) {
+				const arg = text === "/restore" ? "" : text.slice(8);
+				this.editor.setText("");
+				await this.handleRestoreCommand(arg);
+				return;
+			}
 			if (text === "/edit" || (text.startsWith("/edit") && /^\s/.test(text.slice(5)))) {
 				const arg = text === "/edit" ? "" : text.slice(5);
 				this.editor.setText("");
@@ -6805,11 +6817,13 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Delete messages from the session. Numeric argument deletes the last N
-	 * messages; a substring argument deletes the single editable message whose
-	 * text contains it, failing when more than one message matches. Harness
-	 * messages (aborts/errors with no real content) are skipped when counting
-	 * and do not participate in substring matching.
+	 * Soft-delete messages from the session. Numeric argument deletes the last N
+	 * deletable entries of the visible context; a substring argument deletes the
+	 * single editable message whose text contains it, failing when more than one
+	 * message matches. Deleted entries stay in the session file but are hidden
+	 * from the chat, from model context, and from edit indices; /restore brings
+	 * them back. Harness messages (aborts/errors with no real content) are
+	 * skipped when counting and do not participate in substring matching.
 	 */
 	private async handleDeleteCommand(arg: string): Promise<void> {
 		if (this.session.isStreaming) {
@@ -6828,13 +6842,13 @@ export class InteractiveMode {
 				this.showError(`Found ${matches.length} messages containing: ${substring}`);
 				return;
 			}
-			if (!this.session.deleteMessage(matches[0].entryId)) {
+			if (!this.session.softDeleteMessage(matches[0].entryId)) {
 				this.showError("Selected message cannot be deleted");
 				return;
 			}
 			this.chatContainer.clear();
 			this.renderInitialMessages();
-			this.showStatus("Deleted 1 message");
+			this.showStatus("Deleted 1 message (/restore to undo)");
 			void this.flushCompactionQueue({ willRetry: false });
 			return;
 		}
@@ -6843,14 +6857,92 @@ export class InteractiveMode {
 			this.showStatus("Usage: /delete [count|substring]");
 			return;
 		}
-		const removed = this.session.deleteLastMessages(count);
+		const removed = this.session.softDeleteLastMessages(count);
 		if (removed === 0) {
 			this.showStatus("No messages to delete");
 			return;
 		}
 		this.chatContainer.clear();
 		this.renderInitialMessages();
-		this.showStatus(`Deleted ${removed} message${removed === 1 ? "" : "s"}`);
+		this.showStatus(`Deleted ${removed} message${removed === 1 ? "" : "s"} (/restore to undo)`);
+		void this.flushCompactionQueue({ willRetry: false });
+	}
+
+	/**
+	 * Restore soft-deleted entries. A numeric argument restores the latest N
+	 * deleted entries (latest deletion first); the default is 1.
+	 */
+	private async handleRestoreCommand(arg: string): Promise<void> {
+		if (this.session.isStreaming) {
+			this.showStatus("Cannot restore while streaming is in progress");
+			return;
+		}
+		const trimmed = arg.trim();
+		const count = trimmed === "" ? 1 : Number.parseInt(trimmed, 10);
+		if (trimmed !== "" && (!Number.isInteger(count) || count < 1)) {
+			this.showStatus("Usage: /restore [count]");
+			return;
+		}
+		const restored = this.session.restoreDeletedMessages(count);
+		if (restored === 0) {
+			this.showStatus("No deleted messages to restore");
+			return;
+		}
+		this.chatContainer.clear();
+		this.renderInitialMessages();
+		this.showStatus(`Restored ${restored} message${restored === 1 ? "" : "s"}`);
+		void this.flushCompactionQueue({ willRetry: false });
+	}
+
+	/**
+	 * Permanently remove messages from the session file (the pre-soft-delete
+	 * /delete behavior). Numeric argument removes the last N messages; a
+	 * substring argument removes the single editable message whose text
+	 * contains it, failing when more than one message matches. Harness messages
+	 * (aborts/errors with no real content) are skipped when counting and do not
+	 * participate in substring matching. There is no undo; /delete keeps entries
+	 * recoverable instead.
+	 */
+	private async handleShredCommand(arg: string): Promise<void> {
+		if (this.session.isStreaming) {
+			this.showStatus("Cannot shred while streaming is in progress");
+			return;
+		}
+		const trimmed = arg.trim();
+		if (trimmed !== "" && !/^\d+$/.test(trimmed)) {
+			const substring = normalizeMessageSelectorArg(trimmed);
+			const matches = this.session.getEditableMessagesContaining(substring);
+			if (matches.length === 0) {
+				this.showStatus(`No message contains: ${substring}`);
+				return;
+			}
+			if (matches.length > 1) {
+				this.showError(`Found ${matches.length} messages containing: ${substring}`);
+				return;
+			}
+			if (!this.session.deleteMessage(matches[0].entryId)) {
+				this.showError("Selected message cannot be shredded");
+				return;
+			}
+			this.chatContainer.clear();
+			this.renderInitialMessages();
+			this.showStatus("Shredded 1 message");
+			void this.flushCompactionQueue({ willRetry: false });
+			return;
+		}
+		const count = trimmed === "" ? 1 : Number.parseInt(trimmed, 10);
+		if (!Number.isInteger(count) || count < 1) {
+			this.showStatus("Usage: /shred [count|substring]");
+			return;
+		}
+		const removed = this.session.deleteLastMessages(count);
+		if (removed === 0) {
+			this.showStatus("No messages to shred");
+			return;
+		}
+		this.chatContainer.clear();
+		this.renderInitialMessages();
+		this.showStatus(`Shredded ${removed} message${removed === 1 ? "" : "s"}`);
 		void this.flushCompactionQueue({ willRetry: false });
 	}
 

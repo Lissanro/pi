@@ -62,6 +62,12 @@ export interface SessionEntryBase {
 	id: string;
 	parentId: string | null;
 	timestamp: string;
+	/**
+	 * Set when the entry was soft-deleted (hidden from the chat and from model
+	 * context, but still stored in the session file); cleared on restore. ISO
+	 * timestamp of the deletion, used to order restores (latest deleted first).
+	 */
+	deletedAt?: string;
 }
 
 export interface SessionMessageEntry extends SessionEntryBase {
@@ -568,20 +574,24 @@ export function buildContextEntries(
 	options?: BuildContextOptions,
 ): SessionEntry[] {
 	const path = buildSessionPath(entries, leafId, byId);
+	// Soft-deleted entries stay in the session file but are hidden from the
+	// chat and from model context. A soft-deleted compaction entry is treated
+	// as absent, which un-compacts the range it summarized.
+	const visiblePath = path.filter((entry) => entry.deletedAt === undefined);
 	const compactions: CompactionEntry[] = [];
-	for (const entry of path) {
+	for (const entry of visiblePath) {
 		if (entry.type === "compaction") {
 			compactions.push(entry);
 		}
 	}
 	if (compactions.length === 0) {
-		return path;
+		return visiblePath;
 	}
 
 	const latestCompaction = compactions[compactions.length - 1];
 	const visibleCompactions = filterSummariesToBlockLimit(compactions, options?.summaryBlockMaxTokens);
 
-	let keptStart = path.findIndex((entry) => entry.id === latestCompaction.firstKeptEntryId);
+	let keptStart = visiblePath.findIndex((entry) => entry.id === latestCompaction.firstKeptEntryId);
 	if (keptStart < 0) {
 		// Corrupt/missing firstKeptEntryId: keep everything after the first
 		// compaction so no verbatim history is lost.
@@ -595,8 +605,8 @@ export function buildContextEntries(
 	// message (carried by the compaction entry) folds them all in, so keeping
 	// them here would duplicate the folded content.
 	const contextEntries: SessionEntry[] = [...visibleCompactions];
-	for (let i = keptStart; i < path.length; i++) {
-		const entry = path[i];
+	for (let i = keptStart; i < visiblePath.length; i++) {
+		const entry = visiblePath[i];
 		if (entry.type === "compaction") continue;
 		if (entry.type === "message" && entry.message.role === "system") continue;
 		contextEntries.push(entry);
@@ -1652,6 +1662,7 @@ export class SessionManager {
 						details: e.details,
 						fromHook: e.fromHook,
 						summaryTokens: e.summaryTokens,
+						...(e.deletedAt !== undefined ? { deletedAt: e.deletedAt } : {}),
 					};
 					this._appendEntry(entry);
 					id = entry.id;
@@ -1695,6 +1706,7 @@ export class SessionManager {
 						summary: e.summary,
 						details: e.details,
 						fromHook: e.fromHook,
+						...(e.deletedAt !== undefined ? { deletedAt: e.deletedAt } : {}),
 					};
 					this._appendEntry(entry);
 					id = entry.id;
@@ -1788,11 +1800,13 @@ export class SessionManager {
 		const path = this.getBranch();
 		if (path.length === 0) return 0;
 
-		// Indices of deletable messages (non-harness message entries) on the leaf path.
+		// Indices of deletable messages (non-harness, not soft-deleted message
+		// entries) on the leaf path.
 		const messageIndices: number[] = [];
 		for (let i = 0; i < path.length; i++) {
 			const entry = path[i];
 			if (entry.type !== "message") continue;
+			if (entry.deletedAt !== undefined) continue;
 			const msg = entry.message;
 			// Harness messages (aborts/errors with no real content) are not counted.
 			if (msg.role === "assistant") {
@@ -1847,6 +1861,62 @@ export class SessionManager {
 
 		this._rewriteFile();
 		return removeCount;
+	}
+
+	/**
+	 * Soft-delete entries: mark them deleted with an increasing timestamp (in
+	 * the order given) so a restore brings back earlier-deleted entries first
+	 * across separate deletes, and context-earlier entries first within one
+	 * batch. Deleted entries stay in the session file but are hidden from the
+	 * chat, from model context (buildContextEntries/buildSessionContext), and
+	 * from edit indices. The session file is rewritten.
+	 */
+	softDeleteEntries(entries: SessionEntry[]): number {
+		const base = Date.now();
+		let marked = 0;
+		for (const entry of entries) {
+			const target = this.byId.get(entry.id);
+			if (!target || target.deletedAt !== undefined) continue;
+			target.deletedAt = new Date(base + marked).toISOString();
+			marked++;
+		}
+		if (marked > 0) {
+			this._rewriteFile();
+		}
+		return marked;
+	}
+
+	/**
+	 * Currently soft-deleted entries, ordered by deletion time (latest first).
+	 */
+	getDeletedEntries(): SessionEntry[] {
+		const deleted: SessionEntry[] = [];
+		for (const entry of this.byId.values()) {
+			if (entry.deletedAt !== undefined) {
+				deleted.push(entry);
+			}
+		}
+		deleted.sort((a, b) => Date.parse(b.deletedAt!) - Date.parse(a.deletedAt!));
+		return deleted;
+	}
+
+	/**
+	 * Restore the latest `count` soft-deleted entries (latest deletion first).
+	 * The session file is rewritten. Returns the number of entries restored.
+	 */
+	restoreDeletedEntries(count: number): number {
+		if (count < 1) return 0;
+		const deleted = this.getDeletedEntries();
+		let restored = 0;
+		for (const entry of deleted) {
+			if (restored >= count) break;
+			delete entry.deletedAt;
+			restored++;
+		}
+		if (restored > 0) {
+			this._rewriteFile();
+		}
+		return restored;
 	}
 
 	/**

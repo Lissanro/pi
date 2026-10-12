@@ -1813,6 +1813,81 @@ export class AgentSession {
 	}
 
 	/**
+	 * Deletable entries of the active visible context in chronological order:
+	 * user messages, non-harness assistant messages, tool results, and bash
+	 * executions. Soft-deleted entries are already excluded from the context,
+	 * so every listed entry is currently visible.
+	 */
+	getDeletableEntries(): SessionEntry[] {
+		const entries = this.sessionManager.buildContextEntries();
+		const deletable: SessionEntry[] = [];
+		for (const entry of entries) {
+			if (entry.type !== "message") continue;
+			const message = entry.message;
+			if (
+				message.role !== "user" &&
+				message.role !== "assistant" &&
+				message.role !== "toolResult" &&
+				message.role !== "bashExecution"
+			)
+				continue;
+			if (message.role === "assistant" && isHarnessMessage(message)) continue;
+			deletable.push(entry);
+		}
+		return deletable;
+	}
+
+	/**
+	 * Soft-delete the last `count` deletable entries of the visible context.
+	 * Deleted entries stay in the session file but are hidden from the chat,
+	 * from model context, and from edit indices; /restore brings them back.
+	 * Rebuilds the agent's message state. Returns the number of entries marked.
+	 */
+	softDeleteLastMessages(count: number): number {
+		if (count < 1) return 0;
+		const deletable = this.getDeletableEntries();
+		// Consumption order is latest-in-context first. Stamping deletions in
+		// this order makes a later restore bring back context-earlier entries
+		// first, so every intermediate context state stays coherent.
+		const targets = deletable.slice(Math.max(0, deletable.length - count)).reverse();
+		const marked = this.sessionManager.softDeleteEntries(targets);
+		if (marked > 0) {
+			const sessionContext = this.sessionManager.buildSessionContext();
+			this.agent.state.messages = sessionContext.messages;
+		}
+		return marked;
+	}
+
+	/**
+	 * Soft-delete a single message entry by its session entry id. Returns false
+	 * if the entry is not on the active leaf path.
+	 */
+	softDeleteMessage(entryId: string): boolean {
+		const entry = this.sessionManager.getEntry(entryId);
+		if (!entry || entry.deletedAt !== undefined) return false;
+		if (!this.sessionManager.getBranch().some((branchEntry) => branchEntry.id === entryId)) return false;
+		const marked = this.sessionManager.softDeleteEntries([entry]);
+		if (marked > 0) {
+			const sessionContext = this.sessionManager.buildSessionContext();
+			this.agent.state.messages = sessionContext.messages;
+		}
+		return marked > 0;
+	}
+
+	/**
+	 * Restore the latest `count` soft-deleted entries (latest deletion first).
+	 * Rebuilds the agent's message state. Returns the number restored.
+	 */
+	restoreDeletedMessages(count: number): number {
+		const restored = this.sessionManager.restoreDeletedEntries(count);
+		if (restored > 0) {
+			const sessionContext = this.sessionManager.buildSessionContext();
+			this.agent.state.messages = sessionContext.messages;
+		}
+		return restored;
+	}
+
+	/**
 	 * Delete a single message entry by its session entry id, preserving later
 	 * messages. Rebuilds the agent's message state from the session log.
 	 * Returns false if the entry is not a message on the active leaf path.
@@ -4841,6 +4916,8 @@ export class AgentSession {
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const entry = branch[i];
 			if (entry.type !== "message") continue;
+			// Soft-deleted entries are hidden from context and never a prefill source.
+			if (entry.deletedAt !== undefined) continue;
 			const msg = entry.message;
 			if (msg.role === "assistant" && (!msg.content || isHarnessMessage(msg))) continue;
 			targetIdx = i;

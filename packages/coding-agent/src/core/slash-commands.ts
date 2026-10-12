@@ -68,7 +68,19 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	},
 	{
 		name: "delete",
-		description: "Delete the last message (or N messages: /delete N, or unique match: /delete substring)",
+		description:
+			"Delete the last message (kept recoverable; or N messages: /delete N, or unique match: /delete substring)",
+		argumentHint: "[count|substring]",
+	},
+	{
+		name: "restore",
+		description: "Restore the latest deleted message (or N messages: /restore N)",
+		argumentHint: "[count]",
+	},
+	{
+		name: "shred",
+		description:
+			"Permanently remove the last message, no undo (or N messages: /shred N, or unique match: /shred substring)",
 		argumentHint: "[count|substring]",
 	},
 	{
