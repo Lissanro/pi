@@ -270,7 +270,7 @@ describe("AgentSession.applyMessageEdits", () => {
 		}
 	});
 
-	it("edits the latest message", async () => {
+	it("creates a new swipe version when editing the latest message", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
@@ -278,8 +278,14 @@ describe("AgentSession.applyMessageEdits", () => {
 		await harness.session.prompt("user");
 
 		const result = harness.session.applyMessageEdits('<pi_edit id="0" role="assistant">edited hi</pi_edit>');
-		expect(result).toEqual({ edited: 1, added: 0 });
+		expect(result).toEqual({ edited: 0, added: 0, versioned: 1, swiped: 0 });
+		// The original version stays as the previous swipe (on its branch); the
+		// edited message is the new current version.
 		expect(getAssistantTexts(harness)).toEqual(["edited hi"]);
+		const group = harness.session.getSwipeGroup();
+		expect(group?.versions).toHaveLength(2);
+		expect(group?.currentIndex).toBe(1);
+		expect(getMessageText(group!.versions[0].message)).toBe("hi");
 	});
 
 	it("edits the message before the latest", async () => {
@@ -290,7 +296,7 @@ describe("AgentSession.applyMessageEdits", () => {
 		await harness.session.prompt("user");
 
 		const result = harness.session.applyMessageEdits('<pi_edit id="1" role="user">edited user</pi_edit>');
-		expect(result).toEqual({ edited: 1, added: 0 });
+		expect(result).toEqual({ edited: 1, added: 0, versioned: 0, swiped: 0 });
 		expect(getMessageText(harness.session.messages[1])).toBe("edited user");
 		expect(getAssistantTexts(harness)).toEqual(["first"]);
 	});
@@ -322,8 +328,11 @@ describe("AgentSession.applyMessageEdits", () => {
 		});
 
 		const result = harness.session.applyMessageEdits('<pi_edit id="0" role="assistant">edited ok</pi_edit>');
-		expect(result).toEqual({ edited: 1, added: 0 });
+		expect(result).toEqual({ edited: 0, added: 0, versioned: 1, swiped: 0 });
 		expect(getAssistantTexts(harness)).toEqual(["edited ok"]);
+		const group = harness.session.getSwipeGroup();
+		expect(group?.versions).toHaveLength(2);
+		expect(getMessageText(group!.versions[0].message)).toBe("ok");
 	});
 
 	it("adds new messages with negative ids", async () => {
@@ -336,7 +345,7 @@ describe("AgentSession.applyMessageEdits", () => {
 		const result = harness.session.applyMessageEdits(
 			'<pi_edit id="-1" role="assistant">new assistant</pi_edit><pi_edit id="-2" role="user">new user</pi_edit>',
 		);
-		expect(result).toEqual({ edited: 0, added: 2 });
+		expect(result).toEqual({ edited: 0, added: 2, versioned: 0, swiped: 0 });
 		const texts = harness.session.messages.filter((m) => m.role !== "system").map((m) => getMessageText(m));
 		expect(texts).toEqual(["user", "hi", "new assistant", "new user"]);
 	});
@@ -351,7 +360,9 @@ describe("AgentSession.applyMessageEdits", () => {
 		const result = harness.session.applyMessageEdits(
 			'<pi_edit id="0" role="assistant">edited hi</pi_edit><pi_edit id="-1" role="user">new user</pi_edit>',
 		);
-		expect(result).toEqual({ edited: 1, added: 1 });
+		expect(result).toEqual({ edited: 0, added: 1, versioned: 1, swiped: 0 });
+		// The id=0 edit becomes a new version (the original stays as the
+		// previous swipe on its branch), and the negative id appends after it.
 		const texts = harness.session.messages.filter((m) => m.role !== "system").map((m) => getMessageText(m));
 		expect(texts).toEqual(["user", "edited hi", "new user"]);
 	});
@@ -562,7 +573,7 @@ describe("AgentSession.applyMessageEdits", () => {
 		expect(edited.stopReason).toBe("aborted");
 	});
 
-	it("keeps toolUse on an edited assistant message whose last tool call has a result", async () => {
+	it("keeps toolUse on a swipe-edited assistant version whose last tool call has a result", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
@@ -580,11 +591,17 @@ describe("AgentSession.applyMessageEdits", () => {
 		});
 		harness.session.agent.state.messages = harness.session.sessionManager.buildSessionContext().messages;
 
-		harness.session.applyMessageEdits(
-			'<pi_edit id="0" role="assistant"><pi_content>edited</pi_content><pi_tool_call id="tc1" name="read">{"path":"/a"}</pi_tool_call></pi_edit>',
+		// A pi_swipe block edits the version in place (no new version created).
+		const timestamp = harness.session.getSwipeGroup()!.versions[0].timestamp;
+		const result = harness.session.applyMessageEdits(
+			`<pi_swipe timestamp="${timestamp}" role="assistant"><pi_content>edited</pi_content><pi_tool_call id="tc1" name="read">{"path":"/a"}</pi_tool_call></pi_swipe>`,
 		);
+		expect(result.swiped).toBe(1);
+		expect(result.versioned).toBe(0);
 		const edited = harness.session.messages.filter((m) => m.role === "assistant").at(-1) as AssistantMessage;
 		expect(edited.stopReason).toBe("toolUse");
+		expect(getMessageText(edited)).toBe("edited");
+		expect(harness.session.getSwipeGroup()!.versions).toHaveLength(1);
 	});
 
 	it("keeps stop on a mid-transcript edited assistant message without tool calls", async () => {

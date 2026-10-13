@@ -26,6 +26,18 @@ export interface ParsedEditBlock {
 	content: (TextContent | ThinkingContent | ToolCall | ImageContent)[];
 }
 
+/**
+ * A `<pi_swipe timestamp="..." role="...">` block: an in-place edit of one
+ * existing swipe version. The timestamp identifies the version (its entry
+ * timestamp); applying the block never creates a new version and never
+ * changes the version's position.
+ */
+export interface ParsedSwipeBlock {
+	timestamp: string;
+	role: "user" | "assistant";
+	content: (TextContent | ThinkingContent | ToolCall | ImageContent)[];
+}
+
 interface TagMatch {
 	name: string;
 	attributes: Record<string, string>;
@@ -80,15 +92,19 @@ function findNextTag(text: string, pos: number): TagMatch | undefined {
 	return { ...parsed, start, end: i + 1 };
 }
 
-function findBlockClose(text: string, startPos: number): { start: number; end: number } | undefined {
+function findBlockClose(text: string, startPos: number, tagName: string): { start: number; end: number } | undefined {
 	let pos = startPos;
 	while (pos < text.length) {
 		const tag = findNextTag(text, pos);
 		if (!tag) return undefined;
-		if (tag.name === "pi_edit" && tag.isClosing) {
+		if (tag.name === tagName && tag.isClosing) {
 			let after = tag.end;
 			while (after < text.length && /\s/.test(text[after])) after++;
-			if (after >= text.length || text.slice(after, after + 8) === "<pi_edit") {
+			if (
+				after >= text.length ||
+				text.slice(after, after + 8) === "<pi_edit" ||
+				text.slice(after, after + 9) === "<pi_swipe"
+			) {
 				return { start: tag.start, end: tag.end };
 			}
 		}
@@ -147,12 +163,54 @@ function findLastClosingTagBefore(
 }
 
 /**
- * Returns true if the given text starts with a `<pi_edit>` tag (after optional
- * leading whitespace). Messages that contain `<pi_edit>` later in the text are
- * treated as normal messages, not edit commands.
+ * Returns true if the given text starts with a `<pi_edit>` or `<pi_swipe>`
+ * tag (after optional leading whitespace). Messages that contain one later in
+ * the text are treated as normal messages, not edit commands.
  */
 export function isMessageEdit(text: string): boolean {
-	return /^<pi_edit[>\s/]/.test(text.trimStart());
+	return /^<pi_(edit|swipe)[>\s/]/.test(text.trimStart());
+}
+
+/**
+ * Parse all `<pi_edit>` and `<pi_swipe>` blocks from the start of the text.
+ * Returns empty blocks if parsing fails or no valid blocks are found; any
+ * invalid block or trailing content invalidates the whole text.
+ */
+export function parseMessageEditsAndSwipes(text: string): { edits: ParsedEditBlock[]; swipes: ParsedSwipeBlock[] } {
+	const empty: { edits: ParsedEditBlock[]; swipes: ParsedSwipeBlock[] } = { edits: [], swipes: [] };
+	const trimmed = text.trimStart();
+	if (!trimmed.startsWith("<pi_edit") && !trimmed.startsWith("<pi_swipe")) return empty;
+
+	const result = { edits: [] as ParsedEditBlock[], swipes: [] as ParsedSwipeBlock[] };
+	let pos = 0;
+
+	while (pos < trimmed.length) {
+		const openTag = findNextTag(trimmed, pos);
+		if (!openTag || openTag.isClosing || (openTag.name !== "pi_edit" && openTag.name !== "pi_swipe")) return empty;
+
+		const role = openTag.attributes.role;
+		if (role !== "user" && role !== "assistant") return empty;
+
+		const close = findBlockClose(trimmed, openTag.end, openTag.name);
+		if (!close) return empty;
+
+		const content = trimmed.slice(openTag.end, close.start);
+		const parsedContent = parseInnerContent(content, role);
+		if (openTag.name === "pi_edit") {
+			const id = Number.parseInt(openTag.attributes.id ?? "", 10);
+			if (Number.isNaN(id)) return empty;
+			result.edits.push({ id, role, content: parsedContent });
+		} else {
+			const timestamp = openTag.attributes.timestamp ?? "";
+			if (timestamp === "") return empty;
+			result.swipes.push({ timestamp, role, content: parsedContent });
+		}
+
+		pos = close.end;
+		while (pos < trimmed.length && /\s/.test(trimmed[pos])) pos++;
+	}
+
+	return result;
 }
 
 /**
@@ -160,32 +218,7 @@ export function isMessageEdit(text: string): boolean {
  * array if parsing fails or no valid blocks are found.
  */
 export function parseMessageEdits(text: string): ParsedEditBlock[] {
-	const trimmed = text.trimStart();
-	if (!trimmed.startsWith("<pi_edit")) return [];
-
-	const blocks: ParsedEditBlock[] = [];
-	let pos = 0;
-
-	while (pos < trimmed.length) {
-		const openTag = findNextTag(trimmed, pos);
-		if (!openTag || openTag.name !== "pi_edit" || openTag.isClosing) return [];
-
-		const id = Number.parseInt(openTag.attributes.id ?? "", 10);
-		const role = openTag.attributes.role;
-		if (Number.isNaN(id) || (role !== "user" && role !== "assistant")) return [];
-
-		const close = findBlockClose(trimmed, openTag.end);
-		if (!close) return [];
-
-		const content = trimmed.slice(openTag.end, close.start);
-		const parsedContent = parseInnerContent(content, role);
-		blocks.push({ id, role, content: parsedContent });
-
-		pos = close.end;
-		while (pos < trimmed.length && /\s/.test(trimmed[pos])) pos++;
-	}
-
-	return blocks;
+	return parseMessageEditsAndSwipes(text).edits;
 }
 
 function parseInnerContent(
@@ -401,6 +434,18 @@ export function formatMessageForEdit(id: number, message: AgentMessage): string 
 	return `<pi_edit id="${id}" role="${role}">${content}</pi_edit>`;
 }
 
+/**
+ * Format an existing message as a `<pi_swipe>` block for in-place editing of
+ * one swipe version. The timestamp identifies the version on apply and keeps
+ * its position stable. Returns `null` for roles that are not editable.
+ */
+export function formatMessageForSwipe(timestamp: string, message: AgentMessage): string | null {
+	const content = formatMessageContent(message);
+	if (content === null) return null;
+	const role = message.role === "user" ? "user" : "assistant";
+	return `<pi_swipe timestamp="${escapeXmlAttr(timestamp)}" role="${role}">${content}</pi_swipe>`;
+}
+
 function formatUserMessageContent(message: UserMessage): string {
 	const content =
 		typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
@@ -447,7 +492,7 @@ function formatAssistantMessageContent(message: AssistantMessage): string {
  * For new assistant messages (negative ids) baseAssistant must be provided.
  */
 export function editBlockToMessage(
-	block: ParsedEditBlock,
+	block: ParsedEditBlock | ParsedSwipeBlock,
 	baseAssistant?: Pick<AssistantMessage, "api" | "provider" | "model" | "usage" | "timestamp">,
 ): Message {
 	const timestamp = baseAssistant?.timestamp ?? Date.now();

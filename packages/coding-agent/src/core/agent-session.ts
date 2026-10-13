@@ -132,7 +132,8 @@ import {
 	formatMessageContent,
 	formatMessageForEdit,
 	type ParsedEditBlock,
-	parseMessageEdits,
+	type ParsedSwipeBlock,
+	parseMessageEditsAndSwipes,
 } from "./message-edit.ts";
 import { type BashExecutionMessage, bashExecutionToText, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -398,6 +399,8 @@ export interface SwipeGroup {
 	versions: SessionMessageEntry[];
 	/** 0-based index of the current version. */
 	currentIndex: number;
+	/** Role of the swipe unit: assistant versions can be regenerated, user versions are navigable only. */
+	role: "user" | "assistant";
 }
 
 export interface SessionStats {
@@ -1956,10 +1959,11 @@ export class AgentSession {
 	getSwipeGroup(): SwipeGroup | undefined {
 		const entries = this.sessionManager.buildContextEntries();
 		// Find the swipe unit at the visible tail: skip trailing harness
-		// messages, tool results (part of the turn), and state entries; the
-		// first non-harness assistant message met is the latest response. A
-		// user/custom/bash message before it means there is no response at the
-		// tail to swipe.
+		// messages that follow another assistant message (abort notices), tool
+		// results (part of the turn), and state entries. The first assistant or
+		// user message met is the unit. A harness assistant message directly
+		// after a non-assistant entry is a degenerate (aborted empty) version
+		// and stays swipeable, so the group is never lost after an abort.
 		let unit: SessionMessageEntry | undefined;
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const entry = entries[i];
@@ -1967,28 +1971,39 @@ export class AgentSession {
 			const message = entry.message;
 			if (message.role === "toolResult") continue;
 			if (message.role === "assistant") {
-				if (isHarnessMessage(message)) continue;
+				if (isHarnessMessage(message)) {
+					const parent = entry.parentId ? this.sessionManager.getEntry(entry.parentId) : undefined;
+					if (parent?.type === "message" && parent.message.role === "assistant") continue;
+				}
+				unit = entry;
+			} else if (message.role === "user") {
+				// User messages cannot be regenerated, but they can be versioned
+				// by /edit, and their versions are navigable.
 				unit = entry;
 			}
 			break;
 		}
 		if (!unit || unit.parentId === null) return undefined;
 		const anchorEntryId = unit.parentId;
+		const role = unit.message.role === "user" ? "user" : "assistant";
 
-		// Every non-harness, non-deleted assistant message that is a direct
-		// child of the anchor roots one version of the response.
+		// Every non-deleted, non-superseded child of the anchor with the
+		// unit's role roots one version (harness aborts included: they can be
+		// navigated, continued over, or deleted). Superseded entries are
+		// leftovers of in-place replacements and tail clones on abandoned
+		// branches, not real alternative versions.
 		const versions: SessionMessageEntry[] = [];
 		for (const entry of this.sessionManager.getEntries()) {
 			if (entry.type !== "message") continue;
 			if (entry.parentId !== anchorEntryId) continue;
-			if (entry.deletedAt !== undefined) continue;
-			if (entry.message.role !== "assistant" || isHarnessMessage(entry.message)) continue;
+			if (entry.deletedAt !== undefined || entry.supersededBy !== undefined) continue;
+			if (entry.message.role !== role) continue;
 			versions.push(entry);
 		}
 		versions.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 		const currentIndex = versions.findIndex((entry) => entry.id === unit.id);
 		if (currentIndex < 0) return undefined;
-		return { anchorEntryId, versions, currentIndex };
+		return { anchorEntryId, versions, currentIndex, role };
 	}
 
 	/**
@@ -2033,9 +2048,13 @@ export class AgentSession {
 	/**
 	 * Regenerate the latest response: branch the session at the swipe-group
 	 * anchor (the current version's subtree stays in the file as a branch) and
-	 * continue from there, producing a new version.
+	 * continue from there, producing a new version. User messages cannot be
+	 * regenerated (they are versioned by /edit instead).
 	 */
 	async regenerateSwipe(group: SwipeGroup): Promise<void> {
+		if (group.role === "user") {
+			throw new Error("User messages cannot be regenerated.");
+		}
 		this.sessionManager.branch(group.anchorEntryId);
 		this._refreshFinalizedContext();
 		this._restoreToolsFromTranscript();
@@ -2131,15 +2150,26 @@ export class AgentSession {
 	}
 
 	/**
-	 * Apply message edits encoded in `<pi_edit>` XML blocks. Positive ids replace
-	 * existing messages counting from the latest message (0 = latest). Negative
-	 * ids append new messages in descending id order. Does not run the agent.
-	 * Returns the number of messages edited and added.
+	 * Apply message edits encoded in `<pi_edit>` and `<pi_swipe>` XML blocks.
 	 *
-	 * @throws Error if the session is streaming/compacting or if a positive id
-	 * refers to a message that does not exist.
+	 * `<pi_edit>` positive ids replace existing messages counting from the
+	 * latest message (0 = latest), except id 0 on the latest editable message:
+	 * that edit is appended as a NEW swipe version (a fresh child of the
+	 * message's parent), keeping the original version intact as the previous
+	 * swipe. Negative ids append new messages in descending id order.
+	 *
+	 * `<pi_swipe>` blocks edit existing swipe versions in place (matched by
+	 * their entry timestamp); they never create a version and never change a
+	 * version's position.
+	 *
+	 * Does not run the agent. Returns the number of messages edited in place,
+	 * added, versioned (new swipes), and swipe-edited in place.
+	 *
+	 * @throws Error if the session is streaming/compacting, if a positive id
+	 * refers to a message that does not exist, or if a pi_swipe timestamp
+	 * matches no version of the current swipe group.
 	 */
-	applyMessageEdits(text: string): { edited: number; added: number } {
+	applyMessageEdits(text: string): { edited: number; added: number; versioned: number; swiped: number } {
 		if (this.isStreaming) {
 			throw new Error("Cannot edit messages while the agent is running.");
 		}
@@ -2147,34 +2177,32 @@ export class AgentSession {
 			throw new Error("Cannot edit messages while compaction is in progress.");
 		}
 
-		const blocks = parseMessageEdits(text);
-		if (blocks.length === 0) {
-			return { edited: 0, added: 0 };
+		const { edits, swipes } = parseMessageEditsAndSwipes(text);
+		if (edits.length === 0 && swipes.length === 0) {
+			return { edited: 0, added: 0, versioned: 0, swiped: 0 };
 		}
 
 		// Sort by id descending so higher ids are applied first.
-		blocks.sort((a, b) => b.id - a.id);
+		edits.sort((a, b) => b.id - a.id);
 
 		const editableEntries = this.getEditableMessageEntries();
 		const replacements: Array<{ entryId: string; message: Message }> = [];
 		const newMessages: Message[] = [];
+		const versionTargets: Array<{ block: ParsedEditBlock; target: { entryId: string; message: AgentMessage } }> = [];
 
-		// Visible-context position of each entry's projected message, used to tell
-		// whether an edited assistant message is complete (its last tool call has
-		// a result, or more messages follow it) or interrupted (nothing follows -
-		// it can be continued via /continue prefill).
-		const projection = this.sessionManager.buildSessionProjection();
-		const flatIndexByEntryId = new Map<string, number>();
-		let flatIndex = 0;
-		for (const projectedEntry of projection.entries) {
-			for (let i = 0; i < projectedEntry.messages.length; i++) {
-				flatIndexByEntryId.set(projectedEntry.sourceEntry.id, flatIndex);
-				flatIndex++;
+		for (const block of edits) {
+			if (block.id === 0) {
+				// The id=0 edit becomes a new swipe version of the latest message
+				// instead of replacing it. Targets resolve from the snapshot so
+				// appends applied later cannot shift them.
+				const target = editableEntries[editableEntries.length - 1];
+				if (!target) {
+					throw new Error("No message to edit at id=0");
+				}
+				versionTargets.push({ block, target });
+				continue;
 			}
-		}
-
-		for (const block of blocks) {
-			if (block.id >= 0) {
+			if (block.id > 0) {
 				const target = editableEntries[editableEntries.length - 1 - block.id];
 				if (!target) {
 					throw new Error(`No message to edit at id=${block.id}`);
@@ -2183,9 +2211,10 @@ export class AgentSession {
 					target.message.role === "assistant" ? (target.message as AssistantMessage) : undefined;
 				const replacement = editBlockToMessage(block, baseAssistant);
 				if (replacement.role === "assistant") {
-					const targetIndex = flatIndexByEntryId.get(target.entryId);
-					const after = targetIndex === undefined ? [] : projection.messages.slice(targetIndex + 1);
-					replacement.stopReason = this._editedAssistantStopReason(block, after);
+					replacement.stopReason = this._editedAssistantStopReason(
+						block,
+						this._messagesAfterEntry(target.entryId),
+					);
 				}
 				replacements.push({ entryId: target.entryId, message: replacement });
 			} else {
@@ -2200,6 +2229,14 @@ export class AgentSession {
 			}
 		}
 
+		// Version creations go first: they only append a child of the anchor,
+		// so snapshot entry ids of replacement targets stay valid.
+		let versioned = 0;
+		for (const { block, target } of versionTargets) {
+			this._appendEditAsNewSwipeVersion(block, target);
+			versioned++;
+		}
+
 		if (replacements.length > 0) {
 			this.sessionManager.replaceMessages(replacements);
 		}
@@ -2208,10 +2245,87 @@ export class AgentSession {
 			this.sessionManager.appendMessage(message);
 		}
 
+		let swiped = 0;
+		for (const block of swipes) {
+			this._applySwipeEdit(block);
+			swiped++;
+		}
+
 		const sessionContext = this.sessionManager.buildSessionContext();
 		this.agent.state.messages = sessionContext.messages;
 
-		return { edited: replacements.length, added: newMessages.length };
+		return { edited: replacements.length, added: newMessages.length, versioned, swiped };
+	}
+
+	/**
+	 * Visible-context messages after a given entry, used to tell whether an
+	 * edited assistant message is complete (its last tool call has a result,
+	 * or more messages follow it) or interrupted (nothing follows - it can be
+	 * continued via /continue prefill).
+	 */
+	private _messagesAfterEntry(entryId: string): AgentMessage[] {
+		const projection = this.sessionManager.buildSessionProjection();
+		let flatIndex = 0;
+		for (const projectedEntry of projection.entries) {
+			for (let i = 0; i < projectedEntry.messages.length; i++) {
+				if (projectedEntry.sourceEntry.id === entryId) {
+					return projection.messages.slice(flatIndex + 1);
+				}
+				flatIndex++;
+			}
+		}
+		return [];
+	}
+
+	/**
+	 * Append a `<pi_edit id="0">` block as a new swipe version of the latest
+	 * editable message: the session branches at the message's parent (the
+	 * swipe-group anchor) and the edited message is appended as a fresh child,
+	 * so it becomes the latest version and the original stays as the previous
+	 * one. When the latest message is the session root (no parent to anchor
+	 * a group at), the edit replaces it in place instead.
+	 */
+	private _appendEditAsNewSwipeVersion(
+		block: ParsedEditBlock,
+		target: { entryId: string; message: AgentMessage },
+	): void {
+		const targetEntry = this.sessionManager.getEntry(target.entryId);
+		const baseAssistant = target.message.role === "assistant" ? (target.message as AssistantMessage) : undefined;
+		const message = editBlockToMessage(block, baseAssistant);
+		if (message.role === "assistant") {
+			message.stopReason = this._editedAssistantStopReason(block, []);
+		}
+		if (!targetEntry || targetEntry.parentId === null) {
+			// No anchor for a swipe group: replace in place.
+			this.sessionManager.replaceMessages([{ entryId: target.entryId, message }]);
+			return;
+		}
+		this.sessionManager.branch(targetEntry.parentId);
+		this.sessionManager.appendMessage(message);
+	}
+
+	/**
+	 * Apply a `<pi_swipe>` block as an in-place edit of an existing swipe
+	 * version. The version is matched by its entry timestamp within the
+	 * current swipe group (any version, not only the current one). When the
+	 * target is not the current version, the session first navigates to it.
+	 */
+	private _applySwipeEdit(block: ParsedSwipeBlock): void {
+		const group = this.getSwipeGroup();
+		const index = group?.versions.findIndex((entry) => entry.timestamp === block.timestamp) ?? -1;
+		if (!group || index < 0) {
+			throw new Error(`No swipe version with timestamp ${block.timestamp} (stale swipe edit)`);
+		}
+		if (index !== group.currentIndex) {
+			this.goToSwipeVersion(group, index);
+		}
+		const versionEntry = group.versions[index];
+		const baseAssistant = block.role === "assistant" ? (versionEntry.message as AssistantMessage) : undefined;
+		const message = editBlockToMessage(block, baseAssistant);
+		if (message.role === "assistant") {
+			message.stopReason = this._editedAssistantStopReason(block, this._messagesAfterEntry(versionEntry.id));
+		}
+		this.sessionManager.replaceMessages([{ entryId: versionEntry.id, message }]);
 	}
 
 	/**
@@ -2222,7 +2336,10 @@ export class AgentSession {
 	 * tool call - is marked aborted so /continue picks it up as a prefill
 	 * continuation candidate and resumes it from the edit point.
 	 */
-	private _editedAssistantStopReason(block: ParsedEditBlock, after: AgentMessage[]): AssistantMessage["stopReason"] {
+	private _editedAssistantStopReason(
+		block: ParsedEditBlock | ParsedSwipeBlock,
+		after: AgentMessage[],
+	): AssistantMessage["stopReason"] {
 		const toolCalls = block.content.filter((c): c is ToolCall => c.type === "toolCall");
 		if (toolCalls.length > 0) {
 			const lastToolCallId = toolCalls[toolCalls.length - 1].id;

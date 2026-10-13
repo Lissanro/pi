@@ -28,7 +28,7 @@ describe("AgentSession swipe", () => {
 		expect(group!.currentIndex).toBe(0);
 	});
 
-	it("returns no group when the tail is a user message", async () => {
+	it("returns no group when the tail user message is the session root (no anchor)", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
@@ -123,6 +123,90 @@ describe("AgentSession swipe", () => {
 		expect(harness.session.goToSwipeVersion(group, 2)).toBe(false);
 		expect(harness.session.goToSwipeVersion(group, 1)).toBe(false);
 		expect(harness.session.goToSwipeVersion(group, -1)).toBe(false);
+	});
+
+	it("keeps the group reachable when a regeneration aborts empty", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("answer v1")]);
+		await harness.session.prompt("question");
+		expect(harness.session.getSwipeGroup()!.versions).toHaveLength(1);
+
+		// The regeneration aborts with an empty (harness) message: it becomes a
+		// degenerate version, so the group is never lost after an abort.
+		harness.appendResponses([fauxAssistantMessage("", { stopReason: "aborted" })]);
+		await harness.session.regenerateSwipe(harness.session.getSwipeGroup()!);
+
+		const group = harness.session.getSwipeGroup()!;
+		expect(group.versions).toHaveLength(2);
+		expect(group.currentIndex).toBe(1);
+		// Navigating back to the real version works.
+		expect(harness.session.goToSwipeVersion(group, 0)).toBe(true);
+		expect(visibleTexts(harness)).toEqual(["question", "answer v1"]);
+	});
+
+	it("versions user messages via /edit; user versions are navigable but not regenerable", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("answer")]);
+		await harness.session.prompt("question");
+		// Follow-up user message: its edits create versions.
+		harness.sessionManager.appendMessage({ role: "user", content: "follow-up", timestamp: Date.now() });
+		harness.session.agent.state.messages = harness.session.sessionManager.buildSessionContext().messages;
+
+		const result = harness.session.applyMessageEdits('<pi_edit id="0" role="user">edited follow-up</pi_edit>');
+		expect(result.versioned).toBe(1);
+		expect(visibleTexts(harness)).toEqual(["question", "answer", "edited follow-up"]);
+
+		const group = harness.session.getSwipeGroup()!;
+		expect(group.role).toBe("user");
+		expect(group.versions).toHaveLength(2);
+		expect(group.currentIndex).toBe(1);
+		// Navigation works.
+		expect(harness.session.goToSwipeVersion(group, 0)).toBe(true);
+		expect(visibleTexts(harness)).toEqual(["question", "answer", "follow-up"]);
+		// Regeneration is rejected.
+		await expect(harness.session.regenerateSwipe(group)).rejects.toThrow(/cannot be regenerated/i);
+	});
+
+	it("edits a non-current swipe version in place via pi_swipe", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("answer v1"), fauxAssistantMessage("answer v2")]);
+		await harness.session.prompt("question");
+		await harness.session.regenerateSwipe(harness.session.getSwipeGroup()!);
+		expect(harness.session.getSwipeGroup()!.versions).toHaveLength(2);
+
+		// Edit v1 (not current) in place: switches to it and applies, keeping
+		// the version count and the version's position.
+		const v1Timestamp = harness.session.getSwipeGroup()!.versions[0].timestamp;
+		const result = harness.session.applyMessageEdits(
+			`<pi_swipe timestamp="${v1Timestamp}" role="assistant"><pi_content>edited v1</pi_content></pi_swipe>`,
+		);
+		expect(result.swiped).toBe(1);
+		expect(result.versioned).toBe(0);
+		expect(visibleTexts(harness)).toEqual(["question", "edited v1"]);
+		const group = harness.session.getSwipeGroup()!;
+		expect(group.versions).toHaveLength(2);
+		expect(group.currentIndex).toBe(0);
+		expect(group.versions[0].timestamp).toBe(v1Timestamp);
+	});
+
+	it("rejects a stale pi_swipe timestamp", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("answer")]);
+		await harness.session.prompt("question");
+
+		expect(() =>
+			harness.session.applyMessageEdits(
+				'<pi_swipe timestamp="1999-01-01T00:00:00.000Z" role="assistant">x</pi_swipe>',
+			),
+		).toThrow(/No swipe version with timestamp/);
 	});
 
 	it("resumes the whole branch when navigating to a version", async () => {

@@ -107,7 +107,12 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import { formatMessageContent, formatMessageForEdit, isMessageEdit } from "../../core/message-edit.ts";
+import {
+	formatMessageContent,
+	formatMessageForEdit,
+	formatMessageForSwipe,
+	isMessageEdit,
+} from "../../core/message-edit.ts";
 import { createCompactionSummaryMessage, createCustomMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
@@ -127,6 +132,7 @@ import {
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import { parseSwipeSelector } from "../../core/swipe-selector.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import { withBuiltInRenderers } from "../../core/tools/renderers/index.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
@@ -6829,12 +6835,12 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Regenerate the latest response or navigate between its versions. A bare
-	 * /swipe (or a positive count past the existing versions) regenerates
-	 * once: each version may start a long agentic session, so regenerating
-	 * more than once per command is unsafe. /swipe N goes N versions forward
-	 * when they exist; /swipe -N goes N versions back, doing nothing when
-	 * already at the first. Prints the version stats (e.g. 3/3).
+	 * Regenerate the latest response or navigate between its versions. Only a
+	 * bare /swipe regenerates; numbered forms navigate: /swipe N goes to swipe
+	 * N (error when it does not exist), /swipe +N / -N jump relative
+	 * (out-of-bounds jumps do nothing), prev/previous and next are synonyms
+	 * for -1 and +1. User messages cannot be regenerated, but their versions
+	 * (created by /edit) are navigable. Prints the version stats (e.g. 3/3).
 	 */
 	private async handleSwipeCommand(arg: string): Promise<void> {
 		if (this.session.isCompacting) {
@@ -6846,63 +6852,92 @@ export class InteractiveMode {
 			return;
 		}
 		const trimmed = arg.trim();
-		const count = trimmed === "" ? 1 : Number.parseInt(trimmed, 10);
-		if (!Number.isInteger(count) || count === 0) {
-			this.showStatus("Usage: /swipe [count]");
-			return;
-		}
 		const group = this.session.getSwipeGroup();
 		if (!group) {
 			this.showStatus("No response to swipe");
 			return;
 		}
 		const stats = (g: SwipeGroup) => `Swipe ${g.currentIndex + 1}/${g.versions.length}`;
-
-		if (count < 0) {
-			const targetIndex = group.currentIndex + count;
-			if (targetIndex < 0) {
-				this.showStatus(`${stats(group)} (already at first)`);
-				return;
-			}
+		const navigate = (targetIndex: number): void => {
 			this.session.goToSwipeVersion(group, targetIndex);
 			this.chatContainer.clear();
 			this.renderInitialMessages();
 			const updated = this.session.getSwipeGroup();
 			this.showStatus(stats(updated ?? group));
-			return;
-		}
+		};
 
-		// Forward: navigate through existing versions; regenerate once when
-		// there are not enough of them.
-		const forwardAvailable = group.versions.length - 1 - group.currentIndex;
-		if (forwardAvailable >= count) {
-			this.session.goToSwipeVersion(group, group.currentIndex + count);
-			this.chatContainer.clear();
-			this.renderInitialMessages();
+		if (trimmed === "") {
+			// Only a bare /swipe regenerates.
+			if (group.role === "user") {
+				this.showStatus("User messages cannot be regenerated (edit to create a new version)");
+				return;
+			}
+			try {
+				this.chatContainer.clear();
+				this.renderInitialMessages();
+				await this.session.regenerateSwipe(group);
+			} catch (error: unknown) {
+				const errorMessage = error instanceof Error ? error.message : String(error);
+				if (errorMessage.includes("No messages to continue from")) {
+					this.showStatus("No messages to continue from");
+				} else if (errorMessage.includes("Cannot continue from message role: assistant")) {
+					this.showStatus("Cannot swipe: the message before the response is an assistant message");
+				} else {
+					this.showError(errorMessage);
+				}
+				return;
+			}
 			const updated = this.session.getSwipeGroup();
-			this.showStatus(stats(updated ?? group));
-			return;
-		}
-
-		try {
-			this.chatContainer.clear();
-			this.renderInitialMessages();
-			await this.session.regenerateSwipe(group);
-		} catch (error: unknown) {
-			const errorMessage = error instanceof Error ? error.message : String(error);
-			if (errorMessage.includes("No messages to continue from")) {
-				this.showStatus("No messages to continue from");
-			} else if (errorMessage.includes("Cannot continue from message role: assistant")) {
-				this.showStatus("Cannot swipe: the message before the response is an assistant message");
-			} else {
-				this.showError(errorMessage);
+			if (updated) {
+				this.showStatus(stats(updated));
 			}
 			return;
 		}
-		const updated = this.session.getSwipeGroup();
-		if (updated) {
-			this.showStatus(stats(updated));
+
+		if (trimmed === "prev" || trimmed === "previous") {
+			if (group.currentIndex - 1 < 0) {
+				this.showStatus(`${stats(group)} (already at first)`);
+				return;
+			}
+			navigate(group.currentIndex - 1);
+			return;
 		}
+		if (trimmed === "next") {
+			if (group.currentIndex + 1 >= group.versions.length) {
+				this.showStatus(`${stats(group)} (already at last)`);
+				return;
+			}
+			navigate(group.currentIndex + 1);
+			return;
+		}
+		if (/^-\d+$/.test(trimmed)) {
+			const targetIndex = group.currentIndex + Number.parseInt(trimmed, 10);
+			if (targetIndex < 0) {
+				this.showStatus(`${stats(group)} (already at first)`);
+				return;
+			}
+			navigate(targetIndex);
+			return;
+		}
+		if (/^\+\d+$/.test(trimmed)) {
+			const targetIndex = group.currentIndex + Number.parseInt(trimmed.slice(1), 10);
+			if (targetIndex >= group.versions.length) {
+				this.showStatus(`${stats(group)} (already at last)`);
+				return;
+			}
+			navigate(targetIndex);
+			return;
+		}
+		if (/^\d+$/.test(trimmed)) {
+			const targetIndex = Number.parseInt(trimmed, 10) - 1;
+			if (targetIndex < 0 || targetIndex >= group.versions.length) {
+				this.showStatus(`No swipe ${trimmed} (have ${group.versions.length})`);
+				return;
+			}
+			navigate(targetIndex);
+			return;
+		}
+		this.showStatus("Usage: /swipe [N|+N|-N|prev|previous|next]");
 	}
 
 	/**
@@ -7056,6 +7091,11 @@ export class InteractiveMode {
 	 * message, 1 is the message before it, etc. A substring argument selects
 	 * every editable message whose text contains it, producing one edit block
 	 * per match. Harness messages are skipped and do not count.
+	 *
+	 * `/edit` blocks (<pi_edit>) create a new swipe version when applied to the
+	 * latest message. The unquoted `swipe` subcommand instead populates
+	 * <pi_swipe> blocks, which edit versions in place: `/edit swipe` for the
+	 * current swipe, `/edit swipe N[,a-b,-K]` for selected versions.
 	 */
 	private async handleEditCommand(arg: string): Promise<void> {
 		if (this.session.isStreaming) {
@@ -7063,6 +7103,35 @@ export class InteractiveMode {
 			return;
 		}
 		const trimmed = arg.trim();
+		if (trimmed === "swipe" || trimmed.startsWith("swipe ")) {
+			const group = this.session.getSwipeGroup();
+			if (!group) {
+				this.showStatus("No swipes to edit");
+				return;
+			}
+			const selector = trimmed === "swipe" ? "" : trimmed.slice(6).trim();
+			let indices: number[];
+			try {
+				indices = selector === "" ? [group.currentIndex + 1] : parseSwipeSelector(selector, group.versions.length);
+			} catch (error: unknown) {
+				this.showStatus(error instanceof Error ? error.message : String(error));
+				return;
+			}
+			const blocks: string[] = [];
+			for (const index of indices) {
+				const version = group.versions[index - 1];
+				const xml = formatMessageForSwipe(version.timestamp, version.message);
+				if (xml !== null) {
+					blocks.push(xml);
+				}
+			}
+			if (blocks.length === 0) {
+				this.showStatus("Selected swipe cannot be edited");
+				return;
+			}
+			this.editor.setText(blocks.join("\n"));
+			return;
+		}
 		if (trimmed !== "" && !/^\d+$/.test(trimmed)) {
 			const substring = normalizeMessageSelectorArg(trimmed);
 			const matches = this.session.getEditableMessagesContaining(substring);
@@ -7103,14 +7172,14 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Apply `<pi_edit>` XML blocks from the editor and refresh the chat. The
-	 * editor text is cleared only when edits are actually applied; on failure
-	 * the text is left so the user can fix it.
+	 * Apply `<pi_edit>` / `<pi_swipe>` XML blocks from the editor and refresh
+	 * the chat. The editor text is cleared only when edits are actually
+	 * applied; on failure the text is left so the user can fix it.
 	 */
 	private async handleApplyMessageEdits(text: string): Promise<void> {
 		try {
 			const result = this.session.applyMessageEdits(text);
-			if (result.edited === 0 && result.added === 0) {
+			if (result.edited === 0 && result.added === 0 && result.versioned === 0 && result.swiped === 0) {
 				this.showStatus("No edits to apply");
 				return;
 			}
@@ -7120,6 +7189,8 @@ export class InteractiveMode {
 			const parts: string[] = [];
 			if (result.edited > 0) parts.push(`edited ${result.edited} message${result.edited === 1 ? "" : "s"}`);
 			if (result.added > 0) parts.push(`added ${result.added} message${result.added === 1 ? "" : "s"}`);
+			if (result.versioned > 0) parts.push(`created ${result.versioned} swipe${result.versioned === 1 ? "" : "s"}`);
+			if (result.swiped > 0) parts.push(`swipe-edited ${result.swiped}`);
 			this.showStatus(parts.join(", "));
 		} catch (error: unknown) {
 			this.showError(error instanceof Error ? error.message : String(error));

@@ -79,8 +79,9 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	},
 	{
 		name: "swipe",
-		description: "Regenerate the latest response or navigate versions (/swipe N forward, /swipe -N back)",
-		argumentHint: "[count]",
+		description:
+			"Regenerate the latest response (bare) or navigate versions (/swipe N, +N, -N, prev, previous, next)",
+		argumentHint: "[N|+N|-N|prev|next]",
 	},
 	{
 		name: "shred",
@@ -90,8 +91,9 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	},
 	{
 		name: "edit",
-		description: "Edit the last message (or N messages back: /edit N, or all matches: /edit substring)",
-		argumentHint: "[index|substring]",
+		description:
+			"Edit the last message (creates a new swipe; or N messages back: /edit N, or all matches: /edit substring; /edit swipe [N] edits a version in place)",
+		argumentHint: "[index|substring|swipe [index]]",
 	},
 	{ name: "resume", description: "Resume a different session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files" },

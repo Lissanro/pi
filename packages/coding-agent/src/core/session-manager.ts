@@ -68,6 +68,13 @@ export interface SessionEntryBase {
 	 * timestamp of the deletion, used to order restores (latest deleted first).
 	 */
 	deletedAt?: string;
+	/**
+	 * Id of the entry that supersedes this one. Entries on the active path are
+	 * never superseded; a superseded entry is a leftover of an in-place
+	 * replacement or a tail clone on an abandoned branch, and is excluded from
+	 * swipe version lists (it is not a real alternative version).
+	 */
+	supersededBy?: string;
 }
 
 export interface SessionMessageEntry extends SessionEntryBase {
@@ -2013,6 +2020,10 @@ export class SessionManager {
 			idMap.set(entry.id, newId);
 
 			const newEntry: SessionEntry = { ...entry, id: newId, parentId: this.leafId };
+			delete newEntry.supersededBy;
+			// The source entry stays on an abandoned branch: mark it superseded
+			// so it is not mistaken for a real alternative (swipe version).
+			entry.supersededBy = newId;
 			if (replacementMap.has(entry.id) && newEntry.type === "message") {
 				newEntry.message = replacementMap.get(entry.id)!;
 			}
@@ -2144,6 +2155,10 @@ export class SessionManager {
 			idMap.set(entry.id, newId);
 
 			const newEntry: SessionEntry = { ...entry, id: newId, parentId: this.leafId };
+			delete newEntry.supersededBy;
+			// The source entry stays on an abandoned branch: mark it superseded
+			// so it is not mistaken for a real alternative (swipe version).
+			entry.supersededBy = newId;
 			if (newEntry.type === "branch_summary") {
 				const oldFromId = (entry as BranchSummaryEntry).fromId;
 				(newEntry as BranchSummaryEntry).fromId = idMap.get(oldFromId) ?? oldFromId;
