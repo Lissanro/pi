@@ -190,6 +190,7 @@ export interface Settings {
 	messageSeparator?: boolean; // Full-width background on the first/last line of each message/tool block (default: true)
 	tokenCountBase?: 1000 | 1024; // Base for token count suffixes in the footer stats (default: 1024)
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
+	swipeSummaryChars?: number; // Default per-section character count for /swipe list and /swipe search snippets (default: 256)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
@@ -1602,6 +1603,16 @@ export class SettingsManager {
 
 	getAutocompleteMaxVisible(): number {
 		return this.settings.autocompleteMaxVisible ?? 5;
+	}
+
+	getSwipeSummaryChars(): number {
+		return this.settings.swipeSummaryChars ?? 256;
+	}
+
+	setSwipeSummaryChars(chars: number): void {
+		this.globalSettings.swipeSummaryChars = Math.max(1, Math.floor(chars));
+		this.markModified("swipeSummaryChars");
+		this.save();
 	}
 
 	setAutocompleteMaxVisible(maxVisible: number): void {

@@ -132,6 +132,13 @@ import {
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import {
+	parseSwipeSearchChars,
+	type SwipeSearchSpec,
+	type SwipeSection,
+	searchSwipeMessage,
+	summarizeSwipeMessage,
+} from "../../core/swipe-list.ts";
 import { parseSwipeSelector } from "../../core/swipe-selector.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import { withBuiltInRenderers } from "../../core/tools/renderers/index.ts";
@@ -6857,6 +6864,22 @@ export class InteractiveMode {
 			this.showStatus("No response to swipe");
 			return;
 		}
+		if (trimmed === "list" || trimmed.startsWith("list ")) {
+			this.handleSwipeList(trimmed === "list" ? "" : trimmed.slice(5).trim(), group);
+			return;
+		}
+		if (trimmed.startsWith("search ")) {
+			this.handleSwipeSearch(trimmed.slice(7).trim(), true, group);
+			return;
+		}
+		if (trimmed.startsWith("isearch ")) {
+			this.handleSwipeSearch(trimmed.slice(8).trim(), false, group);
+			return;
+		}
+		if (trimmed === "search" || trimmed === "isearch") {
+			this.showStatus(`Usage: /swipe ${trimmed} [selector] "<string>" [charspec]`);
+			return;
+		}
 		const stats = (g: SwipeGroup) => `Swipe ${g.currentIndex + 1}/${g.versions.length}`;
 		const navigate = (targetIndex: number): void => {
 			this.session.goToSwipeVersion(group, targetIndex);
@@ -6938,6 +6961,111 @@ export class InteractiveMode {
 			return;
 		}
 		this.showStatus("Usage: /swipe [N|+N|-N|prev|previous|next]");
+	}
+
+	/**
+	 * `/swipe list [section] [selector] [+chars]`: render a summary of the
+	 * selected swipes into the chat. Section is content, reasoning, or tool
+	 * (default: all); each selected swipe shows the first chars of its
+	 * reasoning and content and one `name(args)` line per tool call (tool
+	 * outputs are never shown). Swipes are separated by full-width lines.
+	 */
+	private handleSwipeList(rest: string, group: SwipeGroup): void {
+		const tokens = rest === "" ? [] : rest.split(/\s+/);
+		const sections: SwipeSection[] = [];
+		let chars: number | undefined;
+		const selectorTokens: string[] = [];
+		for (const token of tokens) {
+			if (token === "content" || token === "reasoning" || token === "tool") {
+				sections.push(token);
+			} else if (/^\+\d+$/.test(token)) {
+				chars = Number.parseInt(token.slice(1), 10);
+			} else {
+				selectorTokens.push(token);
+			}
+		}
+		let indices: number[];
+		try {
+			indices =
+				selectorTokens.length === 0
+					? group.versions.map((_, index) => index + 1)
+					: parseSwipeSelector(selectorTokens.join(","), group.versions.length);
+		} catch (error: unknown) {
+			this.showStatus(error instanceof Error ? error.message : String(error));
+			return;
+		}
+		const charsPerSection = chars ?? this.settingsManager.getSwipeSummaryChars();
+		const blocks: string[] = [];
+		for (const index of indices) {
+			const version = group.versions[index - 1];
+			const lines = summarizeSwipeMessage(version.message, sections, charsPerSection);
+			blocks.push([`Swipe ${index}:`, ...(lines.length > 0 ? lines : ["(empty)"])].join("\n"));
+		}
+		this.renderSwipeBlocks(blocks);
+		this.showStatus(`Listed ${indices.length} swipe(s)`);
+	}
+
+	/**
+	 * `/swipe search [selector] "<string>" [charspec]` (case-sensitive) and
+	 * `/swipe isearch ...` (case-insensitive): render one match-snippet line
+	 * per match across reasoning, content, and tool call name+arguments JSON
+	 * (not tool outputs). Char spec: `+64` (64 after, none before), `-64`
+	 * (64 before, default after), `-64,+64` (both). Swipes without a match
+	 * are omitted.
+	 */
+	private handleSwipeSearch(rest: string, caseSensitive: boolean, group: SwipeGroup): void {
+		const quoted = /"([^"]*)"|'([^']*)'/.exec(rest);
+		if (!quoted) {
+			this.showStatus(`Usage: /swipe ${caseSensitive ? "search" : "isearch"} [selector] "<string>" [charspec]`);
+			return;
+		}
+		const query = quoted[1] ?? quoted[2] ?? "";
+		const before = rest.slice(0, quoted.index).trim();
+		const after = rest.slice(quoted.index + quoted[0].length).trim();
+		let indices: number[];
+		try {
+			indices =
+				before === ""
+					? group.versions.map((_, index) => index + 1)
+					: parseSwipeSelector(before.split(/\s+/).join(","), group.versions.length);
+		} catch (error: unknown) {
+			this.showStatus(error instanceof Error ? error.message : String(error));
+			return;
+		}
+		const defaultAfter = this.settingsManager.getSwipeSummaryChars();
+		let spec: SwipeSearchSpec = { before: 0, after: defaultAfter, caseSensitive };
+		if (after !== "") {
+			const firstToken = after.split(/\s+/)[0];
+			const parsed = parseSwipeSearchChars(firstToken, defaultAfter);
+			if (!parsed) {
+				this.showStatus(`Invalid char spec: ${firstToken} (expected +N, -N, or -N,+N)`);
+				return;
+			}
+			spec = { ...parsed, caseSensitive };
+		}
+		const blocks: string[] = [];
+		for (const index of indices) {
+			const version = group.versions[index - 1];
+			const lines = searchSwipeMessage(version.message, query, spec);
+			if (lines.length > 0) {
+				blocks.push([`Swipe ${index}:`, ...lines].join("\n"));
+			}
+		}
+		if (blocks.length === 0) {
+			this.showStatus(`No matches for: ${query}`);
+			return;
+		}
+		this.renderSwipeBlocks(blocks);
+		this.showStatus(`${blocks.length} swipe(s) with matches for: ${query}`);
+	}
+
+	/** Render swipe list/search result blocks into the chat, separated by full-width lines. */
+	private renderSwipeBlocks(blocks: string[]): void {
+		for (const block of blocks) {
+			this.chatContainer.addChild(new DynamicBorder());
+			this.chatContainer.addChild(new Text(block, 1, 0));
+		}
+		this.chatContainer.addChild(new DynamicBorder());
 	}
 
 	/**

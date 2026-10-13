@@ -80,8 +80,8 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "swipe",
 		description:
-			"Regenerate the latest response (bare) or navigate versions (/swipe N, +N, -N, prev, previous, next)",
-		argumentHint: "[N|+N|-N|prev|next]",
+			'Regenerate the latest response (bare) or navigate versions (/swipe N, +N, -N, prev, previous, next); list summaries (/swipe list [section] [selector] [+chars]) or search versions (/swipe search|isearch [selector] "str" [charspec])',
+		argumentHint: "[N|+N|-N|prev|next|list|search|isearch]",
 	},
 	{
 		name: "shred",
