@@ -187,6 +187,12 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/clone` | Duplicate the current active branch into a new session |
 | `/compact [prompt]` | Manually compact context, optional custom instructions |
 | `/copy` | Copy last assistant message to clipboard |
+| [`/continue`](#continue) | Continue the current session without adding a message |
+| [`/edit`](#edit) | Edit messages via your editor; editing the latest message creates a new swipe version |
+| [`/swipe`](#swipes) | Regenerate the latest response, navigate and manage its versions |
+| [`/delete`](#deleting-messages) | Soft-delete messages, tool calls, or swipes (recoverable) |
+| [`/restore`](#deleting-messages) | Restore soft-deleted units or swipes |
+| [`/shred`](#deleting-messages) | Permanently remove messages, tool calls, or swipes (no undo) |
 | `/export [file]` | Export session to HTML or JSONL file |
 | `/import <file>` | Import and resume a session from a JSONL file |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
@@ -230,6 +236,46 @@ Submit messages while the agent is working:
 On Windows Terminal, `Alt+Enter` is fullscreen by default. Remap it in [docs/terminal-setup.md](docs/terminal-setup.md) so pi can receive the follow-up shortcut.
 
 Configure delivery in [settings](docs/settings.md): `steeringMode` and `followUpMode` can be `"one-at-a-time"` (default, waits for response) or `"all"` (delivers all queued at once). `transport` selects provider transport preference (`"sse"`, `"websocket"`, or `"auto"`) for providers that support multiple transports.
+
+### `/continue`
+
+`/continue` resumes the session without adding a message: when the last assistant message was aborted mid-thought (or edited), it is sent back as a prefill so the model continues exactly where it stopped, instead of re-generating from scratch. The prefill is sent on the first streamed turn only; later tool loops in the same continuation are normal turns.
+
+### `/edit`
+
+`/edit` opens your editor pre-filled with XML blocks for the target message(s) and applies the changes when the editor closes:
+
+- `/edit` edits the latest editable message. For the latest message this creates a **new swipe version** (see [Swipes](#swipes)) instead of replacing in place - the original stays available as the previous version.
+- `/edit N` edits the message N positions back; older messages are edited in place.
+- `/edit substring` edits every editable message whose text contains the substring.
+- `/edit swipe [selector]` edits swipe versions **in place**, preserving their position: bare edits the current swipe, a selector (e.g. `2-3,8`, `-2` for the last two) edits the selected versions. The `<pi_swipe>` blocks carry the version's timestamp; never hand-edit it.
+
+Assistant blocks support `pi_reasoning_content`, `pi_content`, and `pi_tool_call` sections; user blocks support plain text and `pi_image`. Deleting all sections of a block deletes the message.
+
+### Swipes
+
+The latest response (or a user message at the tail) has **swipe versions**: alternative branches that share the same parent entry. `/swipe` manages them:
+
+- `/swipe` (bare) regenerates the latest response, producing a new version. This is the only regeneration entry point; user messages cannot be regenerated (edit them to create a version instead).
+- `/swipe N` goes to version N (error when out of range); `/swipe +N` / `/swipe -N` jump relative; `/swipe prev`, `/swipe previous`, `/swipe next` step by one.
+- `/swipe list [section] [selector] [+chars]` prints a summary of the selected versions into the chat: the first chars of reasoning and content, and one `name(args)` line per tool call (tool outputs are never shown). Section is `content`, `reasoning`, or `tool` (default: all). The char count defaults to the `swipeSummaryChars` setting (256); `+64` overrides it for the invocation. Versions are separated by full-width lines.
+- `/swipe search [selector] "<string>" [charspec]` (case-sensitive) and `/swipe isearch ...` (case-insensitive) show one match-snippet line per match across reasoning, content, and tool call name+arguments JSON. Char spec: `+64` shows 64 chars after a match and none before, `-64` shows 64 before and the default after, `-64,+64` sets both. Versions without a match are omitted.
+
+Selectors are comma-separated integers, `a-b` ranges, and `-N` (the last N). The status line shows `Swipe N/M` after every navigation or regeneration.
+
+An aborted regeneration produces a degenerate empty version that stays navigable, continuable, and deletable, so the group is never lost after an abort.
+
+### Deleting messages
+
+`/delete` soft-deletes the last N **deletable units** of the visible context - each tool result, each tool call, the message itself once no tool calls remain, and each compaction boundary - keeping them recoverable in the session file. `/restore N` brings the latest deleted units back (latest deletion first). `/shred` removes units permanently with no undo. Both accept a substring instead of a count to target a single message.
+
+Deleting the message unit of a swipe version deletes **all versions** of the response together; restoring brings them back together. Tool-level deletes operate on the current version only. Swipe-level subcommands manage versions individually:
+
+- `/delete swipe <selector>` marks the selected versions deleted (bare: the current swipe). Visible swipe numbers renumber automatically.
+- `/shred swipe <selector>` removes the selected version subtrees permanently.
+- `/restore swipe <selector>` restores deleted swipes, listed oldest-deletion-first ("first as in deleted first"); bare restores the most recently deleted one, `-N` the last N. When every response version is deleted and the tail is the user message, its deleted response versions are listed so they stay restorable.
+
+After deleting the current swipe the view moves to the surviving version at the clamped index, so remaining versions never silently disappear.
 
 ---
 

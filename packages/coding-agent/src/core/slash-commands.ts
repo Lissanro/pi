@@ -69,13 +69,13 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "delete",
 		description:
-			"Delete the last message (kept recoverable; or N messages: /delete N, or unique match: /delete substring)",
-		argumentHint: "[count|substring]",
+			"Delete the last deletable unit (kept recoverable; /delete N, /delete substring, /delete swipe selector)",
+		argumentHint: "[count|substring|swipe selector]",
 	},
 	{
 		name: "restore",
-		description: "Restore the latest deleted message (or N messages: /restore N)",
-		argumentHint: "[count]",
+		description: "Restore the latest deleted units (/restore N) or deleted swipes (/restore swipe selector)",
+		argumentHint: "[count|swipe selector]",
 	},
 	{
 		name: "swipe",
@@ -86,8 +86,8 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "shred",
 		description:
-			"Permanently remove the last message, no undo (or N messages: /shred N, or unique match: /shred substring)",
-		argumentHint: "[count|substring]",
+			"Permanently remove the last deletable unit, no undo (/shred N, /shred substring, /shred swipe selector)",
+		argumentHint: "[count|substring|swipe selector]",
 	},
 	{
 		name: "edit",

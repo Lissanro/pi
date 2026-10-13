@@ -104,6 +104,7 @@ See [Compaction Reference](compaction.md) for trigger, summarization, and valida
 | `messageBackground` | boolean | `false` | Apply a colored background to user messages and tool call fragments. Disabled by default (transparent background, no full-width padding); when enabled, these fragments are padded so the background fills the width. |
 | `messageSeparator` | boolean | `true` | Full-width background on the first and last line of each message/tool block as a visual separator, even when `messageBackground` is off. |
 | `autocompleteMaxVisible` | number | `5` | Visible autocomplete entries, from 3 to 20. |
+| `swipeSummaryChars` | number | `256` | Default per-section character count for `/swipe list` summaries and `/swipe search` snippet context (after a match). |
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while Pi positions it for input methods. |
 | `terminal.showImages` | boolean | `true` | Display inline images when supported. |
 | `terminal.imageWidthCells` | number | `60` | Preferred inline image width in terminal cells. |
