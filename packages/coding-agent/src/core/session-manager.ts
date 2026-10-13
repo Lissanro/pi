@@ -1980,6 +1980,90 @@ export class SessionManager {
 	}
 
 	/**
+	 * Restore specific soft-deleted entries by id (entry-level deletions only).
+	 * The session file is rewritten. Returns the number of entries restored.
+	 */
+	restoreDeletedEntryIds(entryIds: string[]): number {
+		let restored = 0;
+		for (const entryId of entryIds) {
+			const entry = this.byId.get(entryId);
+			if (!entry || entry.deletedAt === undefined) continue;
+			delete entry.deletedAt;
+			restored++;
+		}
+		if (restored > 0) {
+			this._rewriteFile();
+		}
+		return restored;
+	}
+
+	/**
+	 * Remove entries and all their descendants from the session tree (used to
+	 * shred whole swipe versions: a version root plus its tool results and any
+	 * later turns of that branch). When the leaf is inside a removed subtree,
+	 * it moves to the nearest surviving ancestor. References into removed
+	 * subtrees (compaction firstKeptEntryId, branch summary fromId) are left
+	 * to their fallbacks; orphaned labels are dropped. The session file is
+	 * rewritten. Returns the number of entries removed (including descendants).
+	 */
+	removeEntriesWithDescendants(entryIds: string[]): number {
+		const removedIds = new Set<string>();
+		for (const id of entryIds) {
+			if (this.byId.has(id)) {
+				removedIds.add(id);
+			}
+		}
+		if (removedIds.size === 0) return 0;
+
+		let changed = true;
+		while (changed) {
+			changed = false;
+			for (const entry of this.fileEntries) {
+				if (
+					entry.type !== "session" &&
+					entry.parentId &&
+					removedIds.has(entry.parentId) &&
+					!removedIds.has(entry.id)
+				) {
+					removedIds.add(entry.id);
+					changed = true;
+				}
+			}
+		}
+
+		if (this.leafId && removedIds.has(this.leafId)) {
+			let ancestor = this.byId.get(this.leafId)?.parentId ?? null;
+			while (ancestor && removedIds.has(ancestor)) {
+				ancestor = this.byId.get(ancestor)?.parentId ?? null;
+			}
+			this.leafId = ancestor;
+		}
+
+		this.fileEntries = this.fileEntries.filter((entry) => !removedIds.has(entry.id));
+		for (const id of removedIds) {
+			this.byId.delete(id);
+		}
+
+		// Rebuild label maps from remaining label entries (latest wins; skip orphaned targets).
+		this.labelsById.clear();
+		this.labelTimestampsById.clear();
+		for (const entry of this.fileEntries) {
+			if (entry.type === "label" && this.byId.has(entry.targetId)) {
+				if (entry.label) {
+					this.labelsById.set(entry.targetId, entry.label);
+					this.labelTimestampsById.set(entry.targetId, entry.timestamp);
+				} else {
+					this.labelsById.delete(entry.targetId);
+					this.labelTimestampsById.delete(entry.targetId);
+				}
+			}
+		}
+
+		this._rewriteFile();
+		return removedIds.size;
+	}
+
+	/**
 	 * Replace one or more messages on the active leaf path while preserving all
 	 * surrounding entries (model changes, compaction, labels, etc.). Each
 	 * replacement is identified by its entry id. The session is branched at the

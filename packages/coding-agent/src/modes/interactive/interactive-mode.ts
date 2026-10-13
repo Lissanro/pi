@@ -6972,6 +6972,31 @@ export class InteractiveMode {
 			return;
 		}
 		const trimmed = arg.trim();
+		if (trimmed === "swipe" || trimmed.startsWith("swipe ")) {
+			const group = this.session.getSwipeGroup();
+			if (!group) {
+				this.showStatus("No swipes to delete");
+				return;
+			}
+			const selector = trimmed === "swipe" ? "" : trimmed.slice(6).trim();
+			let indices: number[];
+			try {
+				indices = selector === "" ? [group.currentIndex + 1] : parseSwipeSelector(selector, group.versions.length);
+			} catch (error: unknown) {
+				this.showStatus(error instanceof Error ? error.message : String(error));
+				return;
+			}
+			const deleted = this.session.deleteSwipeVersions(indices);
+			if (deleted.length === 0) {
+				this.showStatus("No swipes to delete");
+				return;
+			}
+			this.chatContainer.clear();
+			this.renderInitialMessages();
+			this.showStatus(`Deleted ${deleted.length} swipe(s) (/restore swipe to undo)`);
+			void this.flushCompactionQueue({ willRetry: false });
+			return;
+		}
 		if (trimmed !== "" && !/^\d+$/.test(trimmed)) {
 			const substring = normalizeMessageSelectorArg(trimmed);
 			const matches = this.session.getEditableMessagesContaining(substring);
@@ -6995,7 +7020,7 @@ export class InteractiveMode {
 		}
 		const count = trimmed === "" ? 1 : Number.parseInt(trimmed, 10);
 		if (!Number.isInteger(count) || count < 1) {
-			this.showStatus("Usage: /delete [count|substring]");
+			this.showStatus("Usage: /delete [count|substring|swipe selector]");
 			return;
 		}
 		const deleted = this.session.softDeleteLastMessages(count);
@@ -7019,9 +7044,35 @@ export class InteractiveMode {
 			return;
 		}
 		const trimmed = arg.trim();
+		if (trimmed === "swipe" || trimmed.startsWith("swipe ")) {
+			const deleted = this.session.getDeletedSwipeVersions();
+			if (deleted.length === 0) {
+				this.showStatus("No deleted swipes to restore");
+				return;
+			}
+			const selector = trimmed === "swipe" ? "" : trimmed.slice(6).trim();
+			let indices: number[];
+			try {
+				// Bare restores the most recently deleted swipe; -N the last N.
+				indices = selector === "" ? [deleted.length] : parseSwipeSelector(selector, deleted.length);
+			} catch (error: unknown) {
+				this.showStatus(error instanceof Error ? error.message : String(error));
+				return;
+			}
+			const restored = this.session.restoreSwipeVersions(indices);
+			if (restored.length === 0) {
+				this.showStatus("No deleted swipes to restore");
+				return;
+			}
+			this.chatContainer.clear();
+			this.renderInitialMessages();
+			this.showStatus(`Restored ${restored.length} swipe(s)`);
+			void this.flushCompactionQueue({ willRetry: false });
+			return;
+		}
 		const count = trimmed === "" ? 1 : Number.parseInt(trimmed, 10);
 		if (trimmed !== "" && (!Number.isInteger(count) || count < 1)) {
-			this.showStatus("Usage: /restore [count]");
+			this.showStatus("Usage: /restore [count|swipe selector]");
 			return;
 		}
 		const restored = this.session.restoreDeletedMessages(count);
@@ -7048,6 +7099,31 @@ export class InteractiveMode {
 			return;
 		}
 		const trimmed = arg.trim();
+		if (trimmed === "swipe" || trimmed.startsWith("swipe ")) {
+			const group = this.session.getSwipeGroup();
+			if (!group) {
+				this.showStatus("No swipes to shred");
+				return;
+			}
+			const selector = trimmed === "swipe" ? "" : trimmed.slice(6).trim();
+			let indices: number[];
+			try {
+				indices = selector === "" ? [group.currentIndex + 1] : parseSwipeSelector(selector, group.versions.length);
+			} catch (error: unknown) {
+				this.showStatus(error instanceof Error ? error.message : String(error));
+				return;
+			}
+			const shredded = this.session.shredSwipeVersions(indices);
+			if (shredded.length === 0) {
+				this.showStatus("No swipes to shred");
+				return;
+			}
+			this.chatContainer.clear();
+			this.renderInitialMessages();
+			this.showStatus(`Shredded ${shredded.length} swipe(s)`);
+			void this.flushCompactionQueue({ willRetry: false });
+			return;
+		}
 		if (trimmed !== "" && !/^\d+$/.test(trimmed)) {
 			const substring = normalizeMessageSelectorArg(trimmed);
 			const matches = this.session.getEditableMessagesContaining(substring);
@@ -7071,7 +7147,7 @@ export class InteractiveMode {
 		}
 		const count = trimmed === "" ? 1 : Number.parseInt(trimmed, 10);
 		if (!Number.isInteger(count) || count < 1) {
-			this.showStatus("Usage: /shred [count|substring]");
+			this.showStatus("Usage: /shred [count|substring|swipe selector]");
 			return;
 		}
 		const shredded = this.session.shredLastMessages(count);

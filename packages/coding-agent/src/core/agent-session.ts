@@ -1886,6 +1886,46 @@ export class AgentSession {
 		return units.slice(Math.max(0, units.length - count)).reverse();
 	}
 
+	/**
+	 * All non-superseded assistant message entries that share the given
+	 * entry's parent: the swipe versions of one response (the entry itself
+	 * plus its sibling versions), or just the entry when there is no group.
+	 */
+	private _swipeSiblingsOf(entry: SessionEntry): SessionMessageEntry[] {
+		if (entry.type !== "message" || entry.message.role !== "assistant" || entry.parentId === null) {
+			return entry.type === "message" ? [entry as SessionMessageEntry] : [];
+		}
+		const siblings: SessionMessageEntry[] = [];
+		for (const candidate of this.sessionManager.getEntries()) {
+			if (candidate.type !== "message" || candidate.parentId !== entry.parentId) continue;
+			if (candidate.message.role !== "assistant") continue;
+			if (candidate.supersededBy !== undefined) continue;
+			siblings.push(candidate);
+		}
+		return siblings.length > 1 ? siblings : [entry as SessionMessageEntry];
+	}
+
+	/**
+	 * Expand consumed entry-level units so that deleting the message unit of a
+	 * swipe version deletes all versions of the response: the version root is
+	 * replaced by every sibling version root. Tool-call-level units pass
+	 * through unchanged (they operate on the current version only).
+	 */
+	private _expandToSwipeSiblings(targets: DeletableUnit[]): DeletableUnit[] {
+		const expanded: DeletableUnit[] = [];
+		for (const unit of targets) {
+			if (unit.toolCallId !== undefined || unit.entry.type !== "message") {
+				expanded.push(unit);
+				continue;
+			}
+			const siblings = this._swipeSiblingsOf(unit.entry);
+			for (const sibling of siblings) {
+				expanded.push(sibling.id === unit.entry.id ? unit : { entry: sibling });
+			}
+		}
+		return expanded;
+	}
+
 	private _rebuildMessagesFromSession(): void {
 		const sessionContext = this.sessionManager.buildSessionContext();
 		this.agent.state.messages = sessionContext.messages;
@@ -1895,10 +1935,12 @@ export class AgentSession {
 	 * Soft-delete the last `count` deletable units of the visible context.
 	 * Deleted units stay in the session file but are hidden from the chat,
 	 * from model context, and from edit indices; /restore brings them back.
-	 * Returns the consumed units (empty when nothing was deletable).
+	 * When a consumed unit is the message of a swipe version, every version
+	 * of the response is marked. Returns the consumed units (empty when
+	 * nothing was deletable).
 	 */
 	softDeleteLastMessages(count: number): DeletableUnit[] {
-		const targets = this._consumeDeletableUnits(count);
+		const targets = this._expandToSwipeSiblings(this._consumeDeletableUnits(count));
 		const marked = this.sessionManager.softDeleteUnits(
 			targets.map((unit) => ({ entryId: unit.entry.id, toolCallId: unit.toolCallId })),
 		);
@@ -1927,12 +1969,26 @@ export class AgentSession {
 	 * Permanently remove the last `count` deletable units of the visible
 	 * context (no undo; /delete keeps units recoverable instead). Whole-entry
 	 * units are removed from the session file; tool-call units are removed
-	 * from their message content. Returns the consumed units.
+	 * from their message content; when a consumed unit is the message of a
+	 * swipe version, every version subtree of the response is removed.
+	 * Returns the consumed units (empty when nothing was deletable).
 	 */
 	shredLastMessages(count: number): DeletableUnit[] {
 		const targets = this._consumeDeletableUnits(count);
 		if (targets.length === 0) return [];
-		const entryIds = targets.filter((unit) => unit.toolCallId === undefined).map((unit) => unit.entry.id);
+		const expanded = this._expandToSwipeSiblings(targets);
+		// Version subtrees are removed with descendants; other entries
+		// surgically (preserving their surroundings); tool calls from content.
+		const versionRootIds: string[] = [];
+		const otherEntryIds: string[] = [];
+		for (const unit of expanded) {
+			if (unit.toolCallId !== undefined) continue;
+			if (this._swipeSiblingsOf(unit.entry).length > 1) {
+				versionRootIds.push(unit.entry.id);
+			} else {
+				otherEntryIds.push(unit.entry.id);
+			}
+		}
 		const toolCallRemovals = new Map<string, Set<string>>();
 		for (const unit of targets) {
 			if (unit.toolCallId === undefined) continue;
@@ -1943,11 +1999,15 @@ export class AgentSession {
 			}
 			set.add(unit.toolCallId);
 		}
-		const removed = this.sessionManager.removeEntries(entryIds, toolCallRemovals);
+		let removed = 0;
+		if (versionRootIds.length > 0) {
+			removed += this.sessionManager.removeEntriesWithDescendants(versionRootIds);
+		}
+		removed += this.sessionManager.removeEntries(otherEntryIds, toolCallRemovals);
 		if (removed > 0) {
 			this._rebuildMessagesFromSession();
 		}
-		return targets;
+		return expanded;
 	}
 
 	/**
@@ -2059,6 +2119,194 @@ export class AgentSession {
 		this._refreshFinalizedContext();
 		this._restoreToolsFromTranscript();
 		await this.continue();
+	}
+
+	/**
+	 * Soft-delete specific swipe versions of the current group (1-based
+	 * indices against the visible versions). Marking the current version also
+	 * marks its visible trailing tool results so no orphaned outputs remain;
+	 * the results are stamped before the roots so a later restore brings the
+	 * message back before its results. Returns the selected version entries.
+	 */
+	deleteSwipeVersions(indices: number[]): DeletableUnit[] {
+		const group = this.getSwipeGroup();
+		if (!group) return [];
+		const selected: SessionMessageEntry[] = [];
+		for (const index of indices) {
+			const version = group.versions[index - 1];
+			if (version && !selected.includes(version)) selected.push(version);
+		}
+		if (selected.length === 0) return [];
+
+		// Visible tool results trailing the current version, stamped first.
+		const targets: Array<{ entryId: string }> = [];
+		const currentVersion = group.versions[group.currentIndex];
+		if (selected.includes(currentVersion)) {
+			const contextEntries = this.sessionManager.buildContextEntries();
+			let afterRoot = false;
+			for (const entry of contextEntries) {
+				if (entry.id === currentVersion.id) {
+					afterRoot = true;
+					continue;
+				}
+				if (afterRoot && entry.type === "message" && entry.message.role === "toolResult") {
+					targets.push({ entryId: entry.id });
+				}
+			}
+		}
+		for (const version of selected) {
+			targets.push({ entryId: version.id });
+		}
+
+		const marked = this.sessionManager.softDeleteUnits(targets);
+		if (marked > 0) {
+			this._navigateAfterVersionRemoval(group, selected.includes(currentVersion));
+		}
+		return selected.map((entry) => ({ entry }));
+	}
+
+	/**
+	 * Permanently remove specific swipe versions of the current group (1-based
+	 * indices against the visible versions): each version subtree is removed
+	 * with all its descendants. Returns the selected version entries.
+	 */
+	shredSwipeVersions(indices: number[]): DeletableUnit[] {
+		const group = this.getSwipeGroup();
+		if (!group) return [];
+		const selected: SessionMessageEntry[] = [];
+		for (const index of indices) {
+			const version = group.versions[index - 1];
+			if (version && !selected.includes(version)) selected.push(version);
+		}
+		if (selected.length === 0) return [];
+		const removedCurrent = selected.includes(group.versions[group.currentIndex]);
+		const removed = this.sessionManager.removeEntriesWithDescendants(selected.map((entry) => entry.id));
+		if (removed > 0) {
+			this._navigateAfterVersionRemoval(group, removedCurrent);
+		}
+		return selected.map((entry) => ({ entry }));
+	}
+
+	/**
+	 * After versions are deleted or shredded, the leaf can be left inside a
+	 * removed subtree with the surviving versions orphaned off the active
+	 * path. When the current version was removed, navigate to the surviving
+	 * version at the clamped index (standard list-removal cursor behavior);
+	 * otherwise just rebuild the agent state from the session.
+	 */
+	private _navigateAfterVersionRemoval(group: SwipeGroup, removedCurrent: boolean): void {
+		if (!removedCurrent) {
+			this._rebuildMessagesFromSession();
+			return;
+		}
+		const remaining = this._visibleVersionsOf(group);
+		if (remaining.length === 0) {
+			this._rebuildMessagesFromSession();
+			return;
+		}
+		const index = Math.min(group.currentIndex, remaining.length - 1);
+		// currentIndex -1 forces navigation even when the target keeps the
+		// numeric index of the removed version.
+		this.goToSwipeVersion(
+			{ anchorEntryId: group.anchorEntryId, versions: remaining, currentIndex: -1, role: group.role },
+			index,
+		);
+	}
+
+	/** Visible (non-deleted, non-superseded) versions of a group's anchor. */
+	private _visibleVersionsOf(group: SwipeGroup): SessionMessageEntry[] {
+		const remaining: SessionMessageEntry[] = [];
+		for (const entry of this.sessionManager.getEntries()) {
+			if (entry.type !== "message" || entry.parentId !== group.anchorEntryId) continue;
+			if (entry.message.role !== group.role) continue;
+			if (entry.deletedAt !== undefined || entry.supersededBy !== undefined) continue;
+			remaining.push(entry);
+		}
+		remaining.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+		return remaining;
+	}
+
+	/**
+	 * Deleted swipe versions of the current group's anchor, oldest deletion
+	 * first ("first as in deleted first"). When the tail is a user message
+	 * whose response versions are all deleted, the deleted assistant children
+	 * of that user message are listed instead, so they stay restorable. Empty
+	 * when there is nothing deleted to restore.
+	 */
+	getDeletedSwipeVersions(): SessionMessageEntry[] {
+		const group = this.getSwipeGroup();
+		if (!group) return [];
+		const unit = group.versions[group.currentIndex];
+		const deleted: SessionMessageEntry[] = [];
+		for (const entry of this.sessionManager.getEntries()) {
+			if (entry.type !== "message" || entry.deletedAt === undefined || entry.supersededBy !== undefined) continue;
+			if (entry.parentId === group.anchorEntryId && entry.message.role === group.role) {
+				deleted.push(entry);
+			} else if (group.role === "user" && entry.parentId === unit.id && entry.message.role === "assistant") {
+				// All response versions deleted: the tail user message keeps its
+				// deleted assistant children restorable.
+				deleted.push(entry);
+			}
+		}
+		deleted.sort((a, b) => a.deletedAt!.localeCompare(b.deletedAt!));
+		return deleted;
+	}
+
+	/**
+	 * Restore specific deleted swipe versions (1-based indices against
+	 * getDeletedSwipeVersions()). Versions reappear at their timestamp-sorted
+	 * positions. Returns the restored entries.
+	 */
+	restoreSwipeVersions(indices: number[]): SessionMessageEntry[] {
+		const deleted = this.getDeletedSwipeVersions();
+		const selected: SessionMessageEntry[] = [];
+		for (const index of indices) {
+			const version = deleted[index - 1];
+			if (version && !selected.includes(version)) selected.push(version);
+		}
+		if (selected.length === 0) return [];
+		const restored = this.sessionManager.restoreDeletedEntryIds(selected.map((entry) => entry.id));
+		if (restored > 0) {
+			// When the leaf sits outside every visible version subtree of the
+			// restored set (for example all versions were deleted), navigate to
+			// the latest restored version so it does not stay orphaned.
+			const anchorEntryId = selected[0].parentId;
+			const role = selected[0].message.role;
+			if (anchorEntryId && (role === "assistant" || role === "user")) {
+				const versions: SessionMessageEntry[] = [];
+				for (const entry of this.sessionManager.getEntries()) {
+					if (entry.type !== "message" || entry.parentId !== anchorEntryId) continue;
+					if (entry.message.role !== role) continue;
+					if (entry.deletedAt !== undefined || entry.supersededBy !== undefined) continue;
+					versions.push(entry);
+				}
+				versions.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+				const leafInside = this._leafWithinIds(new Set(versions.map((entry) => entry.id)));
+				const candidates = selected.filter(
+					(entry) => entry.parentId === anchorEntryId && entry.message.role === role,
+				);
+				if (!leafInside && versions.length > 0 && candidates.length > 0) {
+					const latest = candidates.reduce((a, b) => (a.timestamp >= b.timestamp ? a : b));
+					const index = versions.findIndex((entry) => entry.id === latest.id);
+					if (index >= 0) {
+						this.goToSwipeVersion({ anchorEntryId, versions, currentIndex: -1, role }, index);
+						return selected;
+					}
+				}
+			}
+			this._rebuildMessagesFromSession();
+		}
+		return selected;
+	}
+
+	/** Whether the active leaf is inside the subtree of any of the given entries. */
+	private _leafWithinIds(entryIds: Set<string>): boolean {
+		let current = this.sessionManager.getLeafId();
+		while (current) {
+			if (entryIds.has(current)) return true;
+			current = this.sessionManager.getEntry(current)?.parentId ?? null;
+		}
+		return false;
 	}
 
 	/**
