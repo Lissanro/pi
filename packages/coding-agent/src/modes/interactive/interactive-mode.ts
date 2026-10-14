@@ -6896,9 +6896,13 @@ export class InteractiveMode {
 				return;
 			}
 			try {
+				// Branch first so the re-rendered chat no longer shows the old
+				// version; regenerating after the render would leave the old
+				// response on screen with the new one appended below it.
+				this.session.prepareSwipeRegeneration(group);
 				this.chatContainer.clear();
 				this.renderInitialMessages();
-				await this.session.regenerateSwipe(group);
+				await this.session.continue();
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : String(error);
 				if (errorMessage.includes("No messages to continue from")) {

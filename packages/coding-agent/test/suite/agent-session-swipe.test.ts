@@ -97,6 +97,22 @@ describe("AgentSession swipe", () => {
 		expect(updated.currentIndex).toBe(1);
 	});
 
+	it("prepareSwipeRegeneration synchronously removes the current version from context", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("answer v1")]);
+		await harness.session.prompt("question");
+		const group = harness.session.getSwipeGroup()!;
+
+		// The TUI renders the transcript between branching and streaming; it
+		// must already exclude the old version. Rendering before the branch
+		// left the old response on screen with the new one appended below it.
+		harness.session.prepareSwipeRegeneration(group);
+		expect(visibleTexts(harness)).toEqual(["question"]);
+		expect(harness.session.sessionManager.getLeafId()).toBe(group.anchorEntryId);
+	});
+
 	it("navigates between versions", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

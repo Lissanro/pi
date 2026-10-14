@@ -2106,18 +2106,30 @@ export class AgentSession {
 	}
 
 	/**
-	 * Regenerate the latest response: branch the session at the swipe-group
-	 * anchor (the current version's subtree stays in the file as a branch) and
-	 * continue from there, producing a new version. User messages cannot be
-	 * regenerated (they are versioned by /edit instead).
+	 * Branch the session at the swipe-group anchor in preparation for
+	 * regeneration: the current version's subtree stays in the file as a
+	 * branch, and the agent state is rebuilt up to the anchor. Split from
+	 * regenerateSwipe so callers (the TUI) can re-render the reduced
+	 * transcript before the new version streams; otherwise the old version
+	 * stays on screen with the new one appended below it.
 	 */
-	async regenerateSwipe(group: SwipeGroup): Promise<void> {
+	prepareSwipeRegeneration(group: SwipeGroup): void {
 		if (group.role === "user") {
 			throw new Error("User messages cannot be regenerated.");
 		}
 		this.sessionManager.branch(group.anchorEntryId);
 		this._refreshFinalizedContext();
 		this._restoreToolsFromTranscript();
+	}
+
+	/**
+	 * Regenerate the latest response: branch the session at the swipe-group
+	 * anchor (the current version's subtree stays in the file as a branch) and
+	 * continue from there, producing a new version. User messages cannot be
+	 * regenerated (they are versioned by /edit instead).
+	 */
+	async regenerateSwipe(group: SwipeGroup): Promise<void> {
+		this.prepareSwipeRegeneration(group);
 		await this.continue();
 	}
 
