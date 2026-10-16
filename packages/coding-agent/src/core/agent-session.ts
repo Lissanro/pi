@@ -4326,9 +4326,10 @@ export class AgentSession {
 				),
 			);
 			if (!preparation) {
-				// Check why we can't compact
+				// Check why we can't compact. A soft-deleted compaction is absent and
+				// does not block a new compaction; only a live boundary does.
 				const lastEntry = pathEntries[pathEntries.length - 1];
-				if (lastEntry?.type === "compaction") {
+				if (lastEntry?.type === "compaction" && lastEntry.deletedAt === undefined) {
 					throw new Error("Already compacted");
 				}
 				throw new Error("Nothing to compact (session too small)");

@@ -7,6 +7,7 @@ import {
 	type Message,
 	type Model,
 	type SimpleStreamOptions,
+	separateConsecutiveAssistantMessages,
 	type TextContent,
 	type ThinkingBudgets,
 	type Transport,
@@ -38,13 +39,14 @@ import type {
 export type { QueueMode } from "./types.ts";
 
 function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
-	return messages.filter(
+	const converted = messages.filter(
 		(message) =>
 			message.role === "system" ||
 			message.role === "user" ||
 			message.role === "assistant" ||
 			message.role === "toolResult",
 	);
+	return separateConsecutiveAssistantMessages(converted);
 }
 
 const EMPTY_USAGE = {

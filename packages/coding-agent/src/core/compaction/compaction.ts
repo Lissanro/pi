@@ -991,7 +991,10 @@ export async function prepareCompaction(
 	overrides?: CompactionOverrides,
 	tokenCounter?: TokenCounter,
 ): Promise<CompactionPreparation | undefined> {
-	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
+	const lastEntry = pathEntries[pathEntries.length - 1];
+	// A soft-deleted compaction is treated as absent: it un-compacts its range and
+	// must not block a new compaction from being prepared.
+	if (lastEntry?.type === "compaction" && lastEntry.deletedAt === undefined) {
 		return undefined;
 	}
 
@@ -1060,8 +1063,10 @@ export async function prepareCompaction(
 	// projected sourceEntries: a projection consumes older compaction entries
 	// into the newest one, but the "no folding" behavior prepends every visible
 	// summary (oldest first) so the request prefix matches the chat exactly.
+	// Soft-deleted compactions are absent: their summaries must never leak into the
+	// summarization request or the summaries block of a new compaction.
 	const compactions: CompactionEntry[] = pathEntries.filter(
-		(entry): entry is CompactionEntry => entry.type === "compaction",
+		(entry): entry is CompactionEntry => entry.type === "compaction" && entry.deletedAt === undefined,
 	);
 	const visibleCompactions = filterSummariesToBlockLimit(compactions, settings.summaryBlockMaxTokens);
 	const summaryMessages = visibleCompactions

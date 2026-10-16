@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_COMPACTION_SETTINGS, prepareCompaction } from "../../src/core/compaction/index.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 
 function createUsage() {
@@ -247,6 +248,37 @@ describe("SessionManager tool-call-level deletion", () => {
 		const deleted = session.getDeletedUnits();
 		expect(deleted).toHaveLength(1);
 		expect(deleted[0].toolCallId).toBeUndefined();
+	});
+});
+
+describe("soft-deleted compaction does not block re-compaction", () => {
+	it("prepareCompaction proceeds when the last entry is a soft-deleted compaction", async () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage(userMessage("old question", 1));
+		const keptId = session.appendMessage(assistantMessage("old answer", 2));
+		session.appendCompaction("summary of old", keptId, 100);
+
+		// The compaction boundary is the last entry; soft-deleting it must not block a new compaction.
+		const compaction = session.getBranch().find((entry) => entry.type === "compaction")!;
+		expect(session.softDeleteUnits([{ entryId: compaction.id }])).toBe(1);
+
+		// Force a cut so the un-compacted range has something to summarize; a live
+		// boundary would return undefined immediately ("already compacted").
+		const preparation = await prepareCompaction(session.getBranch(), DEFAULT_COMPACTION_SETTINGS, {
+			keepRecentTokens: 1,
+		});
+		expect(preparation).toBeDefined();
+		expect(preparation!.firstKeptEntryId).toBe(keptId);
+	});
+
+	it("prepareCompaction refuses when the last entry is a live compaction", async () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage(userMessage("old question", 1));
+		const keptId = session.appendMessage(assistantMessage("old answer", 2));
+		session.appendCompaction("summary of old", keptId, 100);
+
+		const preparation = await prepareCompaction(session.getBranch(), DEFAULT_COMPACTION_SETTINGS);
+		expect(preparation).toBeUndefined();
 	});
 });
 

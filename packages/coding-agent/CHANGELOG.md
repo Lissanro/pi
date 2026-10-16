@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Fixed compaction dropping the trailing assistant turn when a provider (e.g. llama.cpp) rejects a request containing an assistant message without tool calls immediately followed by another assistant message; a neutral user divider is now inserted between them.
+- Fixed a soft-deleted compaction boundary still blocking a new compaction with `Already compacted`; a deleted boundary is now treated as absent, and its summary no longer leaks into the summarization request.
 - Fixed MCP OAuth sign-in accepting an authorization response whose `iss` parameter names another authorization server; the code is now rejected before it is exchanged (RFC 9207).
 - Fixed MCP OAuth sign-in failing with `Invalid scope` when the token response contains `"scope": ""`, and similar failures for other empty or `null` optional OAuth fields ([#10266](https://github.com/earendil-works/pi/issues/10266)).
 

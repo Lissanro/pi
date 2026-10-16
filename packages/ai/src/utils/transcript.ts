@@ -119,6 +119,38 @@ export function resolveTranscript(
 	return supportsMidConvoSystemMessages ? context : collapseSystemMessages(context);
 }
 
+/** Neutral divider inserted between consecutive assistant messages for providers that reject them. */
+export const ASSISTANT_MESSAGE_DIVIDER = "---";
+
+function assistantHasToolCalls(message: Message): boolean {
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return false;
+	return message.content.some((block) => block.type === "toolCall");
+}
+
+/**
+ * Insert a neutral user divider between consecutive assistant messages where the earlier one
+ * carries no tool calls. Some providers (llama.cpp) reject a request that contains an assistant
+ * message without tool calls immediately followed by another assistant message, which would drop
+ * the trailing assistant turn. The divider keeps the sequence valid without changing its meaning.
+ * A message that carries tool calls already acts as a divider and is never split.
+ */
+export function separateConsecutiveAssistantMessages(messages: Message[]): Message[] {
+	const result: Message[] = [];
+	for (let i = 0; i < messages.length; i++) {
+		const message = messages[i];
+		result.push(message);
+		const next = messages[i + 1];
+		if (message.role === "assistant" && next && next.role === "assistant" && !assistantHasToolCalls(message)) {
+			result.push({
+				role: "user",
+				content: [{ type: "text", text: ASSISTANT_MESSAGE_DIVIDER }],
+				timestamp: Date.now(),
+			});
+		}
+	}
+	return result;
+}
+
 /** Strip executable and display-only fields from a tool before transcript comparison or persistence. */
 export function toToolDeclaration(tool: Tool): Tool {
 	return {
