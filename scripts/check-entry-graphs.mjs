@@ -36,23 +36,45 @@ const WORKSPACE = {
 const BUDGETS = {
 	"packages/ai": {
 		"./models": {
-			maxFiles: 15,
+			// Request telemetry reaches pi-ai's telemetry.ts and pi-telemetry's root (index, noop, metrics, memory).
+			// Request identity reaches utils/identity.ts and its version constant.
+			maxFiles: 20,
 			forbid: ["providers/", "models.generated.ts", "index.ts", "utils/validation.ts", "utils/typebox-helpers.ts"],
+			allow: ["packages/telemetry/src/index.ts"],
 		},
 		"./utils/*": { maxFiles: 3, forbid: ["providers/", "api/", "index.ts"] },
 	},
-	"packages/durable": {
-		".": {
-			// The built-in tool task validates arguments with pi-ai's TypeBox-based validation, so TypeBox is allowed.
-			maxFiles: 59,
-			forbid: ["packages/ai/src/index.ts", "packages/ai/src/utils/typebox-helpers.ts"],
+	"packages/codemode": {
+		// Node and Bun users never load the Cloudflare entry, which imports the `cloudflare:workers` built-in.
+		".": { maxFiles: 12, forbid: ["codemode/src/cloudflare.ts"] },
+		// Runtimes without Node built-ins (Workers, browsers) import these; neither may reach the worker-thread host
+		// or the file-based wasm loader.
+		"./portable": {
+			maxFiles: 8,
+			forbid: ["codemode/src/index.ts", "runtime/host.ts", "runtime/worker.ts", "codemode/src/wasm.ts"],
+		},
+		"./cloudflare": {
+			maxFiles: 9,
+			forbid: ["codemode/src/index.ts", "runtime/host.ts", "runtime/worker.ts", "codemode/src/wasm.ts"],
 		},
 	},
-	"packages/agent": {
-		"./harness/runtime/reducer": { maxFiles: 1 },
-		"./harness/context": { maxFiles: 6, forbid: ["harness/runtime/", "harness/execution/", "packages/ai/"] },
-		"./harness/env/nodejs": { maxFiles: 5, forbid: ["packages/ai/", "harness/runtime/"] },
-		"./harness/session": { maxFiles: 25, forbid: ["harness/runtime/", "harness/execution/", "packages/ai/src/index.ts"] },
+	"packages/durable": {
+		".": {
+			// Tool argument validation reaches TypeBox; provider-session creation reaches pi-ai's lean UUID utility; the
+			// memory and SQLite storages share scan order and cursor handling. Values from Chord's root (copyJson,
+			// replicatedState) reach its host runtime through the root barrel. Chord's context reaches pi-telemetry's root
+			// (index, noop, metrics, memory) for its NOOP telemetry default; harness/telemetry.ts is Durable's schema.
+			// The Harness's request identity reaches pi-ai's utils/identity.ts and its version constant.
+			maxFiles: 73,
+			forbid: [
+				"packages/ai/src/index.ts",
+				"packages/ai/src/utils/typebox-helpers.ts",
+				// Photon (WebAssembly) loads only through `./images`.
+				"packages/durable/src/images/",
+			],
+		},
+		// The file tools reach their environment helpers and the Harness definitions they need, not the Harness itself.
+		"./tools": { maxFiles: 17, forbid: ["packages/durable/src/images/"] },
 	},
 };
 
@@ -137,7 +159,7 @@ for (const [pkgDir, budgets] of Object.entries(BUDGETS)) {
 				failures += 1;
 			}
 			for (const pattern of budget.forbid ?? []) {
-				const hit = graph.filter((file) => file.includes(pattern));
+				const hit = graph.filter((file) => file.includes(pattern) && !(budget.allow ?? []).some((allowed) => file.endsWith(allowed)));
 				if (hit.length > 0) {
 					console.error(`${pkgDir} export "${name}" must not reach ${pattern}:\n${hit.map((f) => `    ${f}`).join("\n")}`);
 					failures += 1;

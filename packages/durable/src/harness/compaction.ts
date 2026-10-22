@@ -15,15 +15,25 @@ import type {
 	Tx,
 } from "../types.ts";
 import { orderToolResults } from "./context.ts";
-import { addCompactionStatus, compactionStatus, LiveDoc, type LiveState, removeCompactionStatus } from "./live.ts";
+import {
+	addCompactionStatus,
+	compactionStatus,
+	failCompactionStatus,
+	LiveDoc,
+	type LiveState,
+	removeCompactionStatus,
+} from "./live.ts";
+import { ensureProviderSessionId } from "./provider.ts";
 import { admitSubmission } from "./submissions.ts";
 import type {
 	CompactionHooks,
+	CompactionPolicy,
 	CompactionReason,
 	CompactionResult,
 	ContextView,
 	ConversationStreamOptions,
 	ModelRef,
+	Settings,
 } from "./types.ts";
 import { recordUsage } from "./usage.ts";
 
@@ -111,7 +121,7 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 			const ref = agent.model;
 			const model = ref === undefined ? undefined : runtime.models.getModel(ref.provider, ref.modelId);
 			if (ref === undefined || model === undefined) return failNoModel(runtime, ref, context);
-			const policy = settings.compaction;
+			const policy = compactionPolicy(settings, ref);
 			const view = await runtime.context(conversationId, context);
 			const cut = selectCut(view, policy.keepRecentTokens);
 			if (cut === undefined) return complete(runtime, context);
@@ -150,7 +160,7 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 			const model = runtime.models.getModel(ref.provider, ref.modelId);
 			if (model === undefined) return failNoModel(runtime, ref, context);
 			// The context at `tail` is immutable, so this is the range `select` chose.
-			const view = await runtime.context(runtime.conversationId, context, tail);
+			const view = await runtime.context(runtime.conversationId, context, { at: tail });
 			const cut = view.entries.findIndex((entry) => entry.id === firstKept);
 			const now = runtime.now();
 			const messages: Message[] = [
@@ -167,6 +177,8 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 				cacheRetention: "none",
 				maxTokens,
 				signal: runtime.signal,
+				telemetry: context.telemetry,
+				sessionId: await ensureProviderSessionId(runtime, context),
 				...(thinkingLevel === "off" ? {} : { reasoning: thinkingLevel }),
 			};
 			const message = await runtime.models.completeSimple(model, { messages }, options);
@@ -193,19 +205,21 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 				if (retry) {
 					const status = compactionStatus(live, runtime.taskId);
 					if (status !== undefined) status.retry = { at: until, error: message.errorMessage ?? "" };
-					return { status: "running", checkpoint: { phase: "retry", ...request, until } };
+					const checkpoint = { phase: "retry", ...request, until } as const;
+					return { status: "sleeping", checkpoint, until };
 				}
-				removeCompactionStatus(live, runtime.taskId);
 				const text = summaryFailure(message);
+				failCompactionStatus(live, runtime.taskId, text);
 				return {
 					status: "terminal",
 					outcome: { status: "failed", error: { message: text, detail: { reason: "model_error" } } },
 				};
 			}, context);
 		},
+		/** After the backoff's sleep; a run before `until` (an early wake, or a record of an earlier version) sleeps again. */
 		retry: async (task, runtime, context) => {
 			const { phase: _, until, ...request } = task.state.checkpoint;
-			await runtime.sleep(until, context);
+			if (until > runtime.now()) return runtime.sleepUntil(until, task.state.checkpoint, context);
 			const attempt = request.attempt + 1;
 			await runtime.commit(async (tx) => {
 				const status = compactionStatus(await tx.doc(LiveDoc, runtime.conversationId), runtime.taskId);
@@ -242,6 +256,18 @@ export async function createCompaction(
 	const status = { taskId, reason: input.reason, blocking: owner !== undefined, attempt: 1 };
 	addCompactionStatus(await tx.doc(LiveDoc, conversationId), status);
 	return taskId;
+}
+
+/** The compaction policy for `model`: its `modelOverrides` entry over the harness-wide policy, field by field. */
+export function compactionPolicy(settings: Settings, model: ModelRef): CompactionPolicy {
+	const { modelOverrides, ...policy } = settings.compaction;
+	const override = modelOverrides?.[`${model.provider}/${model.modelId}`];
+	return {
+		enabled: override?.enabled ?? policy.enabled,
+		reserveTokens: override?.reserveTokens ?? policy.reserveTokens,
+		keepRecentTokens: override?.keepRecentTokens ?? policy.keepRecentTokens,
+		backgroundTokens: override?.backgroundTokens ?? policy.backgroundTokens,
+	};
 }
 
 /**
@@ -345,7 +371,12 @@ function summaryPrompt(messages: readonly Message[], instructions: string | unde
 	return `<conversation>\n${serializeConversation(messages)}\n</conversation>\n\n${SUMMARIZATION_PROMPT}${focus}`;
 }
 
-/** Messages as plain text, so the summarizer reads a transcript instead of continuing it. System messages are omitted. */
+/**
+ * Messages as plain text, so the summarizer reads a transcript instead of continuing it. System messages are omitted.
+ * Thinking is omitted too: providers return summaries of the real reasoning, and replayed thinking is often not part of
+ * the live context (a block that does not match its request is dropped), so including it can make the request larger
+ * than the context it summarizes. Visible text, tool calls, and tool results record what happened.
+ */
 export function serializeConversation(messages: readonly Message[]): string {
 	const parts: string[] = [];
 	for (const message of messages) {
@@ -353,7 +384,6 @@ export function serializeConversation(messages: readonly Message[]): string {
 			const text = contentText(message.content);
 			if (text.length > 0) parts.push(`[User]: ${text}`);
 		} else if (message.role === "assistant") {
-			const thinking = message.content.flatMap((content) => (content.type === "thinking" ? [content.thinking] : []));
 			const text = message.content.flatMap((content) => (content.type === "text" ? [content.text] : []));
 			const calls = message.content.flatMap((content) =>
 				content.type === "toolCall"
@@ -364,7 +394,6 @@ export function serializeConversation(messages: readonly Message[]): string {
 						]
 					: [],
 			);
-			if (thinking.length > 0) parts.push(`[Assistant thinking]: ${thinking.join("\n")}`);
 			if (text.length > 0) parts.push(`[Assistant]: ${text.join("\n")}`);
 			if (calls.length > 0) parts.push(`[Assistant tool calls]: ${calls.join("; ")}`);
 		} else if (message.role === "toolResult") {
@@ -411,6 +440,7 @@ async function placeSummary(
 	summary: string,
 ): Promise<Next> {
 	removeCompactionStatus(live, runtime.taskId);
+	delete live.compactionFailure;
 	const text = `${SUMMARY_PREFIX}${summary}${SUMMARY_SUFFIX}`;
 	const entry = {
 		kind: CompactionEntry.kind,
@@ -421,13 +451,15 @@ async function placeSummary(
 	const result: CompactionResult =
 		current.owner === undefined
 			? {
-					submissionId: await admitSubmission(
-						tx,
-						runtime.conversationId,
-						{ type: "write", requestId: `compaction:${runtime.taskId}`, entry },
-						runtime.now(),
-						runtime.settings,
-					),
+					submissionId: (
+						await admitSubmission(
+							tx,
+							runtime.conversationId,
+							{ type: "write", requestId: `compaction:${runtime.taskId}`, entry },
+							runtime.now(),
+							runtime.settings,
+						)
+					).id,
 				}
 			: { entryId: (await tx.appendEntry(runtime.conversationId, entry)).id };
 	return { status: "terminal", outcome: { status: "completed", result } };
@@ -445,7 +477,7 @@ async function failNoModel(runtime: Runtime, ref: ModelRef | undefined, context:
 	const message =
 		ref === undefined ? "No model is configured" : `Model ${ref.provider}/${ref.modelId} is not available`;
 	await runtime.commit(async (tx) => {
-		removeCompactionStatus(await tx.doc(LiveDoc, runtime.conversationId), runtime.taskId);
+		failCompactionStatus(await tx.doc(LiveDoc, runtime.conversationId), runtime.taskId, message);
 		return { status: "terminal", outcome: { status: "failed", error: { message, detail: { reason: "no_model" } } } };
 	}, context);
 }

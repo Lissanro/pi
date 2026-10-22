@@ -31,6 +31,16 @@ Use `/mcp` inside an interactive session to inspect connections, sign in, reconn
 
 Pi reads user-level servers from `~/.pi/agent/mcp.json` and project servers from `.pi/mcp.json`. Project configuration is read only after [project trust](security.md#understand-project-trust) is granted. A project entry replaces a user-level entry with the same name.
 
+A project entry without `command`, `url`, or `type` overrides only `enabled`, `exposure`, and `toolExposure` of the user-level server with the same name and keeps the rest, including `env`, `headers`, and `auth`. For example, this turns off a user-level server in one project:
+
+```json
+{
+  "mcpServers": {
+    "internal-tools": { "enabled": false }
+  }
+}
+```
+
 The format matches other MCP clients:
 
 ```json
@@ -77,7 +87,7 @@ Keep personal servers and servers with credentials in the user-level file. Use t
 
 `/mcp` lists configured servers with their state, tool count, exposure, and configuration source. Servers that need attention appear first. Select a server to inspect its tools and connection details, reconnect, sign in or out, change exposure, or enable and disable it.
 
-Exposure and enabled-state changes are saved to the file that defines the server without replacing unrelated content. Disabled servers remain listed. Outside the interactive TUI, `/mcp` prints server status; `/mcp login <server>`, `/mcp logout <server>`, and `/mcp reconnect <server>` perform those actions directly.
+Exposure and enabled-state changes are saved to the file that defines the server without replacing unrelated content. In a trusted project, "Enable in this project" and "Disable in this project" add a project override for a user-level server; later changes to that server are saved to the override. Disabled servers remain listed. Outside the interactive TUI, `/mcp` prints server status; `/mcp login <server>`, `/mcp logout <server>`, and `/mcp reconnect <server>` perform those actions directly.
 
 Shell commands work without a session: `pi mcp add`, `pi mcp remove`, `pi mcp list`, `pi mcp login`, and `pi mcp logout`. Shell commands do not load extensions.
 
@@ -118,6 +128,8 @@ When the server rejects an unauthenticated connection, `/mcp` shows that it need
 
 Pi registers itself with the authorization server, stores tokens in `~/.pi/agent/mcp-auth.json`, and refreshes access tokens when they expire or the server rejects them. If a server later requests additional scope, Pi asks for sign-in again. Signing out deletes the stored credentials.
 
+Credentials belong to a server name and URL. Servers with the same URL under different names, such as one per account, sign in separately; servers with the same name and URL in different `mcp.json` files share one sign-in.
+
 OAuth applies to HTTP servers without an `Authorization` header. For a server that does not support dynamic client registration, configure a registered client:
 
 ```json
@@ -146,6 +158,18 @@ Pi registers as `pi`. Some servers only accept registrations from known clients.
 ```
 
 The name is only sent when Pi registers a client. To register again under a new name, sign out first.
+
+Some authorization servers allow clients by their Client ID Metadata Document URL instead of registering them. Set `clientRegistration` to `cimd` to identify as Pi's document on pi.dev instead of registering:
+
+```json
+{
+  "mcpServers": {
+    "example": { "url": "https://mcp.example.com/mcp", "oauth": { "clientRegistration": "cimd" } }
+  }
+}
+```
+
+The client ID is `https://pi.dev/oauth/client.json` with the redirect URI `http://127.0.0.1:<port>/callback`. If the authorization server does not send the `iss` parameter in authorization responses (RFC 9207), Pi uses a document and redirect path specific to the MCP server instead: `https://pi.dev/oauth/<id>/client.json` with `http://127.0.0.1:<port>/callback/<id>`. The authorization server must advertise Client ID Metadata Document support and public clients, or sign-in fails. `cimd` cannot be combined with `clientId` or `clientName`, and a `callbackUrl` must use `localhost` or `127.0.0.1` with the path `/callback`.
 
 Pi finds the authorization server through the server's protected resource metadata (RFC 9728) and checks that the authorization server's metadata names the expected issuer (RFC 8414). Some servers advertise the wrong authorization server or none, so sign-in opens a page that does not exist. Set `authServerMetadataUrl` to the metadata document of the right authorization server:
 
@@ -201,6 +225,8 @@ Pi activates `codemode` when a server with `codemode` exposure connects. It acti
 
 Tools with `codemode` or `deferred` exposure can be reached through either indirect mechanism: codemode scripts can call them, and `tool_search` can load them. Codemode calls do not depend on the active tool set, so they remain available after `/tree`, resume, and fork. Tools loaded by `tool_search` are recorded in the transcript and remain declared on that branch.
 
+`--tools` does not remove MCP tools unless one of its entries starts with `mcp__`; `pi --tools read,codemode,'mcp__radius__*'` keeps only the tools of `radius`. `--exclude-tools` accepts the same patterns, and `--no-mcp` disables MCP for one run (see [Tools](cli.md#mcp-tools)).
+
 To keep `codemode` active without MCP servers, add `"defaultTools": ["+codemode"]` to [settings](settings.md#tools). To prevent automatic codemode activation, set `"autoEnableCodemode": false` beside `mcpServers`. A project value overrides the user-level value. Pi warns once when neither `codemode` nor `tool_search` is active and non-direct tools cannot be called.
 
 Text results over 20 KB reach the model with their middle removed around a `…N chars truncated…` marker. The full text is saved to a temporary file named in the result. Codemode scripts receive the complete result and can reduce it before returning output to the model.
@@ -237,9 +263,9 @@ Changes to enabled state or exposure apply only to the current session. A file-c
 
 ### Replace the built-in MCP support
 
-An installed extension that registers `/mcp`, such as `pi-mcp-adapter`, replaces the built-in MCP support for sessions. Pi then does not read `mcp.json` or connect its servers in a session, and `/mcp` belongs to the extension. Remove the extension to restore the built-in behavior. To disable built-in MCP support without a replacement, disable `mcp` under Built-in in `pi config`, or set `"extensions": ["-builtin:mcp"]` in [settings](settings.md#resources).
+An installed extension that registers `/mcp`, such as `pi-mcp-adapter`, replaces the built-in MCP support for sessions. Pi then does not read `mcp.json` or connect its servers in a session, and `/mcp` belongs to the extension. Remove the extension to restore the built-in behavior. To disable built-in MCP support without a replacement, disable `mcp` under Built-in in `pi config`, or set `"extensions": ["-builtin:mcp"]` in [settings](settings.md#resources). `--no-mcp` disables it for one run.
 
-An extension that registers `codemode` or `tool_search` similarly replaces the built-in tool with that name. Shell-level `pi mcp` commands always use the built-in implementation.
+An extension that registers `codemode` or `tool_search` similarly replaces the built-in tool with that name. Pi activates the replacement for MCP servers and waits for the servers its calls need only when it declares [`reachesTools`](extensions.md#tool-exposure). Shell-level `pi mcp` commands always use the built-in implementation.
 
 ### Use MCP from the SDK
 

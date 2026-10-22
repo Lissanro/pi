@@ -1,5 +1,7 @@
 import { type Context, copyJson, type Draft, type JsonValue } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type Change, type Op, type Prepared, type Tracker, track } from "@earendil-works/chord/delta";
+import type { TelemetryCarrier } from "@earendil-works/pi-telemetry";
 import {
 	type AnyDocDefinition,
 	type AnyDocToken,
@@ -98,6 +100,8 @@ export type LoadedDocument = {
 /** Session services used by a transaction while it holds the mutation line. */
 export interface TransactionHost {
 	readonly storage: Storage;
+	/** Wall clock for task lifecycle times. */
+	now(): number;
 	/** Return the cached current incarnation without loading. */
 	cached(addressId: string): LoadedDocument | undefined;
 	/** Return the cached current incarnation, cold-loading and migrating it when necessary. */
@@ -121,6 +125,9 @@ type TransactionTask = {
 	write?: { readonly kind: "create" | "replace"; readonly record: AnyTaskRecord };
 	publicationConversationId?: ConversationId;
 };
+
+/** Internal run creation resolves submission carriers against staged records before reading storage. */
+export type TaskCreationOptions = TaskOptions & { readonly submissionIds?: readonly SubmissionId[] };
 
 /** Defaults a commit binds to: `tx.createTask()` conversation and the task attributed to appended entries. */
 export type TransactionScope = {
@@ -191,7 +198,7 @@ type DocumentPlan = {
  */
 export class Transaction implements Tx {
 	readonly #host: TransactionHost;
-	readonly #context: Context;
+	#context: Context;
 	readonly #scope: TransactionScope;
 	readonly #pendingOperations = new Set<Promise<unknown>>();
 	#sealed = false;
@@ -381,9 +388,23 @@ export class Transaction implements Tx {
 	createTask<I, S extends { phase: string }, R, H extends object>(
 		task: Task<I, S, R, H>,
 		input: I,
-		options: TaskOptions,
+		options: TaskCreationOptions,
 	): Promise<TaskId<R>> {
 		return this.#write(async () => {
+			if (options.submissionIds !== undefined) {
+				let trace: TaskOptions["trace"];
+				let links: TelemetryCarrier[] | undefined;
+				for (let index = 0; index < options.submissionIds.length; index++) {
+					const id = options.submissionIds[index]!;
+					const submission = this.#submissions.get(id) ?? (await this.#host.storage.submission(id, this.#context));
+					if (index === 0) trace = submission?.trace ?? "root";
+					else if (submission?.trace !== undefined) {
+						links ??= [];
+						links.push(submission.trace);
+					}
+				}
+				options = { ...options, trace, links };
+			}
 			const ownership = options.ownership;
 			let owner: AnyTaskRecord | undefined;
 			if (ownership.kind === "task") {
@@ -411,9 +432,15 @@ export class Transaction implements Tx {
 					kind: definition.name,
 					version: definition.version,
 					input,
+					trace:
+						options.trace === "root"
+							? undefined
+							: (options.trace ?? this.#context.telemetry.propagation?.inject(this.#context.telemetry)),
+					links: options.links,
 					...(owner === undefined ? {} : { owner: owner.id }),
 					background: options.background ?? false,
 					abortRequested: false,
+					...(options.abandonOnRestart === true ? { abandonOnRestart: true } : {}),
 					state: { status: "pending", checkpoint },
 				},
 				TABLE_JSON_COPY_OPTIONS,
@@ -467,7 +494,7 @@ export class Transaction implements Tx {
 		}
 		task.write = {
 			kind: task.write?.kind === "create" ? "create" : "replace",
-			record: copyJson(value, TABLE_JSON_COPY_OPTIONS) as unknown as AnyTaskRecord,
+			record: copyJson(this.#stampTimes(value, candidate), TABLE_JSON_COPY_OPTIONS) as unknown as AnyTaskRecord,
 		};
 	}
 
@@ -663,6 +690,7 @@ export class Transaction implements Tx {
 		this.#sealed = true;
 		this.#abortChanges();
 		await Promise.allSettled(this.#pendingOperations);
+		this.#context = BACKGROUND_CONTEXT;
 	}
 
 	/**
@@ -674,6 +702,7 @@ export class Transaction implements Tx {
 		if (this.#pendingOperations.size > 0) {
 			this.#abortChanges();
 			await Promise.allSettled(this.#pendingOperations);
+			this.#context = BACKGROUND_CONTEXT;
 			throw new Error("Session commit callback settled before its pending Tx operations");
 		}
 		try {
@@ -685,6 +714,8 @@ export class Transaction implements Tx {
 		} catch (error) {
 			this.#abortChanges();
 			throw error;
+		} finally {
+			this.#context = BACKGROUND_CONTEXT;
 		}
 	}
 
@@ -834,7 +865,7 @@ export class Transaction implements Tx {
 			if (plan.content?.type === "document.change" && plan.content.content.kind === "delta" && change?.loaded) {
 				const { prepared, version } = change;
 				const info = { deltasSinceBase: change.loaded.deltasSinceBase };
-				if (change.definition?.checkpointWhen?.(prepared.value, prepared.ops, info)) {
+				if (change.definition!.checkpointWhen(prepared.value, prepared.ops, info)) {
 					plan.content = { ...plan.content, content: { version, kind: "base", value: prepared.value } };
 				}
 			}
@@ -943,6 +974,23 @@ export class Transaction implements Tx {
 		}
 	}
 
+	/**
+	 * Lifecycle times: `startedAt` on the first change to `running`, `endedAt` on the change to `terminal`. Once set,
+	 * they carry over from the replaced record; records written before they existed lack them.
+	 */
+	#stampTimes(value: AnyTaskRecord, candidate: AnyTaskRecord | undefined): AnyTaskRecord {
+		const status = value.state.status;
+		const now = (stamps: boolean) => (stamps ? this.#host.now() : undefined);
+		const startedAt = candidate?.startedAt ?? value.startedAt ?? now(status === "running");
+		const endedAt = candidate?.endedAt ?? value.endedAt ?? now(status === "terminal");
+		if (startedAt === value.startedAt && endedAt === value.endedAt) return value;
+		return {
+			...value,
+			...(startedAt === undefined ? {} : { startedAt }),
+			...(endedAt === undefined ? {} : { endedAt }),
+		};
+	}
+
 	#taskEntry(id: TaskId): TransactionTask {
 		let task = this.#tasksById.get(id);
 		if (task === undefined) {
@@ -1014,7 +1062,10 @@ function planDocument(document: DocumentEntry): DocumentPlan | undefined {
 	}
 }
 
-/** Whether adoption publishes the plan: every creation, copy, and retirement, and a loaded incarnation that changed. */
+/**
+ * Whether adoption publishes the plan: every creation, copy, and retirement, and a loaded incarnation that writes
+ * content, which includes a migration-only base so observers of the older shape receive the new value.
+ */
 function publishes(plan: DocumentPlan): boolean {
-	return plan.retire || plan.change?.loaded === undefined || plan.change.prepared.ops.length > 0;
+	return plan.retire || plan.change?.loaded === undefined || plan.content !== undefined;
 }

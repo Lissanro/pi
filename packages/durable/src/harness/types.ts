@@ -2,6 +2,7 @@ import type { AttachedReplicatedState, Context, JsonValue } from "@earendil-work
 import type {
 	AssistantMessage,
 	CacheRetention,
+	ClientIdentity,
 	Message,
 	Models,
 	ModelThinkingLevel,
@@ -14,7 +15,8 @@ import type {
 	Usage,
 	UserMessage,
 } from "@earendil-works/pi-ai";
-import type { ExecutionEnv } from "../env/index.ts";
+import type { TelemetryContext } from "@earendil-works/pi-telemetry";
+import type { ExecutionEnv, ShellOutputSkip, ShellOutputWindow } from "../env/index.ts";
 import type {
 	ConversationId,
 	ConversationOwnership,
@@ -28,7 +30,9 @@ import type {
 	EntryRecord,
 	JsonObject,
 	Page,
+	ReportInfo,
 	Session,
+	SetTimer,
 	SubmissionId,
 	SubmissionRecord,
 	Task,
@@ -39,6 +43,7 @@ import type {
 	Tx,
 	WatchHandle,
 } from "../types.ts";
+import type { TaskGraph, TaskGraphWatch } from "./task-graph.ts";
 import type { UsageState } from "./usage.ts";
 import type { ConversationView } from "./view.ts";
 
@@ -50,6 +55,12 @@ export type ModelRef = {
 
 export type UserInput = UserMessage["content"];
 
+/**
+ * The entry an input is placed as, instead of `pi.user`: an application kind, and data the transcript shows, such as its
+ * author. Its model message is still the input's user message.
+ */
+export type InputEntry = { readonly kind: string; readonly data?: JsonValue };
+
 /** Host submission: user input that may start a run, or a passive entry write. */
 export type SubmissionDraft = {
 	readonly requestId?: string;
@@ -58,7 +69,8 @@ export type SubmissionDraft = {
 			readonly type: "input";
 			readonly content: UserInput;
 			readonly whenBusy?: "steer" | "followUp" | "reject";
-			readonly entry?: never;
+			/** Place the input as this entry; default `pi.user` without data. The kind must not start with `pi.`. */
+			readonly entry?: InputEntry;
 	  }
 	| {
 			readonly type: "write";
@@ -128,7 +140,8 @@ export interface ConversationHandle {
 /** Post-tools controls requested by a tool result. */
 export type ToolControl = {
 	readonly addTools?: readonly string[];
-	readonly terminate?: true;
+	/** End the run without another model request when every result of the round sets it to `true`; `false` is a no-op. */
+	readonly terminate?: boolean;
 	readonly handoff?: string;
 };
 
@@ -139,9 +152,18 @@ export type ToolDiagnostic = {
 	readonly code?: string;
 };
 
+/**
+ * What a tool returns, on three channels: `output` for the model, `structuredOutput` for programs that call the tool
+ * (`executeTool()` callers, code mode scripts), and `details` for UIs.
+ */
 export type ToolExecutionResult<TDetails extends JsonValue = JsonValue> = {
-	/** Omitted: the retained `output()` text becomes the content. */
-	readonly content?: ToolResultMessage["content"];
+	/** For the model. Omitted: the retained `output()` text. */
+	readonly output?: ToolResultMessage["content"];
+	/**
+	 * For programs. Required unless `isError` when the tool declares `structuredOutputSchema`, and validated against it;
+	 * not allowed without one, where programs get the output itself (`NestedToolExecutionResult.structuredOutput`).
+	 */
+	readonly structuredOutput?: JsonValue;
 	readonly isError?: boolean;
 	/** Omitted: the last `details()` value becomes the details. */
 	readonly details?: TDetails;
@@ -150,6 +172,29 @@ export type ToolExecutionResult<TDetails extends JsonValue = JsonValue> = {
 	/** Spend of the execution itself, such as a model call; stored on the result and in `pi.usage.tools`. */
 	readonly usage?: Usage;
 	readonly control?: ToolControl;
+};
+
+/**
+ * Result of a nested call, as `executeTool()` returns it. Programs read `structuredOutput`; the output for the model
+ * is not kept, and `control` does not apply.
+ */
+export type NestedToolExecutionResult = {
+	/** The nested call's tool task. */
+	readonly taskId: TaskId;
+	/**
+	 * The tool's value for programs. A tool with `structuredOutputSchema`: its validated `structuredOutput`, also on an
+	 * error result that has one; absent otherwise, and an error's text is then in an error diagnostic. A tool without:
+	 * its bounded output, success or error, as a string for one text item, an `ImageContent` for one image, `""` for
+	 * none, and the content list otherwise. Absent on an error result the Harness wrote itself (unavailable, invalid,
+	 * blocked, interrupted, aborted); `diagnostics` say what went wrong.
+	 */
+	readonly structuredOutput?: JsonValue;
+	readonly isError: boolean;
+	readonly details?: JsonValue;
+	readonly diagnostics: readonly ToolDiagnostic[];
+	readonly usage?: Usage;
+	/** Execution time of the attempt that produced the result; absent when it never executed. */
+	readonly durationMs?: number;
 };
 
 /** Whether the tools of one round run at once or one after another in call order. */
@@ -170,10 +215,28 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
 	readonly registry: RegistrySnapshot;
 	/** The calling conversation's agent, as the tool task's phase resolved it. */
 	agent(context: Context): Promise<Agent>;
+	/** The current `HarnessOptions.models`, read at each access: the catalog, credentials, and request transforms. */
+	readonly models: Models;
 	/** Built by `HarnessOptions.env` for this call; `undefined` without an environment. */
 	readonly env: ExecutionEnv | undefined;
-	/** Append running output; it becomes the result content when the result omits `content`. */
-	output(chunk: string | Uint8Array): void;
+	/** The Harness clock (`HarnessOptions.now`), for times a rerun after a restart compares against. */
+	now(): number;
+	/**
+	 * Append running output; it becomes the result's `output` when the result omits it. `skipped` counts output
+	 * omitted before the chunk, as reported by an environment given `outputWindow` (`ShellOutputInfo.skipped`).
+	 */
+	output(chunk: string | Uint8Array, skipped?: ShellOutputSkip): void;
+	/**
+	 * The tail this call's output keeps and the pace of its progress commits, for `ShellExecOptions.window`; `undefined`
+	 * when the tool keeps the head of its output, which cannot accept skips. A wrapper that replaces `output` and
+	 * transforms text must also replace this with `undefined`, so skipped text cannot bypass its transform.
+	 */
+	readonly outputWindow: ShellOutputWindow | undefined;
+	/**
+	 * The output retained so far, as the model will see it when the result omits `output`, and whether earlier output was
+	 * dropped; for a tool that also returns that text in its `structuredOutput`.
+	 */
+	retainedOutput(): { readonly text: string; readonly truncated: boolean };
 	/** Record a model-visible remark about this call. */
 	diagnostic(diagnostic: ToolDiagnostic): void;
 	/** Replace running details; the last value becomes the result details when the result omits `details`. */
@@ -181,6 +244,10 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
 	commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T>;
 	memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
 	memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
+	/**
+	 * Create a task in one commit. A child task of a tool that is not replay-safe defaults to `abandonOnRestart`: the
+	 * tool never resumes after a restart, so nothing awaits the child then.
+	 */
 	createTask<I, S extends { phase: string }, R, H extends object>(
 		task: Task<I, S, R, H>,
 		input: I,
@@ -191,6 +258,39 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
 	waitForTask<R>(id: TaskId<R>, context: Context): Promise<SettledTask<R>>;
 	/** Invocation-bound handle of an existing conversation, such as one this tool created in `commit()`. */
 	conversation(id: ConversationId, context: Context): Promise<ConversationHandle | undefined>;
+	/**
+	 * Run tool `name` as a nested call of this one and wait for its result. The nested call is its own `pi.tool` task,
+	 * owned by this call: it resolves the tool among the conversation's tools, validates, runs the `ToolTask` hooks (which
+	 * see `call.parent`), applies output limits and the tool's replay policy, and reports progress in `pi.live.nestedTools`.
+	 * Its result returns here instead of entering the transcript. A call that is blocked, invalid, throws, is interrupted,
+	 * or is aborted returns an `isError` result.
+	 *
+	 * The nested call's key names it within this call; its call ID is `<callId>/<key>`. By default the key is the call's
+	 * position among this invocation's nested calls, `1`, `2`, ... An explicit `key` must be non-empty, without `/`, not
+	 * `__proto__`, and not a positive integer, so it never collides with a default one. A rerun of a replay-safe tool
+	 * that makes a call with a used key, by calling in the same order or by passing the same `key`, gets that nested call
+	 * back, finished or still running, instead of starting another. A nested call a crash interrupted before its result
+	 * committed follows its own replay policy, so this is not exactly-once execution. Reusing a key with another tool or
+	 * other arguments throws. A tool that is not replay-safe never reruns: after a restart, its unfinished nested calls
+	 * are abandoned (`TaskOptions.abandonOnRestart`) before they run again.
+	 *
+	 * `progress: false` commits no running output, details, or diagnostics to the nested call's slot, only its status;
+	 * the result still carries its details and diagnostics, and a schema-less tool's output as `structuredOutput`. An
+	 * interrupted or aborted call's result is built from its slot, so it then has none of them. Either way, programs never
+	 * get the partial output of an interrupted or aborted call.
+	 *
+	 * Nested calls run as soon as they are made, whatever their `executionMode`; the caller decides what runs at once by
+	 * what it awaits. Cancelling `context` stops only the wait; the nested call runs on. When this call settles, nested
+	 * calls it left running are aborted first. A nested result's `usage` is already counted under its tool; a result
+	 * that passes it on counts it again. Rejects, instead of returning a result, once `execute()` has returned, when this
+	 * call is aborted, or when the Harness closes.
+	 */
+	executeTool(
+		name: string,
+		args: JsonObject,
+		context: Context,
+		options?: { readonly key?: string; readonly progress?: boolean },
+	): Promise<NestedToolExecutionResult>;
 }
 
 /**
@@ -211,6 +311,22 @@ export type ToolRegistration<
 	 * still validated against `parameters`.
 	 */
 	prepareArguments?(args: unknown): Static<TParameters>;
+	/**
+	 * Schema of `structuredOutput`, which programs that call the tool receive. Omitted: they receive the result's bounded
+	 * output, success or error, as `NestedToolExecutionResult.structuredOutput` describes.
+	 */
+	readonly structuredOutputSchema?: TSchema;
+	/**
+	 * Who may call the tool: the model, other tools through `executeTool()`, or both (default). A code mode tool is
+	 * `["model"]`, so scripts cannot start scripts; tools behind code mode, such as MCP tools, can be `["tools"]`, so the
+	 * model is never offered them.
+	 */
+	readonly callers?: readonly ("model" | "tools")[];
+	/**
+	 * Not offered to the model until loaded: the model gets the tool only when `modelTools` names it, in its array or its
+	 * `add`, which `control.addTools` (from a tool such as `tool_search`) writes. Other tools can call it any time.
+	 */
+	readonly deferred?: true;
 	readonly outputLimits?: {
 		readonly maxBytes?: number;
 		readonly maxLines?: number;
@@ -298,8 +414,18 @@ export type AgentState = {
 	thinkingLevel?: ModelThinkingLevel;
 	/** An array selects exactly these extensions, in order. An object edits the host default selection. */
 	extensions?: string[] | { add?: string[]; remove?: string[] };
-	/** Filters the selected extensions' tools. An array offers exactly these, in order. */
+	/** Filters the selected extensions' tools: the enabled tools. An array enables exactly these, in order. */
 	tools?: string[] | { remove: string[] };
+	/**
+	 * Filters the enabled tools the model may call (`callers` includes `model`): the tools offered to it. Never widens:
+	 * other tools can still call the ones it leaves out.
+	 * - Unset: every such tool except deferred ones.
+	 * - An array: exactly these, in order, deferred ones too.
+	 * - An object: every such tool except deferred ones and those in `remove`, in registry order, followed by the
+	 *   deferred tools in `add` that are not in `remove`, in `add` order. Names of tools that are not deferred or not
+	 *   registered have no effect in `add`.
+	 */
+	modelTools?: string[] | { remove?: string[]; add?: string[] };
 	/** Rendered after every extension section, as the section `instructions`. */
 	instructions?: string;
 	/** Directory within the environment's file system, passed to `HarnessOptions.env`. */
@@ -315,6 +441,11 @@ export type AgentChange = {
 		| { readonly add?: readonly Extension[]; readonly remove?: readonly Extension[] }
 		| null;
 	readonly tools?: readonly ToolRegistration[] | { readonly remove: readonly ToolRegistration[] } | null;
+	/** Replaces the stored filter as a whole; tools loaded with `control.addTools` are in its `add`. */
+	readonly modelTools?:
+		| readonly ToolRegistration[]
+		| { readonly remove?: readonly ToolRegistration[]; readonly add?: readonly ToolRegistration[] }
+		| null;
 	readonly instructions?: string | null;
 	readonly cwd?: string | null;
 };
@@ -324,8 +455,12 @@ export type Agent<Tool extends ToolRegistration = ToolRegistration> = {
 	readonly model?: ModelRef;
 	readonly thinkingLevel: ModelThinkingLevel;
 	readonly extensions: readonly Extension<Tool>[];
-	/** The tools a request offers, in order. */
+	/** The tools a request offers, in order: enabled, callable by the model, and selected by `modelTools`. */
 	readonly tools: readonly Tool[];
+	/** The tools nested calls (`executeTool()`) resolve among, in order: enabled and callable by tools. */
+	readonly callable: readonly Tool[];
+	/** Enabled deferred tools the model may call and is not offered yet, in registry order: what `tool_search` loads. */
+	readonly deferred: readonly Tool[];
 	/** Extension sections, then `instructions` when set. */
 	readonly sections: readonly PromptSection<Tool>[];
 	readonly instructions?: string;
@@ -378,6 +513,25 @@ export type CompactionPolicy = {
 	backgroundTokens: number;
 };
 
+/**
+ * Harness-wide compaction settings. `modelOverrides` is keyed by exact `"provider/modelId"`; each field it sets
+ * replaces the harness-wide one for that model, so small- and large-window models can share a harness.
+ */
+export type CompactionSettings = Partial<CompactionPolicy> & {
+	readonly modelOverrides?: Readonly<Record<string, Partial<CompactionPolicy>>>;
+};
+
+/**
+ * How often running progress is committed. Each progress commit is a storage write; a host whose storage is remote can
+ * commit less often, so live answers and tool output appear in larger steps.
+ */
+export type ProgressPolicy = {
+	/** Minimum pause between commits of the answer being generated. */
+	partialIntervalMs: number;
+	/** Minimum pause between commits of running tool output; large commits also pause in proportion to their size. */
+	outputIntervalMs: number;
+};
+
 /** Why a compaction runs: `compact()`, a threshold in generation preparation, or a context overflow. */
 export type CompactionReason = "manual" | "threshold" | "overflow";
 
@@ -393,11 +547,38 @@ export type HarnessSettings = {
 	readonly extensions?: readonly Extension[];
 	readonly stream?: ConversationStreamOptions;
 	readonly retry?: Partial<ConversationRetryPolicy>;
-	readonly compaction?: Partial<CompactionPolicy>;
+	readonly compaction?: CompactionSettings;
+	readonly progress?: Partial<ProgressPolicy>;
 	readonly toolExecution?: ToolExecutionMode;
 	readonly steeringMode?: QueueMode;
 	readonly followUpMode?: QueueMode;
+	/**
+	 * How long an idle conversation keeps its last context read in memory, so its next run reads only newer entries.
+	 * Busy conversations always keep it; `0` drops it once the conversation is idle.
+	 */
+	readonly contextRetentionMs?: number;
+	/**
+	 * How long a loaded document that no watch or document state observes stays in memory after its last read or write;
+	 * the next access loads it from Storage. Observed documents always stay. Default ten minutes; `0` drops one right
+	 * after use; `Infinity` keeps them. Anything else that is not a number of milliseconds means the default.
+	 */
+	readonly documentRetentionMs?: number;
+	/**
+	 * What a run that fails (`model_error`, `no_model`) does with the inputs queued behind it: `keep` leaves them
+	 * queued until the next input or queued write, `continue` starts the next run with them, as an answer would, and
+	 * `withdraw` settles them `unanswered` with reason `run_failed`. Default `keep`.
+	 */
+	readonly afterFailedRun?: AfterFailedRun;
+	/**
+	 * How many times in a row a task may be cut off by a crash, eviction, or reset (a close does not count) without
+	 * changing its state before it is parked as blocked (`restart_limit`) instead of run again; `Harness.retryTask()`
+	 * runs it again. Default 5; `Infinity` never parks.
+	 */
+	readonly restartLimit?: number;
 };
+
+/** What a failed run does with the inputs queued behind it (`HarnessSettings.afterFailedRun`). */
+export type AfterFailedRun = "keep" | "continue" | "withdraw";
 
 /** Resolved settings: every field over its built-in default, object fields merged. */
 export type Settings = {
@@ -405,10 +586,16 @@ export type Settings = {
 	readonly extensions?: readonly Extension[];
 	readonly stream: ConversationStreamOptions;
 	readonly retry: ConversationRetryPolicy;
-	readonly compaction: CompactionPolicy;
+	/** Harness-wide policy over the defaults; per-model overrides apply where the model is known. */
+	readonly compaction: CompactionPolicy & Pick<CompactionSettings, "modelOverrides">;
+	readonly progress: ProgressPolicy;
 	readonly toolExecution: ToolExecutionMode;
 	readonly steeringMode: QueueMode;
 	readonly followUpMode: QueueMode;
+	readonly contextRetentionMs: number;
+	readonly documentRetentionMs: number;
+	readonly afterFailedRun: AfterFailedRun;
+	readonly restartLimit: number;
 };
 
 /** What `HarnessOptions.env` builds an environment for. */
@@ -420,10 +607,23 @@ export type EnvTarget = {
 };
 
 export type HarnessOptions<Tool extends ToolRegistration = ToolRegistration> = {
-	/** pi-ai model access used by generation. */
-	readonly models: Models;
+	/** Host-owned adapter for content-free admission/phase telemetry; propagation and metrics are optional. */
+	readonly telemetry?: TelemetryContext;
+	/**
+	 * pi-ai model access used by generation, compaction, hooks and tools: a `Models`, or a function returning the current
+	 * one, called at each use, so a host can replace its model configuration without reopening the Harness.
+	 */
+	readonly models: Models | (() => Models);
+	/**
+	 * How model requests identify the app to providers, merged field by field over `DEFAULT_HARNESS_IDENTITY`
+	 * (`{ attribution: PI_ATTRIBUTION }`, provider attribution to pi). It applies to every request through the Harness's
+	 * models, including hooks and tools, and overrides the identity the `Models` was created with; a request's own
+	 * `identity` overrides it. Pass `{ attribution: null }` to send no attribution headers.
+	 */
+	readonly identity?: ClientIdentity;
 	readonly registry: RegistryReader<Tool>;
-	readonly settings?: HarnessSettings;
+	/** Run settings, or a function returning the current ones; read at each use either way. */
+	readonly settings?: HarnessSettings | (() => HarnessSettings | undefined);
 	/** Builds a conversation's environment at each use. Never called on the Session line; may be async. */
 	readonly env?: (target: EnvTarget, context: Context) => ExecutionEnv | undefined | Promise<ExecutionEnv | undefined>;
 	/**
@@ -432,10 +632,45 @@ export type HarnessOptions<Tool extends ToolRegistration = ToolRegistration> = {
 	 * Table reads throw `ReadAfterWrite`, as in `init`; a throw fails the creating commit.
 	 */
 	readonly conversationCreated?: (tx: Tx, conversation: ConversationRecord) => void | Promise<void>;
+	/**
+	 * The Harness clock, epoch milliseconds; default `Date.now`. Sleeping tasks store deadlines on it, so every process
+	 * that opens the same storage must use the same clock.
+	 */
 	readonly now?: () => number;
-	/** Receives extension failures that do not fail the calling operation. Must not throw. */
-	readonly onReport?: (error: unknown) => void;
+	/**
+	 * Arms the timers of the Session, the scheduler, and its tasks: pacing progress commits, freeing idle memory
+	 * (`background`), and, without `onWake`, resuming sleeping tasks; and the timers of `TaskRuntime.setTimer()`. The
+	 * Node.js environment, file watcher, and image worker keep their own timers. Default `setTimeout`, with background
+	 * timers unreferenced, or declined in Cloudflare Workers and where they cannot be unreferenced. Tests can pass fake
+	 * timers; a host can keep timers off a process that should hibernate.
+	 */
+	readonly setTimer?: SetTimer;
+	/**
+	 * Wakes the process for sleeping tasks instead of a `setTimer` timer. Without it, while scheduling runs, a timer that
+	 * keeps the process alive resumes sleeping tasks when they are due. With it, the Harness arms no timer for them: it
+	 * calls `onWake` after open and whenever `Harness.wake()` changes, and the host arms its own wakeup, such as a
+	 * Durable Object alarm, and calls `resume()` when it fires. Called off the Session line, after the commit that
+	 * changed the value, so a host arms a recovery wakeup before calls that can start work. It may call `wake()` and
+	 * `resume()`, and must not block. A throw is reported, and the value is offered again at the next change.
+	 */
+	readonly onWake?: (wake: Wake) => void;
+	/**
+	 * Receives failures that do not fail the calling operation, such as a throwing hook or listener, a task that faulted,
+	 * and the error that fails the Session, once. `info` says what happened: a host can tell a failed Session
+	 * (`session_failed`, often a platform reset) from a faulted task (`task_faulted`) or a parked one (`task_parked`).
+	 * Its own throw or rejection is dropped.
+	 */
+	readonly onReport?: (error: unknown, info: ReportInfo) => void;
 };
+
+/**
+ * When a Session next needs a running process (`Harness.wake()`). `active`: some task can run now or is running, or a
+ * reconcile pass such as open's recovery has not landed yet, so a process that dies must be woken again soon, for
+ * example by a recovery alarm. `at`: the earliest sleep not yet due,
+ * when there is one. Neither: nothing needs a process until new work is submitted. Tasks blocked on a missing or
+ * unmigratable definition, `completing` tasks, and waits on live tasks do not count; the work they wait for does.
+ */
+export type Wake = { readonly active: boolean; readonly at?: number };
 
 /** Live task and what the scheduler would do with it under the current registry. */
 export type TaskInspection = {
@@ -449,12 +684,17 @@ export type TaskInspection = {
 		 * must end before its abort handler starts.
 		 */
 		| { readonly kind: "waiting"; readonly on: readonly TaskId[] }
+		/** Sleeps until the Harness clock reaches `until`. */
+		| { readonly kind: "sleeping"; readonly until: number }
 		/** Outcome held until its ordinary owned work drains. */
 		| { readonly kind: "completing" }
-		/** No registered definition can take it; aborting it settles it as `orphaned`. */
+		/**
+		 * Cannot run here: no registered definition can take it (aborting it settles it as `orphaned`), or it is parked by
+		 * the restart limit (`retryTask()` runs it again).
+		 */
 		| {
 				readonly kind: "blocked";
-				readonly reason: "missing_task" | "task_too_old" | "migration_failed";
+				readonly reason: "missing_task" | "task_too_old" | "migration_failed" | "restart_limit";
 				readonly error?: unknown;
 		  };
 };
@@ -489,8 +729,10 @@ export interface Conversation {
 	configure(change: AgentChange, context: Context): Promise<void>;
 
 	/**
-	 * Durably admit user input or a passive entry write. A busy conversation, or one with queued items, queues it in
-	 * `pi.inbox`; `whenBusy: "reject"` rejects with `ConversationBusy` instead and writes nothing.
+	 * Durably admit user input or a passive entry write. A busy conversation, or one with queued items, queues input and
+	 * writes that affect model context in `pi.inbox`; `whenBusy: "reject"` rejects input with `ConversationBusy` instead
+	 * and writes nothing. A write of only `kind` and `data` (no `model`, `head`, or `edits`) is appended at once,
+	 * even mid-run, as it changes nothing the model sees.
 	 */
 	submit(submission: SubmissionDraft, context: Context): Promise<Submission>;
 	/**
@@ -506,8 +748,12 @@ export interface Conversation {
 
 	/** Session commit whose `tx.createTask()` defaults to this conversation. */
 	commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T>;
-	context(context: Context): Promise<ContextView>;
-	/** Newest-first fork-aware history of this conversation. */
+	/**
+	 * Committed raw active transcript and model context. With `at`, the context as of that visible entry: the same view
+	 * `fork(at)` would start with, without creating a conversation.
+	 */
+	context(context: Context, options?: { readonly at?: EntryId }): Promise<ContextView>;
+	/** Fork-aware history of this conversation, newest first unless `query.order` is `ascending`. */
 	entries(
 		query: Omit<EntryQuery, "conversationId">,
 		limit: number,
@@ -528,18 +774,26 @@ export interface Conversation {
 	/** The structural view (spec §9.3) as a disposable read-only Chord state. */
 	viewState(context: Context): Promise<AttachedReplicatedState<ConversationView>>;
 	/** The structural view as a serialized exact-frame watch with bounded pending frames. */
-	watch(context: Context): Promise<WatchHandle<ConversationView>>;
+	watch(context: Context): Promise<ConversationWatch>;
 }
 
-// TODO: decide how Harness exposes subscribeCommits() and subscribeClose(). Their listeners run on the Session line
-// and must not throw or call Session APIs, and Harness close will also join task invocations.
+export type ConversationWatch = WatchHandle<ConversationView>;
+
 /** Durable agent harness over one Session. */
 export interface Harness extends Session {
 	/**
-	 * Enable task scheduling. Idempotent; throws after close. Calls that wait for progress (`Conversation.submit()`,
-	 * `Submission.wait()`, `waitForTask()`, `waitForIdle()`) enable it too.
+	 * Enable task scheduling. Idempotent; throws after close. Calls that ask for progress enable it too:
+	 * `Conversation.submit()`, `Conversation.compact()`, `Conversation.abort()`, `Submission.wait()`, `waitForTask()`,
+	 * `Harness.waitForIdle()`, and `Conversation.waitForIdle()`. Read-only viewers never do.
 	 */
 	resume(): void;
+	/**
+	 * When this Session next needs a running process, from the scheduler's memory: `active` while some task can run now
+	 * or is running, `at` for the earliest sleep. Answers also while scheduling is paused. A host that wakes the
+	 * process itself, such as a Durable Object alarm, arms from it and calls `resume()` when woken; see
+	 * `HarnessOptions.onWake`.
+	 */
+	wake(): Wake;
 
 	/** Return the reserved root conversation, creating it with `agent` and `init` in one commit when absent. */
 	root(
@@ -565,18 +819,29 @@ export interface Harness extends Session {
 	 * definition cannot take it settles as `orphaned` instead.
 	 */
 	abortTask(id: TaskId, context: Context): Promise<"marked" | "terminal">;
+	/**
+	 * Run a task parked by `settings.restartLimit` again: clears its restart count and enables scheduling. Does nothing
+	 * for a task that is not parked; rejects for an unknown one.
+	 */
+	retryTask(id: TaskId, context: Context): Promise<void>;
 	/** Resolve with the terminal receipt; cancelling `context` cancels only this wait. */
 	waitForTask<R>(id: TaskId<R>, context: Context): Promise<SettledTask<R>>;
 	/** Resolve when the ordinary ownership scope of every ownerless conversation has no live non-background task. */
 	waitForIdle(context: Context): Promise<void>;
 	/** Session total: every conversation's `pi.usage` summed. */
 	usage(context: Context): Promise<UsageState>;
+	/** Every live task with its owner edge, status, and owned conversations (spec §9.5), as a disposable Chord state. */
+	taskGraph(context: Context): Promise<AttachedReplicatedState<TaskGraph>>;
+	/** The task graph as a serialized exact-frame watch with bounded pending frames. */
+	watchTaskGraph(context: Context): Promise<TaskGraphWatch>;
 }
 
 /** What a hook may use: committed reads and the asking task's memos, which hooks and the task share. */
 export interface HookApi extends DocumentReader {
 	readonly taskId: TaskId;
 	readonly conversationId: ConversationId;
+	/** The current `HarnessOptions.models`, read at each access. */
+	readonly models: Models;
 	memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
 	memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
 }
@@ -599,17 +864,22 @@ export interface GenerationHooks {
 	afterTools(assistant: EntryId, results: readonly EntryId[], api: HookApi, context: Context): void | Promise<void>;
 }
 
-/** Hooks of the built-in tool task. */
+/** A call as tool hooks see it; `parent` is set for a nested call, one a running tool made through `executeTool()`. */
+export type ToolHookCall = ToolCall & {
+	readonly parent?: { readonly taskId: TaskId; readonly callId: string };
+};
+
+/** Hooks of the built-in tool task, for model-issued and nested calls. */
 export interface ToolHooks {
 	/** Before intent; the first `block` wins, otherwise `arguments` replace the call's arguments. A throw blocks. */
 	beforeTool(
-		call: ToolCall,
+		call: ToolHookCall,
 		api: HookApi,
 		context: Context,
 	): HookResult<{ readonly arguments?: JsonObject; readonly block?: string }>;
-	/** After execution, before the result entry; replaces the result. */
+	/** After execution, before the result is committed; replaces the result. */
 	afterTool(
-		call: ToolCall,
+		call: ToolHookCall,
 		result: ToolExecutionResult,
 		api: HookApi,
 		context: Context,

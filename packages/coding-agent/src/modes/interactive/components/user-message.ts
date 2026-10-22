@@ -1,4 +1,4 @@
-import { Box, Container, Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { Container, Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, isMessageBackground, isMessageSeparator, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
@@ -44,11 +44,12 @@ export class UserMessageComponent extends Container {
 		contentBox.addChild(
 			new Markdown(
 				this.text,
-				0,
-				0,
+				this.outputPad,
+				1,
 				this.markdownTheme,
 				{
 					color: (content: string) => theme.fg("userMessageText", content),
+					bgColor: (content: string) => theme.bg("userMessageBg", content),
 				},
 				{
 					preserveOrderedListMarkers: true,

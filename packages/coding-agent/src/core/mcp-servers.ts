@@ -6,6 +6,41 @@
  */
 
 /**
+ * Regular expression for a tool name pattern where `*` matches any characters, as `toolExposure`,
+ * `--tools`, and `--exclude-tools` accept them.
+ */
+function toolPatternRegExp(pattern: string): RegExp {
+	const source = pattern
+		.split("*")
+		.map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+		.join(".*");
+	return new RegExp(`^${source}$`);
+}
+
+/** Whether a tool name matches any of the entries, each an exact name or a pattern. */
+export function createToolNameMatcher(entries: readonly string[]): (name: string) => boolean {
+	const names = new Set(entries.filter((entry) => !entry.includes("*")));
+	const patterns = entries.filter((entry) => entry.includes("*")).map(toolPatternRegExp);
+	return (name) => names.has(name) || patterns.some((pattern) => pattern.test(name));
+}
+
+/** MCP resource tools, which reach every server with resources. */
+export const LIST_MCP_RESOURCES_TOOL = "list_mcp_resources";
+export const LIST_MCP_RESOURCE_TEMPLATES_TOOL = "list_mcp_resource_templates";
+export const READ_MCP_RESOURCE_TOOL = "read_mcp_resource";
+
+const MCP_RESOURCE_TOOLS: ReadonlySet<string> = new Set([
+	LIST_MCP_RESOURCES_TOOL,
+	LIST_MCP_RESOURCE_TEMPLATES_TOOL,
+	READ_MCP_RESOURCE_TOOL,
+]);
+
+/** Whether a tool comes from MCP: a server tool (`mcp__<server>__<tool>`) or a resource tool. */
+export function isMcpToolName(name: string): boolean {
+	return name.startsWith("mcp__") || MCP_RESOURCE_TOOLS.has(name);
+}
+
+/**
  * - `codemode`: tools are callable from codemode scripts but neither declared to the model nor
  *   listed in the codemode description, which lists only the server's namespace. Scripts find them
  *   with `searchTools()`. `codemode-deferred` is accepted as an alias.
@@ -77,6 +112,12 @@ export interface McpOAuthConfig {
 	 */
 	clientName?: string;
 	/**
+	 * How pi identifies itself without `clientId`. `dcr` (default): dynamic client registration. `cimd`:
+	 * pi's Client ID Metadata Document on pi.dev, for authorization servers that allow pi by that URL. The
+	 * server must support it for public clients, and the callback must use the default path `/callback`.
+	 */
+	clientRegistration?: "dcr" | "cimd";
+	/**
 	 * Authorization server metadata document (RFC 8414 or OpenID Connect discovery) to use instead of
 	 * discovery through the server, for servers that advertise a wrong authorization server or none.
 	 * The document is trusted as configured. Must use https, except on loopback hosts.
@@ -147,6 +188,16 @@ function validateOAuth(value: unknown): string | undefined {
 	if (value.clientName !== undefined && (typeof value.clientName !== "string" || !value.clientName.trim())) {
 		return "oauth.clientName must be a non-empty string";
 	}
+	if (value.clientRegistration !== undefined && value.clientRegistration !== "dcr") {
+		if (value.clientRegistration !== "cimd") return 'oauth.clientRegistration must be "dcr" or "cimd"';
+		if (value.clientId !== undefined || value.clientName !== undefined) {
+			return 'oauth.clientRegistration "cimd" cannot be combined with oauth.clientId or oauth.clientName';
+		}
+		const callback = typeof value.callbackUrl === "string" ? new URL(value.callbackUrl) : undefined;
+		if (callback && (callback.hostname === "[::1]" || callback.pathname !== "/callback")) {
+			return 'oauth.clientRegistration "cimd" requires oauth.callbackUrl on localhost or 127.0.0.1 with path /callback';
+		}
+	}
 	const metadataUrl = value.authServerMetadataUrl;
 	if (metadataUrl !== undefined) {
 		const url = typeof metadataUrl === "string" && URL.canParse(metadataUrl) ? new URL(metadataUrl) : undefined;
@@ -177,14 +228,6 @@ function resolveExposureAliases(value: Record<string, unknown>): Record<string, 
 		);
 	}
 	return resolved;
-}
-
-function toolPatternRegExp(pattern: string): RegExp {
-	const source = pattern
-		.split("*")
-		.map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
-		.join(".*");
-	return new RegExp(`^${source}$`);
 }
 
 /** Exposure of one tool of a server: its `toolExposure` entry, else the server's `exposure`. */

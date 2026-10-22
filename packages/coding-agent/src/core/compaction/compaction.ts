@@ -552,15 +552,15 @@ export async function findCutPoint(
 // Summarization
 // ============================================================================
 
-const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+const SUMMARIZATION_PROMPT = `Summarize the messages above into a structured context checkpoint that will be used to continue the work.
 
 Use this EXACT format:
 
 ## Goal
-[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+[What the session aims to accomplish. Can be multiple items if different tasks are covered.]
 
 ## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned by user]
+- [Any constraints, preferences, or requirements mentioned in the notes]
 - [Or "(none)" if none were mentioned]
 
 ## Progress
@@ -706,6 +706,7 @@ export async function completeSummarization(
 export async function generateSummary(
 	currentMessages: AgentMessage[],
 	model: Model<any>,
+	// Unused. Kept for existing callers; summaries use the model's output limit (#9512).
 	reserveTokens: number,
 	apiKey: string | undefined,
 	headers?: Record<string, string>,
@@ -747,6 +748,7 @@ export async function generateSummary(
 export async function generateSummaryWithUsage(
 	currentMessages: AgentMessage[],
 	model: Model<any>,
+	// Unused. Kept for existing callers; summaries use the model's output limit (#9512).
 	reserveTokens: number,
 	apiKey: string | undefined,
 	headers?: Record<string, string>,
@@ -1182,3 +1184,4 @@ export async function compact(
 		details: { readFiles, modifiedFiles } as CompactionDetails,
 	};
 }
+

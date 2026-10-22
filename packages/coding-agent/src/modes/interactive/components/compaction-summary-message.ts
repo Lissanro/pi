@@ -14,12 +14,21 @@ export class CompactionSummaryMessageComponent extends Box {
 	private message: CompactionSummaryMessage;
 	private markdownTheme: MarkdownTheme;
 
-	constructor(message: CompactionSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
-		super(1, 1, customMessageBg());
+	constructor(message: CompactionSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme(), outputPad = 1) {
+		super(outputPad, 1, customMessageBg());
 		this.setSeparatorBg(customMessageSeparatorBg());
 		this.message = message;
 		this.markdownTheme = markdownTheme;
 		this.updateDisplay();
+	}
+
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded;
+		this.updateDisplay();
+	}
+
+	setOutputPad(outputPad: number): void {
+		this.setPaddingX(outputPad);
 	}
 
 	override invalidate(): void {

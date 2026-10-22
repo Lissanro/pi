@@ -109,6 +109,7 @@ export function createTestUiContext(overrides: Partial<ExtensionUIContext> = {})
 }
 
 export interface HarnessOptions {
+	provider?: string;
 	models?: FauxModelDefinition[];
 	/** Override the faux provider API (e.g. "openai-completions" for prefill tests). */
 	fauxApi?: string;
@@ -121,6 +122,8 @@ export interface HarnessOptions {
 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
 	withConfiguredAuth?: boolean;
 	modelsJson?: Record<string, unknown>;
+	/** Session to continue, for example to test a resume. Default: a new in-memory session. */
+	sessionManager?: SessionManager;
 }
 
 export interface Harness {
@@ -164,6 +167,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		return realFetch(input, init);
 	}) as typeof globalThis.fetch;
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
+		provider: options.provider,
 		models: options.models,
 		api: options.fauxApi,
 	});
@@ -173,7 +177,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const withConfiguredAuth = options.withConfiguredAuth ?? true;
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 
-	const sessionManager = SessionManager.inMemory();
+	const sessionManager = options.sessionManager ?? SessionManager.inMemory();
 	const settingsManager = SettingsManager.inMemory(options.settings);
 
 	const authStorage = AuthStorage.inMemory();
@@ -253,6 +257,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		resourceLoader,
 		baseToolsOverride: toolMap,
 		initialActiveToolNames: options.initialActiveToolNames,
+		usesDefaultTools: options.initialActiveToolNames === undefined,
 		allowedToolNames: options.allowedToolNames,
 		excludedToolNames: options.excludedToolNames,
 		extensionRunnerRef,

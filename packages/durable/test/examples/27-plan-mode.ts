@@ -27,6 +27,7 @@ const context = BACKGROUND_CONTEXT;
 
 // The current plan of a conversation. A fork keeps the plan it had at the fork entry.
 const PlanDoc = defineDoc<{ steps: string[] }>({
+	checkpointWhen: () => false,
 	kind: "app.plan",
 	version: 1,
 	scope: "conversation",
@@ -43,7 +44,7 @@ const submitPlan = defineTool({
 		await api.commit(async (tx) => {
 			(await tx.doc(PlanDoc, api.conversationId)).steps = args.steps;
 		}, callContext);
-		return { content: [{ type: "text", text: "Plan submitted." }], control: { terminate: true } };
+		return { output: [{ type: "text", text: "Plan submitted." }], control: { terminate: true } };
 	},
 });
 

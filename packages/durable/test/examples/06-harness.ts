@@ -24,7 +24,7 @@ const read = defineTool({
 	name: "read",
 	description: "Read a file",
 	parameters: Type.Object({ path: Type.String() }),
-	execute: async (args) => ({ content: [{ type: "text", text: `contents of ${args.path}` }] }),
+	execute: async (args) => ({ output: [{ type: "text", text: `contents of ${args.path}` }] }),
 });
 const Files = defineExtension({ name: "files", tools: [read] });
 const registry = createRegistry();
@@ -34,6 +34,7 @@ registry.install(Files);
 const harness = await Harness.open(new MemoryStorage(), { models: createModels(), registry }, context);
 
 const Notes = defineDoc<{ text: string }>({
+	checkpointWhen: () => false,
 	kind: "example.notes",
 	version: 1,
 	scope: "conversation",

@@ -4,130 +4,182 @@
 
 ### Breaking Changes
 
-- The portable SQLite facade in `@earendil-works/pi-durable/storage/sqlite` is asynchronous: `SqliteDatabase` extends the new `SqliteExecutor` (`exec`, `run`, `get`, `all` by SQL text), `prepare` and `SqliteStatement` are removed, `transaction` takes an async callback that receives a transaction handle, and `close()` returns a promise. Custom adapters must be rewritten ([#10232](https://github.com/earendil-works/pi/pull/10232) by [@christianklotz](https://github.com/christianklotz)).
-- The registry holds named extensions: `registry.install(extension)` and `uninstall()` replace `tools`, `hooks`, `tasks`, `systemPrompt`, `conversations`, `batch()`, wrappers by key, and hook scopes. Build extensions with `defineExtension()`, `defineTool()`, `section()`, `hook()`, `wrapTool()`, and `wrapSection()`.
-- The per-conversation `pi.conversation.config` document and the `Conversation` getters and setters are replaced by the rewindable `pi.agent` document (model, thinking level, extension and tool selection, `instructions`, `cwd`), `Conversation.agent()`, `Conversation.configure()`, `configure(tx, id, change)`, and the `agent` option of `root()`, `createConversation()`, and `fork()`. A task-owned conversation starts as a copy of its owner's conversation's agent.
-- Stream options, retry and compaction policies, tool execution mode, and queue modes are Harness-wide `HarnessOptions.settings`, read at every use.
-- `HarnessOptions.env` is a function that builds the environment per use from the conversation's ID and `cwd`. `TaskRuntime` gains `agent()`, `settings`, and `env()`; `ToolExecutionApi` gains `registry` and `agent()`, and `env` is built per call.
-- `ToolRegistration<TParameters, TDetails>` types `execute()` arguments from `parameters`, and `ToolExecutionApi` and `ToolExecutionResult` type details. `prepareArguments` takes `unknown` and returns the parameters' type.
-- The event snapshot's `config` and the `config_changed` event are replaced by `agent` and `agent_changed`.
-- `HarnessInspection.registry` is removed.
-- `FileSystem` requires `id`: equal ids see the same files at the same paths. `edit` and `write` serialize changes to one file by `id` and canonical path instead of by environment object; `NodeExecutionEnv` uses `"node:local"`.
+- `TaskRuntime.sleep()` is removed: it waited inside a phase, which holds an invocation and, after a restart, reruns the phase and restarts the wait. A task now ends its phase asleep with `runtime.sleepUntil(until, checkpoint, context)` or by returning `{ status: "sleeping", until, checkpoint }` from `runtime.commit()`; move the work after the wait into the next phase and carry what it needs in the checkpoint. `TaskRuntime.setTimer()` paces work inside a phase without waiting for it.
+- Tasks have a `sleeping` status, so code that handles every `TaskState`, `TaskGraphState`, or `TaskInspection` state needs a case for it.
+- Opening a SQLite storage migrates it to schema version 2 automatically, rebuilding its task table. A migrated database cannot be opened by 1.3.0 or earlier, so a deployment cannot roll back past this release. JSONL storage needs no migration, but 1.3.0 or earlier never resumes a sleeping task it finds (a run's conversation stays busy).
+- `TaskRuntime` has `sleepUntil()` and `setTimer()`, and `ToolExecutionApi` has `now()`: code that builds either object by hand, such as a test fake or a tool wrapper that does not spread the original, must add them.
+- A task cut off by a crash 5 times in a row without committing a new state is parked instead of run again (see the crash-loop guard under Added); set `settings.restartLimit` to `Infinity` to keep the old behavior. `TaskInspection`'s blocked reasons include `restart_limit`.
+- `defineDoc()` and `defineDocFamily()` require an explicit `checkpointWhen` predicate on every definition; there is no default. Use `() => false` to keep ordinary changes as deltas, or supply a policy that periodically writes a base.
 
 ### Added
 
-- `CodingTools` extension in `@earendil-works/pi-durable/tools` with `read`, `write`, `edit`, and `bash`.
-- `AgentDoc`, `configure()`, `DEFAULT_RETRY_POLICY`, and `DEFAULT_COMPACTION_POLICY` exports.
-- `HarnessOptions.conversationCreated(tx, conversation)` runs in every commit that creates or forks a conversation, after the built-in documents, so applications can create their own documents in every conversation.
-- `Tx.submissionByRequest()` and `Tx.createSubmission()`; the latter writes a raw submission record without admission rules.
+- Added `IndexedDbStorage` (`@earendil-works/pi-durable/storage/indexeddb`), a browser storage backed by IndexedDB.
+- `HarnessOptions.telemetry` emits the content-free `DURABLE_TELEMETRY_SCHEMA`: public submission admission spans, task phase spans (including extension tasks), committed entry and submission events, running phase-change checkpoints, and nested-tool replay events. Optional propagation stores opaque carriers on submissions and tasks so queued inputs and reopened tasks retain their trace; `TaskOptions.trace` accepts a carrier override or `"root"` (absence inherits the creator's carrier); creation-time `links` connect inputs sharing a run, while steer admissions link to the running trace. Internal admissions emit events without a submit span. Optional metrics record phase duration and live task counts. Failed phases record fixed error-status categories (`task_faulted`, `task_failed`, `task_orphaned`) and diagnostics capped at 500 characters; aborted phases keep status `ok`. Every `onReport` report also emits a fixed-field `pi.durable.report` event on its current span (dropped by the NOOP span when there is none), plus a `pi.durable.reports` counter by type; report telemetry contains no error payload and leaves the callback unchanged. Clock failures report without a phase context. Generation and compaction forward their phase context to pi-ai requests.
+- `settings.compaction.modelOverrides` sets compaction thresholds per model, keyed by exact `"provider/modelId"`, so one harness can serve small- and large-window models; the threshold check, overflow recovery, and the compaction task use the entry of the model they act for ([#10942](https://github.com/earendil-works/pi/issues/10942)).
+- Durable sleeps: a sleeping task holds no invocation, survives restarts, and resumes at its checkpoint once the Harness clock reaches `until`.
+- `HarnessOptions.setTimer` arms the timers of the Session, the scheduler, and its tasks (progress throttles, idle-memory eviction, sleeps), also for `createSession()`; with `now`, they run on a host or fake clock. A foreground timer the host throws on or declines falls back to `setTimeout`. `ToolExecutionApi.now()` reads the Harness clock.
+- `Harness.wake()` and `HarnessOptions.onWake` tell a host when the Session next needs a process: `active` while work can run, `at` for the earliest sleep. With `onWake`, the Harness keeps no timer for sleeps, so a Cloudflare Durable Object can hibernate and wake on its alarm, calling `resume()`.
+- Crash-loop guard: open counts the restarts of each task that a crash, eviction, or reset cut off (`TaskRecord.restarts`); a close writes the tasks it stopped back as `pending` uncounted, and a new state the task commits starts the count over. At `settings.restartLimit` the task is parked: blocked with reason `restart_limit` in `inspect()` and the task graph, not active in `wake()`, and reported once. `Harness.retryTask(id)` runs it again. An abort handler cut off that many times ends its task `faulted`.
+- `onReport(error, info)`: `info` (`ReportInfo`) says what happened in `type`: `session_failed`; `task_faulted`, `task_parked`, `migration_failed`, `task_outdated`, or `task_error` with the task and the extension that installed it; `extension_error` with the extension's name; `host_error` with the failing `HostCallback`; or `listener_error`.
+- `settings.afterFailedRun`: a run that fails with `model_error` or `no_model` keeps the inputs queued behind it (`keep`, the default), starts the next run with them (`continue`), or settles them `unanswered` with reason `run_failed` (`withdraw`).
+- The task graph shows why a task cannot run (`TaskGraphNode.blocked`: `missing_task`, `task_too_old`, `migration_failed`, or `restart_limit`) and follows registry changes and failed migrations.
+- Added `HarnessOptions.identity` (a pi-ai `ClientIdentity`) to set the `User-Agent` and provider attribution of every model request through the Harness, including hooks and tools. `api.models` in tools and hooks is now a wrapper of the host's `Models` that adds the identity, not the same object.
+- `HarnessOptions.models` and `HarnessOptions.settings` also accept a function returning the current value, like `env`. Generation, compaction, hooks and tools call it at each use (`api.models` reads the current value at each access), so a host can replace its model configuration or settings without reopening the Harness. A plain object still works.
 
-## [0.99.2] - 2026-09-30
+### Changed
 
-### Breaking Changes
+- A task phase that faults is reported through `onReport` (as `task_faulted`), not only recorded in its outcome.
+- `onReport` gets a second argument, `info`, and `TaskRuntime.report()` takes an optional `from` (see Added); an `onReport` written for one argument still works.
+- Generation retry backoffs, deferred-response polls, and compaction retry backoffs sleep instead of waiting in a running phase, so a process can stop or hibernate during them. A record an earlier version stored mid-backoff sleeps again when it resumes before its time. A deferred poll whose model is gone after a reopen now fails `no_model` once the poll is due, not at once.
+- Code mode measures script deadlines and wall time on the Harness clock (`HarnessOptions.now`) instead of `Date.now()`.
+- SQLite drivers, portable interfaces, and the generic migration runner now come from `@earendil-works/chord/sqlite`. Existing Durable SQLite entry points keep re-exporting their public names; storage helpers and Durable schema migrations stay here.
 
-- `TaskRuntime` now requires `env`, `hooks`, `getTask()`, `waitForTask()`, `outcomes()`, `entry()`, and `conversation()`; `ToolExecutionApi` requires `env`, `diagnostic()`, and `conversation()`.
-- `createRegistry()` also pre-registers the built-in `pi.tool` task.
-- `tx.createTask()` requires `options.ownership`: `{ kind: "conversation" }` or `{ kind: "task", taskId }`. `TaskOptions.after` and `TaskRecord.after` are removed; a task waits on other tasks by committing a `waiting` state. `TaskRecord` gains `owner`, and `TaskState` gains `waiting` and `completing`; the SQLite task schema changed.
-- `ToolResultEntry` now carries `data: { diagnostics }`.
-- `Tx` now requires `placeSubmission()` and `latestHeadMarker()`.
-- Busy submissions no longer reject with `ConversationBusy`: they queue in the conversation's `pi.inbox`, except input with `whenBusy: "reject"`.
-- The built-in `pi` setup now also creates `pi.inbox` and `pi.usage` in every Harness conversation.
-- The environment shell no longer keeps a bounded, throttled output view: `ShellExecOptions.capture` and `onUpdate` are replaced by raw `onOutput` chunks and `spill: { afterBytes, afterLines }`, `ShellExecResult` is `{ exitCode, spillPath? }`, and `ExecutionError.spillPath` reports the spill of a timed-out or aborted command.
-
-### Added
-
-- Added the tool chain: generation offers active registered tools through positional system entries, answers calls to tools it did not offer with `tool_unavailable`, and runs parallel or sequential `pi.tool` tasks that it owns and waits for in its `tools` phase, which applies `addTools` and `terminate` and continues with the next generation.
-- Added the `pi.tool` task: argument validation before and after `beforeTool`, durable intent with the replay policy, recovery that reruns only replay-safe tools, bounded `output()` and `details()` progress in `pi.live.tools` slots with adaptive throttling, output and details fallback, `afterTool`, and results with a rendered `<harness>` diagnostics block.
-- Added tool diagnostics: `api.diagnostic()`, `ToolExecutionResult.diagnostics`, and Harness diagnostics for truncation and error results.
-- Added hook dispatch with conversation and owned-subtree scopes: `beforeRequest`, `afterResponse`, and `onYield` continuations on generation, `afterTools` on generation, `beforeTool` and `afterTool` on tools, with `HookApi` memos.
-- Added `HarnessOptions.env`, `ToolRegistration.executionMode`, and the `toolExecution` configuration with `get/setToolExecution()`.
-- Added `read`, `bash`, `edit`, and `write` tools in `@earendil-works/pi-durable/tools`; they use `api.env`. Bash streams raw output into `api.output()`, reports its spill file as a diagnostic, and throws on a nonzero exit or timeout. Reading images is not supported yet.
-- Added `ToolRegistration.prepareArguments()` to repair malformed arguments before validation; the edit tool uses it for `edits` sent as a JSON string or a single object and for top-level `oldText`/`newText`.
-- Tool output retained by `api.output()` is an exact slice of whole lines, sanitized of control characters.
-- Added the `bench:tool-output` benchmark of tool output rates, retention, backends, replay, and 1 GiB throughput.
-- Added the inbox: busy steer and follow-up inputs and passive writes queue in the `pi.inbox` document (`InboxDoc`) and are placed at `postTools` and final boundaries, writes before user items, by the new `steeringMode` and `followUpMode` configuration with `get/set` accessors. Withdrawal removes the item; stale head writes settle `unanswered`; queued items survive a failed run until the next submission.
-- Added `Conversation.reset(handoff)` and the `handoff` tool control, which write the headed `pi.reset` entry (`ResetEntry`); a reset queued during a tool round ends the run.
-- `onYield` continuations now apply only when the final boundary places no queued user input and no reset.
-- A generation that faults or is orphaned now converts its committed partial into an aborted assistant entry, which counts in `pi.usage`, instead of discarding it.
-- Added the `pi.usage` ledger (`UsageDoc`) of assistant usage per model and tool usage per tool, `ToolExecutionResult.usage`, and `Harness.usage()` for the Session total.
-- Added the structural `ConversationView` with `Conversation.viewState()` and `Conversation.watch()`.
-- Added the experimental `watchEvents()` agent event adapter with snapshot events, translated message and tool deltas, and overflow to a snapshot.
-- Added `Conversation.abort()`, which withdraws queued inputs, aborts the conversation's ordinary ownership scope, and resolves once it is idle.
-- Abort marks now cascade to work owned by the aborted task, or by a task holding a failed, faulted, or orphaned outcome: live foreground tasks below it are aborted and the queued inputs of their conversations withdrawn. Background tasks are boundaries; finished owners never cascade.
-- Added structured concurrency: tasks own child tasks (`ownership: { kind: "task", taskId }`) and wait for any tasks with a `waiting` state (`on`, `policy: "failFast" | "allSettled"`) and `runtime.outcomes()`. A task that finishes while work it owns is live holds its outcome as `completing` until that work drains; abort handlers run bottom-up, after the aborted task's owned work ended.
-- Added `Conversation.abort(context, { background: true })`, which also aborts background work and waits for it.
-- Conversation and Harness idle waits now include work in owned conversations and stop at background tasks.
-- A tool task whose `execute()` throws, or that is interrupted by a restart without a safe rerun, now ends `failed` (still with its error result entry), which aborts the conversations the call owns.
-- Added compaction: the `pi.compaction` task (`CompactionTask`) summarizes an older prefix of the model context and places a `pi.compaction` entry (`CompactionEntry`) that heads the first kept entry. `Conversation.compact()` starts one manually; generation starts one in the background above a soft threshold, waits for one above `contextWindow - reserveTokens`, and compacts and retries once after a context overflow. Configure it with `get/setCompaction()`; `beforeCompact` hooks can decline or supply the summary; `pi.live.compactions`, `compaction_start`/`compaction_end` events, and `pi.usage` report it.
-- `ContextView` now includes `contributions`, each active entry's model messages after edits.
-- Added `TaskRuntime.conversation()` and `ToolExecutionApi.conversation()`: invocation-bound `ConversationHandle`s for submitting to, aborting, and waiting on existing conversations, such as the ones a task owns.
+- `ToolControl.terminate` is now typed `boolean` instead of `true`, matching `pi-agent-core` and `pi-coding-agent`; `false` does not end the run ([#10858](https://github.com/earendil-works/pi/issues/10858)).
 
 ### Fixed
 
-- Avoided loading TypeBox through the package root's generation retry helpers and switched examples to narrow pi-ai model and faux-provider imports.
+- In Cloudflare Workers with `nodejs_compat`, the timers that evict idle documents and contexts were armed, since timers there have an `unref()`; a pending one kept a Durable Object from hibernating and blocked its eviction. They are now declined in Workers, and memory is freed at later commits.
+- The README's Errors section now limits the `StorageRequestError` exemption to reads: a `StorageRequestError` thrown by `commit()` or `mintId()` fails the Harness like any other storage error ([#11014](https://github.com/earendil-works/pi/issues/11014)).
 
-## [0.99.1] - 2026-09-29
-
-## [0.99.0] - 2026-09-29
-
-### Breaking Changes
-
-- Reordered Storage scan arguments so the limit precedes the cursor.
-- Added the required conversation-visible `Storage.entry(conversationId, id, context)` overload.
-- Split `Tx.createConversation()` from `Tx.forkConversation()`, replaced raw conversation-record input, and require explicit ownerless or task ownership.
-- Replaced untyped numeric record IDs and the `TaskRef` wrapper with erased branded numeric ID types, including result-typed `TaskId<R>`, separately branded commit sequences, and generic `Storage.mintId()`.
-- Made task conversation membership immutable after task creation.
-- Added `ConversationQuery` to Storage and transaction conversation scans.
-- Added required `StoredDocument.deltasSinceBase` to Storage document reads.
-- Task definitions now require an exhaustive `phases` map and an `abort` handler; define them with `defineTask()`.
-- `RegistryReader` now requires `subscribe()`.
-- Removed `Tx.setTask()`; a task changes its own state by returning the next state from its `runtime.commit()` callback.
-- `Session.subscribeClose()` listeners now run synchronously when close begins, after admission is sealed.
-- `defineEntry<D>()` now takes the entry's `data` type instead of a record type; `Entry<D>.is()` narrows to `TypedEntry<D>`.
-- Added the required `Storage.scanSubmissions()` scan of submissions by conversation and status.
-- `createRegistry()` now pre-registers the built-in `pi.generation` task and `pi` conversation setup, which cannot be disposed or replaced, and `Harness.open()` rejects a registry whose snapshot lacks either.
-- `RegistrySnapshot` now requires `conversationSetups()`.
-- `Tx` now requires `settleSubmission()`.
+## [1.3.0] - 2026-10-15
 
 ### Added
 
-- Added transactional Sessions with typed durable documents, task creation, snapshots, retirement, and commit publications.
-- Added document checkpoint selection, lazy version migration, and `Session.snapshotAsOf()` for rewindable conversation documents.
-- Added policy-driven backend-side conversation document copying when creating forks.
-- Added indexed conversation ownership queries and guaranteed no-effect Storage rejection handling.
-- Added the JSONL storage backend (`@earendil-works/pi-durable/storage/jsonl`, and `openNodeJsonlStorage()` from `@earendil-works/pi-durable/storage/jsonl/node`), including sidecar reclamation.
-- Added the execution environment (`@earendil-works/pi-durable/env`, and `NodeExecutionEnv` from `@earendil-works/pi-durable/env/node`) for file access and shell execution with bounded output capture and truncation.
-- Added the `@earendil-works/pi-durable/testing` export with the scoped storage conformance suite (`createStorageConformance()`, `registerStorageConformance()`) and storage benchmark workloads ([#9977](https://github.com/earendil-works/pi/pull/9977) by [@christianklotz](https://github.com/christianklotz)).
-- Added incarnation-bound read-only Chord document states and serialized asynchronous document watches with bounded exact-frame buffering.
-- Added `deltasSinceBase` checkpoint predicate information so definitions can bound replay without value counters.
-- Added `Harness.open()` with lazy root creation, atomic conversation creation and forks with `init`, conversation-bound commits, fork-aware entry pagination, model context derivation, and the built-in `ConversationConfig` document with model, thinking level, and active tool accessors.
-- Added `createRegistry()` for tools, tool wrappers, hooks, tasks, and system prompt sections with batched publication and stable keyed ordering.
-- Added `defineEntry()` typed entry kinds.
-- Added the durable task runtime: `defineTask()`, registry-resolved phase handlers with checkpoint progress rules decided on the Session line, migration at reservation, typed runtime commits, memos, `sleep()`, and invocation-owned watches, plus `Harness.resume()`, `getTask()`, `waitForTask()`, `abortTask()`, and task-aware `waitForIdle()` on the Harness and conversations. Open reconciles running tasks to pending; tasks without a fitting definition stay blocked until registration, and aborting them settles them as `orphaned`.
-- Added the first runnable chat turn: `Conversation.submit()` with request-ID deduplication, `Submission` handles (`status()`, `wait()`, `abort()`), `Harness.submission()`, `Harness.abortSubmission()`, and `ConversationBusy` for submissions to a busy conversation.
-- Added the built-in `pi.generation` task: positional system prompt preparation from registered sections (tags, wrappers, failures, minimal patches, order rewrites, and head-cut rebaselines), model requests through `Models`, durable throttled partials in the `pi.live` document (`LiveDoc`), retries with backoff, deferred-response polling and cancellation, and aborted-partial conversion.
-- Added `Tx.settleSubmission()`, which run tasks use to settle the inputs they answer.
-- Added built-in entry tokens `UserEntry`, `AssistantEntry`, `SystemEntry`, and `ToolResultEntry`, and token-first `tx.entry()` and `tx.appendEntry()` overloads.
-- Added `streamOptions` and `retry` to `ConversationConfig` with `get/setStreamOptions()` and `get/setRetryPolicy()` on conversations.
-- Added `snapshot()`, `snapshotAsOf()`, `context()`, `now()`, and `report()` to `TaskRuntime`.
-- Added `Harness.inspect()`: live tasks with their derived scheduler state (running, ready, waiting, or blocked with its reason), queued and placed submissions, and registry wrapper failures.
-- Entries appended by a task's runtime commits now record the task as `byTaskId`.
-- Added `registry.conversations.setup()`: setups run in every Harness commit that creates or forks a conversation, including raw `Tx.createConversation()` and `Tx.forkConversation()`, before host `init`. The built-in `pi` setup runs first and stages the default configuration with every registered tool active (forks keep their copied configuration) and an empty `pi.live`.
-- `Conversation.submit()`, `Submission.wait()`, `waitForTask()`, and `waitForIdle()` now enable task scheduling, so they never wait on a Harness whose `resume()` was not called.
-- Scheduler-written `faulted` and `orphaned` outcomes of a run task now settle the run's input submissions `unanswered` and clear its run control in the same commit.
+- `SqliteStorage.open(database, { prefix })` can namespace every table and index; `openNodeSqliteStorage()` and `openDurableObjectSqliteStorage()` forward it, for databases shared with host tables.
+
+### Changed
+
+- Cloudflare Durable Object SQLite adapters created for the same storage object now coordinate their operations, allowing multiple Pi storages to safely share one Durable Object database.
 
 ### Fixed
 
-- Fixed cached documents skipping migration when accessed with a newer definition version, and older definitions reading values migrated only in memory. Document states and watches hydrated under another definition version receive the new value as a root replacement.
+- The system baseline written after a compaction now leads the model context when the kept history includes an assistant message, as does a first baseline written after earlier answers, instead of following the new input; Anthropic and OpenAI Codex requests sent it as a mid-conversation system message without an initial prompt or tool set. Other system messages after an assistant message stay in place ([#10904](https://github.com/earendil-works/pi/issues/10904)).
+- `toBase64`, used by `read` and the Photon image processor, no longer takes about 140 MB of heap to encode a 3 MiB image, which exceeded the 128 MB memory limit of a Cloudflare Durable Object; it now builds a binary string 8 KiB at a time and encodes it with `btoa` ([#10923](https://github.com/earendil-works/pi/issues/10923)).
 
-## [0.87.1] - 2026-09-22
+## [1.2.0] - 2026-10-12
 
-## [0.87.0] - 2026-09-21
+### Breaking Changes
 
-## [0.86.1] - 2026-09-20
-
-## [0.86.0] - 2026-09-19
+- `ToolTaskInput` and `ToolTaskResult` are tagged unions: a model-issued call is `{ kind: "model", ... }` with its previous fields, a nested call `{ kind: "nested", ... }`. `pi.tool` is version 2 and migrates live version 1 tasks.
+- `ToolExecutionResult.content` is now `output`, next to the new `structuredOutput`.
+- `bash` and `powershell` answer a nonzero exit with an error result carrying an `exit_code` diagnostic, instead of throwing (`tool_error`).
+- Any error a `Storage` method throws, a read included, now fails the Session, which closes itself: every later call and every pending wait rejects with `SessionFailed`, whose `cause` is that error, and nothing is retried. `StorageRejected` is removed; a storage retries its own transient failures and throws the new `StorageRequestError` for an invalid request, which fails only that call. A throw in the scheduler's own commits, or in the commit listeners of the Harness's components, fails the Session too.
+- `subscribeCommits()` and `subscribeClose()` listeners that throw, or return a rejected promise, are reported through `onReport` instead of failing the operation that ran them.
+- A display-only write submission, one of only `kind` and `data` (no `model`, `head`, or `edits`), is appended and settled `done` at once, even while the conversation is busy or has queued items, instead of waiting in `pi.inbox` for the next boundary; only a queued reset still holds it back, so the reset does not hide it. It changes nothing the model sees, so a chat message shows as soon as it is sent, ahead of earlier submissions still queued, and it no longer places items left queued after a failed run ([#10407](https://github.com/earendil-works/pi/issues/10407)).
 
 ### Added
 
-- Added the initial Pico durable record contracts and detached in-memory storage implementation.
+- Optional `ExecutionEnv.listFiles(path, options, context)` for bounded, gitignore-aware tree listings (`ListFilesOptions`, `FileListing`, `FileListEntry`); `registerEnvConformance` takes a `listFiles` option to cover it.
+- Input submissions take `entry: { kind, data }` (`InputEntry`): the input is placed as an entry of that kind carrying that data, with its content as the user message, instead of `pi.user`, and behaves as any other input; the kind must not start with `pi.`. Queued inputs carry it in their `pi.inbox` item ([#10407](https://github.com/earendil-works/pi/issues/10407)).
+- `Session.closed` settles once the Session has closed, Storage included: `{ reason: "closed" }` after `close()`, or `{ reason: "failed", error }` after a storage error. `WatchEnd` gains `{ reason: "session_failed", error }`, and the README has an Errors section.
+- `ToolExecutionApi.executeTool(name, args, context, { key?, progress? })`: a tool calls another tool as a nested call. The nested call is its own `pi.tool` task owned by the caller, runs validation, the `ToolTask` hooks (whose `ToolHookCall` carries `parent`), output limits, and its replay policy, and returns a `NestedToolExecutionResult` (its `taskId`, `structuredOutput`, `details`, `diagnostics`, `usage`, `isError`, `durationMs`, but not the model's `output`) to the caller instead of the transcript. Each nested call is a member of `NestedCallDoc`, a task-scoped document family of the caller keyed by the call's key, holding its `taskId` and, once it ends, its `result` as returned, so it is gone from storage once the caller settles; its task's receipt stays small. Keys, by default the call's position, let a replay-safe caller's rerun reattach to its nested calls; a caller that is not replay-safe has its unfinished nested calls abandoned after a restart. Nested calls show in `pi.live.nestedTools`, with the arguments they run with and a `summary` (error, duration, usage) once done (`progress: false` keeps their running output out), and as tool events with `parentToolCallId` and `parentTaskId`; every tool event also carries its call's `taskId`. A caller aborts the nested calls it left running before it settles.
+- Structured tool output: a tool declares `structuredOutputSchema` and returns `structuredOutput`, which the Harness validates and gives to programs that call the tool; a tool without a schema gives them its bounded output, one text item as a string, one image as itself, and otherwise the content list, for errors too. `structuredOutput` is always the tool's own value: a schema tool's error result keeps the value it returned, and the text of one without becomes a `tool_error` diagnostic of the nested result, as a thrown error's message does. A nested call with invalid structured output gets an error result; a model-issued one only loses it, and the host gets a report. `api.retainedOutput()` reads the bounded output the model will see. `bash` and `powershell` return `{ output, truncated, fullOutputPath?, exitCode }`.
+- `ToolRegistration.callers` (`model`, `tools`, or both, the default) and `pi.agent` `modelTools`: who may call a tool, and which of its tools a conversation offers the model; `Agent.callable` lists the tools nested calls resolve among. `addTools` also extends `modelTools`.
+- Deferred tools: `ToolRegistration.deferred` keeps a tool from the model until `modelTools` names it, in its array or its new `add` (`{ remove?, add? }`); `control.addTools` writes names to `add`, and loaded tools follow the others in load order, so a load only appends declarations. `Agent.deferred` lists the deferred tools not loaded yet. `@earendil-works/pi-durable/tool-search` provides the coding agent's `tool_search` tool, which searches them with BM25 and loads the matches. The `codemode` section leaves deferred tools out.
+- `TaskOptions.abandonOnRestart`: a task its creator awaits only in memory is aborted, with its owned work, when a later Harness starts scheduling, before any of it runs again. Its mark carries `abortReason: "restart"`, which cascades; such a task waits for a missing definition instead of becoming `orphaned`. Nested calls and `api.createTask()` children of tools that are not replay-safe get it by default. No task below an owner with cancellation intent starts a run phase any more, even before the cascade marks it.
+- `TaskRuntime.abortOwned(id, context)`: abort a task this task owns and wait until it is terminal.
+- `TaskRuntime.ownedTasks(context)`: the live tasks a task owns directly, whichever invocation created them, as copies. A tool call settling finds the nested calls it left running with it.
+- `@earendil-works/pi-durable/codemode`: a `codemode` tool (`createCodemodeExtension({ sandbox })`) whose scripts call the conversation's tools as nested calls and survive a restart: the script is replayed deterministically from a journal of the results it got, written before each delivery, reattaching to its nested calls, and then continues. Divergence, a changed sandbox fingerprint or module version, and a passed deadline end the call with an error. As in the coding agent, a `codemode` prompt section lists the tools scripts can call (`namespaces`, an inline token budget), scripts find tools with `searchTools()`, `describeTool()`, and `describeNamespace()`, and the result is laid out with a header, text item markers, a console block, truncation to `max_output_tokens` with a spill file, and saved images. Scripts get `models.*` (the catalog, `models.classify()`, `models.generateImages()`; the last two as nested calls of internal tools, at most four at once), and the tool declares the Lark grammar of its source for models that support grammar-constrained sampling. A failed call rejects in the script with its text, except an error result of a schema tool with its own value, which resolves: `tools.bash` gives `{ output, exitCode, ... }` for a nonzero exit. Scripts keep `store()`/`load()` values per conversation, forked as of the fork's entry. The result's `details.calls` list the script's tool calls with their status; live progress is in `pi.live.nestedTools` (`npm run bench:codemode`).
+- `read` returns images as one image block instead of an `unsupported_image` error: PNG, JPEG, GIF, and WebP within the model's image limits (by default 2000x2000 pixels and 4.5 MB of base64) as they are, or, with `createCodingTools({ images })`, oriented, converted, and shrunk to fit. `@earendil-works/pi-durable/images` provides a Photon (WebAssembly) image processor, with `/images/node` and `/images/cloudflare` loaders; `/images/node` prepares images in a worker thread, so a large photo never blocks the event loop, and the thread exits after 30 s without images; nothing loads it unless imported. A model without image input gets a diagnostic saying it sees a placeholder.
+- `pi.live.compactionFailure` keeps the newest compaction failure (task, reason, error) until a compaction produces a summary; the agent events' snapshot carries it as `compactionFailure`, and `compaction_end` carries `error` for a compaction that failed. A failed background or manual compaction was invisible once its status was removed.
+
+### Fixed
+
+- A wait that closes a cycle through waits and held owners is rejected by `runtime.commit()`, naming the cycle, instead of leaving every task on it waiting forever; waiting on itself or on an owner chain were the only cycles caught. A background task may now wait on the owner of its conversation, which is no cycle ([#10411](https://github.com/earendil-works/pi/issues/10411); tests and approach from [#10533](https://github.com/earendil-works/pi/pull/10533) by [@odysseus0](https://github.com/odysseus0))
+- Appending to an array in a document no longer costs a walk over the whole array per commit: Chord's delta tracker plans inserts and removals that keep the remaining elements in order from the changed ranges alone, and builds an appended array in one copy instead of two. 32,000 one-item appends, one commit each, take 1.4 s instead of 11.3 s; what remains is the copy each immutable value needs (`npm run bench:document-append`).
+- A generation whose blocking threshold compaction failed, faulted, was orphaned, or was aborted directly now fails with `model_error` (`Compaction failed: <error>`) instead of sending its request anyway. The context was still above the blocking threshold, so the request at best left no room for the answer: a session at 996K of a 1M window got an empty `length` answer on every turn, with no visible error.
+
+- Compaction no longer includes thinking in the summarization request. Replayed thinking is often not in the live context, so a request that included it could be larger than the context it summarized and fail with "prompt is too long" on every attempt.
+- A throwing `onReport` no longer replaces the error being reported or becomes an unhandled rejection, a throwing `now()` is reported once and `Date.now` used, and a watch listener's error is reported as well as ending the watch with `listener_error`.
+- A task whose fault write failed no longer runs again in the same process.
+- The scheduler no longer visits every live task on each pass: abort cascades start only from tasks with cancellation intent, owned live work and idle scopes are walks down an in-memory ownership index, and reservation, finalization, and failFast checks keep their own candidate sets. A chain of 500 owned tasks that took 12 s to settle takes 50 ms, 20,000 take 1.5 s; a tool making 8000 parallel nested calls finishes in 2.7 s instead of 18.8 s, with one document per nested call instead of one growing index (`npm run bench:scheduler-fanout`).
+- The scheduler's ownership indexes are bounded by live work: it keeps a conversation's owner and an ended task's ownership only while live work is below them, instead of every conversation and subagent chain it ever saw. Work that later appears in an old conversation loads its chain from storage again. After 10,000 ended subagent calls under a live parent it kept 10,000 ended tasks and 10,001 conversation edges; now none of either beyond the parent's conversation (`npm run bench:scheduler-memory`). A queued input no longer makes the scheduler scan every queued submission when nothing is being cancelled.
+- The Session's document cache is bounded by use: a loaded document that no watch or document state observes leaves memory once it was not read or written for `documentRetentionMs` (new in `HarnessSettings` and `createSession()` options; default ten minutes, `0` drops it right after use) and loads from Storage again on its next access. It held every conversation and session document ever touched, built-in and third-party, for the life of the process: 5,000 conversations kept 26,000 documents and about 3.8 KB each; with retention 0 they keep none (`npm run bench:document-cache`).
+
+## [1.1.0] - 2026-10-07
+
+### Breaking Changes
+
+- `Storage` implementations must honor the new `order` field of `ConversationQuery`, `EntryQuery`, `TaskQuery`, and `SubmissionQuery`, and continue a cursor in the order it was returned with. A storage that ignores it returns pages in the wrong direction; the conformance suite covers both orders ([#10546](https://github.com/earendil-works/pi/issues/10546)).
+- `TaskRuntime.context()` takes the cutoff as an options object, matching `Conversation.context()`: `runtime.context(conversationId, context, { at })` replaces `runtime.context(conversationId, context, at)`.
+
+### Added
+
+- `ToolExecutionApi.models` and `HookApi.models`: the Harness's `models`, so tools and hooks can resolve models and make requests with the same catalog, credentials, and request transforms as generation ([#10395](https://github.com/earendil-works/pi/issues/10395)).
+- `Conversation.context(context, { at })` returns the model context as of a visible earlier entry, the same view `fork(at)` would start with, without creating a conversation ([#10512](https://github.com/earendil-works/pi/issues/10512)).
+- `ScanOrder` (`ascending` or `descending`) as `order` on conversation, entry, task, and submission scans, including `Tx.scanTasks()` and `Conversation.entries()`, so hosts can page the newest tasks first. Defaults are unchanged: entries newest first, everything else oldest first. A cursor continues in its scan's order, so the query may omit `order`; asking for the other order with it throws ([#10546](https://github.com/earendil-works/pi/issues/10546)).
+- Task records carry `startedAt` and `endedAt`, wall-clock times the Session stamps at the first change to `running` and at the change to `terminal`, with `HarnessOptions.now` or the new `createSession(storage, { now })` option. `startedAt` survives waits and reopen. `inspect()` shows them on each live task's record. Records written by earlier versions have neither ([#10549](https://github.com/earendil-works/pi/issues/10549)).
+- `pi.tool-result` messages carry `durationMs`: how long `execute()` took in that attempt, measured with a monotonic clock. Calls that did not execute, and interrupted or aborted calls, have none ([#10549](https://github.com/earendil-works/pi/issues/10549)).
+- Assistant messages carry the `durationMs` pi-ai measures for each response ([#10549](https://github.com/earendil-works/pi/issues/10549)).
+- `openDurableObjectSqliteStorage(ctx.storage)` in `@earendil-works/pi-durable/storage/sqlite/cloudflare`: SQLite storage on a SQLite-backed Cloudflare Durable Object.
+- `settings.contextRetentionMs` (default ten minutes): how long an idle conversation keeps its last context read in memory; `0` drops it once idle.
+
+### Changed
+
+- `runtime.context()` keeps each conversation's last read range and derived view in memory: a later read by any of its tasks with the same head marker scans and derives only the entries committed since. A generation no longer rereads and re-derives the whole transcript for each model request. Busy conversations keep it; idle ones for `settings.contextRetentionMs`.
+
+### Fixed
+
+- A conversation's first system message, and the baseline after a compaction or reset, now leads the model context instead of following the input that started the run. Providers with native mid-conversation tool changes, such as Anthropic, keep the prompt cache across later tool changes instead of rewriting it in full ([#10542](https://github.com/earendil-works/pi/issues/10542)).
+
+## [1.0.4] - 2026-10-05
+
+### Breaking Changes
+
+- `NodeExecutionEnv.watch()` fails with `permission_denied` when a target, or a watched directory itself, cannot be read for lack of permission; before, it was watched as if missing. Later rescans that hit this report `{ error }` with `permission_denied` instead of `invalid`.
+- The env conformance suite checks three more `watch()` behaviors: changes to the file a watched symbolic link points to, recursive coverage below a target that a non-recursive target overlaps, and a directory replaced at the same path. Custom environments that passed the 1.0.3 suite may need changes.
+
+### Added
+
+- `createPowerShellTool()` in `@earendil-works/pi-durable/tools`: a `powershell` tool that runs `pwsh`, else Windows PowerShell, directly through argv `exec` (no other shell parses the command), with UTF-8 output and the `bash` tool's output window, spill and errors.
+
+### Fixed
+
+- The `read` tool reads a file that grows while it is read (an active log) instead of failing with "changed while it was read"; it reads again only when the file shrank or was rewritten in place.
+- `NodeExecutionEnv.watch()`: a directory replaced at the same path gets a new native watcher; a target that is a symbolic link to a file reports changes to that file; a non-recursive target no longer stops an overlapping recursive target from covering subdirectories; closing during a rescan no longer leaks watchers.
+- Bounded tool output keeps a U+FEFF at the start of the retained tail, and drops a byte-order mark only at the very start of byte output.
+- `settings.progress` fields given as `undefined` keep their defaults.
+
+## [1.0.3] - 2026-10-05
+
+### Breaking Changes
+
+- `FileSystem` requires `openBinaryReader()` and `openDirReader()`; custom environments must implement them.
+- `BinaryReader` requires `scanLines()`.
+- `FileSystem` requires `watch()`.
+- `Shell.exec()` accepts an argv array besides a shell string, and `ShellExecOptions.onOutput` receives a third `info` argument naming the stream (`stdout` or `stderr`); custom environments must accept both forms and pass the stream.
+
+### Added
+
+- `openBinaryReader()` for bounded positional reads of one opened regular file, with `noFollow` to refuse a final-component symlink.
+- `openDirReader()` for paged directory listings that read metadata only for returned entries.
+- Argv form of `exec()`, which runs a program without a shell.
+- `createEnvConformance()` and `registerEnvConformance()` in `@earendil-works/pi-durable/testing` for checking custom `ExecutionEnv` implementations.
+- `settings.progress` with `partialIntervalMs` and `outputIntervalMs` configures how often generation partials and running tool output are committed; defaults stay 100 ms ([#10357](https://github.com/earendil-works/pi/issues/10357))
+- `ShellExecOptions.window` and `ShellOutputInfo.skipped`: an environment may omit shell output outside the caller's retained tail and report the omission, so remote environments need not transfer output the caller drops. `ToolExecutionApi.outputWindow` provides the window and `output(chunk, skipped)` counts omissions; the `bash` tool passes them through.
+- `BinaryReader.scanLines()` locates and measures a span of lines in one pass inside the environment; `LineScanner`, `StreamDecoder`, `rangeDecoder()` and `startsWithBom()` in `@earendil-works/pi-durable/env` let other environments decode and scan exactly like `NodeExecutionEnv`.
+- `FileSystem.watch()` reports changes to files and directories, recursive with excludes, including missing targets, with explicit `overflow` and `error` and a `native` or `polling` mode. `NodeExecutionEnv` polls on Windows (native watchers there keep directories open, which blocks renaming their parents) and on network and FUSE file systems, and on macOS rescans shortly after installing native watchers because FSEvents misses changes made right after `fs.watch` returns; its `watch` option sets the mode, poll interval, and directory limit.
+
+### Changed
+
+- The `read` tool reads only the file's header, one scan, and the lines it shows, instead of loading the whole file; its results are unchanged.
+
+### Fixed
+
+- `NodeExecutionEnv.flushFile()` on a directory fails with `is_directory` on Windows, as on POSIX.
+- Tail-retained tool output no longer depends on when progress commits happened: a progress snapshot compacted the stored output to the kept window, which could move where a later window's first line started.
+- `NodeExecutionEnv` shell output and text line readers no longer drop a U+FEFF that follows a chunk boundary; Node's streaming `TextDecoder` with BOM handling dropped it, unlike decoding all of the bytes at once.
+
+## [1.0.2] - 2026-10-04
+
+### Fixed
+
+- Persisted a distinct provider session UUID per conversation and forwarded it for prompt-cache and session affinity ([#10424](https://github.com/earendil-works/pi/issues/10424))
+
+## [1.0.1] - 2026-10-03
+
+## [1.0.0] - 2026-10-01
+
+### Added
+
+- Initial release of `@earendil-works/pi-durable`, a durable agent harness. See the [README](README.md) and the [design document](https://github.com/earendil-works/pi/blob/main/packages/durable/docs/spec.md).

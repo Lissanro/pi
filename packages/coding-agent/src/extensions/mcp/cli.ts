@@ -70,7 +70,7 @@ Options for add:
 
 Other options:
   --json                  Print the list as JSON
-  --timeout <seconds>     How long login waits for the browser (default: 300)`;
+  --timeout <seconds>     Time limit for the whole sign-in (default: 300)`;
 
 const HELP_HINT = chalk.dim(`Use "${APP_NAME} mcp --help" for usage.`);
 
@@ -92,6 +92,8 @@ interface ServerReport {
 	name: string;
 	scope: string;
 	source: string;
+	/** Project `mcp.json` that overrides `enabled`, `exposure`, or `toolExposure` of this global server. */
+	override?: string;
 	enabled: boolean;
 	exposure: string;
 	transport: string;
@@ -99,8 +101,8 @@ interface ServerReport {
 	tools: string[];
 	/** Tools whose exposure differs from the server's, from `toolExposure`. */
 	toolExposure?: Record<string, string>;
-	resources?: number;
-	resourceTemplates?: number;
+	/** Whether the server offers resources. They are not listed: listing every one can take long. */
+	resources?: true;
 	error?: string;
 }
 
@@ -236,7 +238,7 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 				return 1;
 			}
 			if (command === "logout") {
-				const removed = credentials.remove(url);
+				const removed = credentials.remove(name, url);
 				log(removed ? `Signed out of MCP server "${name}".` : `No stored credentials for MCP server "${name}".`);
 				return 0;
 			}
@@ -443,6 +445,7 @@ async function list(
 				name: entry.name,
 				scope: entry.scope ?? "global",
 				source: entry.source,
+				...(entry.override ? { override: entry.override } : {}),
 				enabled: entry.config.enabled !== false,
 				exposure: entry.config.exposure ?? "codemode",
 				transport: describeTransport(entry),
@@ -463,10 +466,7 @@ async function list(
 				return exposure === report.exposure ? [] : [[tool.name, exposure] as const];
 			});
 			if (overrides.length > 0) report.toolExposure = Object.fromEntries(overrides);
-			if (connection.hasResources) {
-				report.resources = connection.resources.length;
-				report.resourceTemplates = connection.resourceTemplates.length;
-			}
+			if (connection.hasResources) report.resources = true;
 			if (connection.state !== "connected" && connection.error) report.error = connection.error;
 			await connection.close();
 			return report;
@@ -496,6 +496,7 @@ async function list(
 					: report.state;
 		log(`${report.name}: ${state} (${report.exposure}, ${report.scope})`);
 		log(`  ${report.transport}`);
+		if (report.override) log(`  project override: ${report.override}`);
 		if (report.state === "needs-auth") log(`  sign in with: ${APP_NAME} mcp login ${report.name}`);
 		if (report.tools.length > 0) {
 			const tools = report.tools.map((tool) => {
@@ -504,9 +505,7 @@ async function list(
 			});
 			log(`  tools: ${tools.join(", ")}`);
 		}
-		if (report.resources !== undefined) {
-			log(`  resources: ${report.resources}, URI templates: ${report.resourceTemplates ?? 0}`);
-		}
+		if (report.resources) log("  offers resources");
 		if (report.error) log(`  ${report.error.split("\n").join("\n  ")}`);
 	}
 	for (const configError of loaded.errors) log(`config error: ${configError}`);
@@ -542,7 +541,7 @@ async function login(
 	try {
 		await signInMcpServer({
 			serverUrl: url,
-			store: credentials.forServer(url),
+			store: credentials.forServer(name, url),
 			settings: connection.oauthSettings(),
 			challenge: connection.challenge,
 			prompt: {
@@ -550,8 +549,9 @@ async function login(
 					log(`Sign in to MCP server "${name}" in your browser:\n${authorizationUrl.href}`);
 					openUrl(authorizationUrl.href);
 				},
-				promptForRedirectUrl: (signal) => waitForRedirectUrl(signal, timeoutMs, interactive),
+				promptForRedirectUrl: (signal) => waitForRedirectUrl(signal, interactive),
 			},
+			signal: AbortSignal.timeout(timeoutMs),
 		});
 	} catch (signInError) {
 		error(
@@ -574,37 +574,21 @@ async function login(
 
 /**
  * The pasted redirect URL in a terminal; otherwise only the browser callback can finish the sign-in.
- * Resolves to undefined (cancelling the sign-in) after `timeoutMs`, or when the callback arrived.
+ * Resolves to undefined when `signal` aborts: the callback arrived, or the sign-in timed out.
  */
-async function waitForRedirectUrl(
-	signal: AbortSignal,
-	timeoutMs: number,
-	interactive: boolean,
-): Promise<string | undefined> {
-	const controller = new AbortController();
-	const abort = () => controller.abort();
-	signal.addEventListener("abort", abort, { once: true });
-	const timer = setTimeout(abort, timeoutMs);
+async function waitForRedirectUrl(signal: AbortSignal, interactive: boolean): Promise<string | undefined> {
+	if (!interactive) {
+		if (!signal.aborted) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+		return undefined;
+	}
+	const readline = createInterface({ input: process.stdin, output: process.stderr });
 	try {
-		if (!interactive) {
-			await new Promise<void>((resolve) =>
-				controller.signal.addEventListener("abort", () => resolve(), { once: true }),
-			);
-			return undefined;
-		}
-		const readline = createInterface({ input: process.stdin, output: process.stderr });
-		try {
-			return await readline.question(
-				"If the browser cannot reach this machine, paste the URL it was redirected to: ",
-				{ signal: controller.signal },
-			);
-		} catch {
-			return undefined;
-		} finally {
-			readline.close();
-		}
+		return await readline.question("If the browser cannot reach this machine, paste the URL it was redirected to: ", {
+			signal,
+		});
+	} catch {
+		return undefined;
 	} finally {
-		clearTimeout(timer);
-		signal.removeEventListener("abort", abort);
+		readline.close();
 	}
 }

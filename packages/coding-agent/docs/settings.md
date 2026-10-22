@@ -2,6 +2,8 @@
 
 This reference lists user-configurable settings, their types, defaults, and purposes. Project settings override agent-directory settings. Resource lists are combined. See [Configuration](configuration.md) for file locations and trust behavior.
 
+Add `"$schema": "https://pi.dev/schemas/settings.schema.json"` to `settings.json` for editor validation and completion.
+
 ## Model and thinking
 
 <a id="model-cycling"></a>
@@ -38,7 +40,7 @@ See [Choose a Model](models.md) for model selection and thinking controls.
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `defaultTools` | `string[]` | `read`, `bash`, `edit`, `write` | Tools enabled at startup. Plain names replace the defaults; `+name` adds a tool and `-name` removes one. An empty array disables all built-in tools but not extension or SDK tools. |
-| `codemode.mode` | `"on"` \| `"only"` | `"on"` | How the `codemode` tool presents tools while it is active. `on`: declared tools get their `codemode` declaration appended to their description, and `codemode` lists only tools that are not declared. `only`: `codemode` lists every tool scripts can call, and active built-in and extension tools are hidden from the model, so it reaches them through `codemode`. |
+| `codemode.mode` | `"on"` \| `"only"` | `"on"` | How the `codemode` tool presents tools while it is active. `on`: declared tools get a note on calling them from scripts appended to their description, and `codemode` lists only tools that are not declared. `only`: `codemode` lists every tool scripts can call, and active built-in and extension tools are hidden from the model, so it reaches them through `codemode`. |
 | `codemode.inlineBudget` | number | `3000` | Estimated tokens (characters / 4) the `codemode` tool's description may spend on tool declarations. Tools that do not fit are left out and found with `searchTools()`. `0` lists only namespaces. |
 
 Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, and `ls`. `defaultTools` can also name `codemode` and `tool_search`, which built-in extensions register inactive, and other extension tools registered inactive.
@@ -53,22 +55,23 @@ A list of only `+name` and `-name` entries changes the inherited selection inste
 
 This replaces `bash` with `powershell` and enables `grep`: `["-bash", "+powershell", "+grep"]`. Project settings apply on top of user settings: a project list with only `+name` and `-name` entries changes the user's selection, and a project list with a plain name replaces it. In one list, plain names form the selection, and `+name` and `-name` then apply in order.
 
-`/reload` enables tools newly added to `defaultTools`. It does not disable tools removed from it or re-enable unchanged tools you turned off. `--tools`, `--no-tools`, and `--no-builtin-tools` override `defaultTools`, also on reload.
+`/reload` enables tools newly added to `defaultTools`. It does not disable tools removed from it or re-enable unchanged tools you turned off. `--tools` with plain names, `--no-tools`, and `--no-builtin-tools` override `defaultTools`, also on reload.
 
-CLI tool options override this setting for one invocation; `--tools` does not accept `+name` or `-name`. See [Command Line](cli.md#tools).
+CLI tool options override this setting for one invocation. `--tools` with only `+name` and `-name` entries changes the resolved `defaultTools` selection instead, for example `pi --tools +codemode`. On `/reload`, these entries apply to the reloaded setting too, so a tool removed with `-name` stays removed. See [Command Line](cli.md#tools).
 
 ## Sessions and context
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `sessionDir` | string | Agent session directory | Session storage directory. Relative paths resolve from the working directory. `PI_CODING_AGENT_SESSION_DIR` and `--session-dir` override this setting. |
+| `sessionShareDestination` | `"auto" \| "gist" \| "radius"` | `"auto"` | Destination used by `/share`. `auto` uses Radius when authenticated and otherwise creates a GitHub gist. `gist` always uses a gist. `radius` requires Radius authentication and never falls back to a gist. |
 
 ### Compaction
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `compaction.enabled` | boolean | `true` | Enable automatic compaction. |
-| `compaction.reserveTokens` | number | `16384` | Tokens reserved for the model response. |
+| `compaction.reserveTokens` | number | `16384` | Free context tokens below which automatic compaction starts. |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens retained without summarization. |
 | `compaction.summaryBlockMaxTokens` | number | `16384` | Max tokens for the summaries block in the prefix; oldest summaries are dropped beyond this (the most recent is always kept). `0` keeps only the most recent summary. |
 | `compaction.modelOverrides` | object | None | Per-model token settings keyed by exact `provider/modelId`. |
@@ -91,8 +94,8 @@ See [Compaction Reference](compaction.md) for trigger, summarization, and valida
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `theme` | string | `"system"` | Built-in or custom theme name. `system` derives colors from the terminal theme. |
-| `quietStartup` | boolean | `false` | Hide the startup header. |
-| `tuiMode` | `"regular" \| "fullscreen"` | `"regular"` | Interactive terminal UI mode. |
+| `quietStartup` | boolean \| `"header"` | `false` | `true` hides the startup header and loaded-resource listing. `"header"` keeps the header (version and key hints) but hides the model scope line and loaded-resource listing. |
+| `tuiMode` | `"regular" \| "fullscreen"` | `"fullscreen"` | Interactive terminal UI mode. |
 | `fullscreenExitOutput` | `"transcript" \| "resume-hint"` | `"transcript"` | Output printed when fullscreen mode exits. |
 | `fullscreenScrollbar` | `"auto" \| "always" \| "hidden"` | `"auto"` | Fullscreen transcript scrollbar behavior. |
 | `fullscreenCopyOnSelect` | boolean | `true` | Copy selected text automatically in fullscreen mode. |

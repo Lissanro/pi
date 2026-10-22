@@ -20,6 +20,7 @@ const context = BACKGROUND_CONTEXT;
 // A todo list per conversation. Rewindable with `asOf`, so a fork starts with
 // the todos its parent had at the fork entry.
 const Todos = defineDoc<{ items: string[] }>({
+	checkpointWhen: () => false,
 	kind: "example.todos",
 	version: 1,
 	scope: "conversation",
@@ -42,7 +43,7 @@ const Todo = defineExtension({
 				await api.commit(async (tx) => {
 					(await tx.doc(Todos, api.conversationId)).items.push(args.item);
 				}, callContext);
-				return { content: [{ type: "text", text: `added ${args.item}` }] };
+				return { output: [{ type: "text", text: `added ${args.item}` }] };
 			},
 		}),
 	],

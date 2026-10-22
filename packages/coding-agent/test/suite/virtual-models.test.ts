@@ -381,13 +381,13 @@ describe("AgentSession virtual models", () => {
 		expect(reasons()).toEqual(["user", "user", "direct", "direct"]);
 	});
 
-	it("routes compaction summaries before sizing them", async () => {
+	it("routes compaction summaries to the resolved model", async () => {
 		const summaries: string[] = [];
 		const { harness, reasons } = await createRoutedHarness(defaultRoute, {
 			settings: { compaction: { keepRecentTokens: 1 } },
 		});
 		const summary: FauxResponseStep = (_context, options, _state, model) => {
-			summaries.push(`${model.id}:${options?.reasoning ?? "off"}:${options?.maxTokens}`);
+			summaries.push(`${model.id}:${options?.reasoning ?? "off"}`);
 			return fauxAssistantMessage("summary");
 		};
 		// Compaction summarizes the whole replaced tail (history + turn prefix) with one routed model.

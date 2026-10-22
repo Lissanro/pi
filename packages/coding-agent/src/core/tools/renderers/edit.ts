@@ -157,9 +157,11 @@ function buildEditCallComponent(
 	args: RenderableEditArgs | undefined,
 	theme: Theme,
 	cwd: string,
+	outputPad: number,
 ): EditCallRenderComponent {
 	component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
 	component.setSeparatorBg(getEditSeparatorBg(component.preview, component.settledError, theme));
+	component.setPaddingX(outputPad);
 	component.clear();
 	component.addChild(new Text(formatEditCall(args, theme, cwd), 0, 0));
 
@@ -217,7 +219,13 @@ export const editRenderers: Pick<ToolDefinition<any, any>, "renderCall" | "rende
 			});
 		}
 
-		return buildEditCallComponent(component, args as RenderableEditArgs | undefined, theme, context.cwd);
+		return buildEditCallComponent(
+			component,
+			args as RenderableEditArgs | undefined,
+			theme,
+			context.cwd,
+			context.outputPad,
+		);
 	},
 	renderResult(result, _options, theme, context) {
 		const callComponent = context.state.callComponent;
@@ -240,7 +248,13 @@ export const editRenderers: Pick<ToolDefinition<any, any>, "renderCall" | "rende
 				changed = true;
 			}
 			if (changed) {
-				buildEditCallComponent(callComponent, context.args as RenderableEditArgs | undefined, theme, context.cwd);
+				buildEditCallComponent(
+					callComponent,
+					context.args as RenderableEditArgs | undefined,
+					theme,
+					context.cwd,
+					context.outputPad,
+				);
 			}
 		}
 
@@ -257,7 +271,7 @@ export const editRenderers: Pick<ToolDefinition<any, any>, "renderCall" | "rende
 			return component;
 		}
 		component.addChild(new Spacer(1));
-		component.addChild(new Text(output, 1, 0));
+		component.addChild(new Text(output, context.outputPad, 0));
 		return component;
 	},
 };

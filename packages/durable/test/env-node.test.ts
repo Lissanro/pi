@@ -19,6 +19,24 @@ function createTempDir(): string {
 	return dir;
 }
 
+/**
+ * Remove a test directory. On Windows, `taskkill /T` runs asynchronously and can miss descendants such as Git Bash's
+ * `sleep`, so a killed command's processes can hold the directory for a while after `exec` settles; retry until they
+ * exit.
+ */
+async function removeTempDir(dir: string): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			rmSync(dir, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (attempt >= 80 || (code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY")) throw error;
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+	}
+}
+
 function abortedContext() {
 	const controller = new AbortController();
 	controller.abort();
@@ -125,8 +143,8 @@ afterEach(async () => {
 			await chmod(path, 0o700);
 		} catch {}
 	}
-	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+	for (const dir of tempDirs.splice(0)) await removeTempDir(dir);
+}, 15_000);
 
 describe("NodeExecutionEnv filesystem", () => {
 	it("reads, writes, lists, and removes files and directories", async () => {
@@ -571,13 +589,15 @@ describe("NodeExecutionEnv shell", () => {
 		const env = new NodeExecutionEnv({ cwd: root });
 		const collected = await collectShellOutput(
 			env,
-			'printf \'%s:%s\' "$PWD" "$NODE_ENV_TEST"',
+			'printf \'%s\' "$NODE_ENV_TEST" > cwd-marker.txt; printf \'%s:%s\' "$PWD" "$NODE_ENV_TEST"',
 			{ env: { NODE_ENV_TEST: "ok" } },
 			BACKGROUND_CONTEXT,
 		);
 		const result = getOrThrow(collected.result);
-		expect(collected.output).toBe(`${await realpath(root)}:ok`);
 		expect(result.exitCode).toBe(0);
+		expect(readFileSync(join(root, "cwd-marker.txt"), "utf8")).toBe("ok");
+		// Git Bash on Windows reports $PWD as an MSYS path (/tmp/...), not the Windows path.
+		if (process.platform !== "win32") expect(collected.output).toBe(`${await realpath(root)}:ok`);
 	});
 
 	it.each([
@@ -634,10 +654,16 @@ describe("NodeExecutionEnv shell", () => {
 		}
 	});
 
-	it("uses stdin command transport for legacy WSL bash paths", async () => {
+	// #9490: legacy WSL detection must also handle a custom Windows directory.
+	it.each([
+		["C:\\Windows\\System32\\bash.exe", undefined, "-s"],
+		["D:\\WinNT\\System32\\bash.exe", "D:\\WinNT", "-s"],
+		["D:\\WinNT\\Sysnative\\bash.exe", "D:\\WinNT", "-s"],
+		["D:\\WinNT\\System32\\bash.exe", "", "-c"],
+		["E:\\Windows\\System32\\bash.exe", "D:\\WinNT", "-c"],
+	] as const)("selects command transport for %s (SystemRoot=%j)", async (shellPath, systemRoot, expectedArg) => {
 		if (process.platform === "win32") return;
 		const root = createTempDir();
-		const shellPath = "C:\\Windows\\System32\\bash.exe";
 		const env = new NodeExecutionEnv({ cwd: root });
 		getOrThrow(
 			await env.writeFile(
@@ -654,6 +680,7 @@ describe("NodeExecutionEnv shell", () => {
 		try {
 			process.chdir(root);
 			process.env.PATH = `${root}${delimiter}${originalPath ?? ""}`;
+			vi.stubEnv("SystemRoot", systemRoot);
 			Object.defineProperty(process, "platform", {
 				configurable: true,
 				value: "win32",
@@ -669,11 +696,12 @@ describe("NodeExecutionEnv shell", () => {
 			);
 			const result = getOrThrow(collected.result);
 			expect(collected.output).toContain("Hello, World!");
-			expect(collected.output).toContain("args:-s");
+			expect(collected.output).toContain(`args:${expectedArg}`);
 			expect(result.exitCode).toBe(0);
 		} finally {
 			process.chdir(originalCwd);
 			process.env.PATH = originalPath;
+			vi.unstubAllEnvs();
 			if (platformDescriptor) {
 				Object.defineProperty(process, "platform", platformDescriptor);
 			}

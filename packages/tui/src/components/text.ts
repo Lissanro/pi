@@ -1,6 +1,7 @@
 import type { Component } from "../tui.ts";
 import {
 	applyBackgroundToLine,
+	flattenLines,
 	isPadLinesToWidth,
 	padLineToWidth,
 	shouldWrapLinesToWidth,
@@ -40,6 +41,11 @@ export class Text implements Component {
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
+	}
+
+	setPaddingX(paddingX: number): void {
+		this.paddingX = paddingX;
+		this.invalidate();
 	}
 
 	invalidate(): void {
@@ -110,6 +116,7 @@ export class Text implements Component {
 		}
 
 		const result = [...emptyLines, ...contentLines, ...emptyLines];
+		flattenLines(result);
 
 		// Update cache
 		this.cachedText = this.text;
