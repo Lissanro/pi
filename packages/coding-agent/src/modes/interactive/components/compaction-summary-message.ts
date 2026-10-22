@@ -13,6 +13,7 @@ import { customMessageBg, customMessageSeparatorBg, getMarkdownTheme, theme } fr
 export class CompactionSummaryMessageComponent extends Box {
 	private message: CompactionSummaryMessage;
 	private markdownTheme: MarkdownTheme;
+	private expanded = true;
 
 	constructor(message: CompactionSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme(), outputPad = 1) {
 		super(outputPad, 1, customMessageBg());

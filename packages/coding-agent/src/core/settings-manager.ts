@@ -12,6 +12,32 @@ import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dis
 import { DEFAULT_SUMMARY_BLOCK_MAX_TOKENS } from "./session-manager.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 
+import type {
+	BranchSummarySettings,
+	CacheWarmingMode,
+	CodemodeMode,
+	CodemodeSettings,
+	CompactionModelOverride,
+	CompactionSettings,
+	CompactionSummaryPlacement,
+	DefaultProjectTrust,
+	FullscreenExitOutput,
+	ImageSettings,
+	MarkdownSettings,
+	MermaidRenderingMode,
+	PackageSource,
+	ProviderRetrySettings,
+	QuietStartup,
+	RetrySettings,
+	SessionShareDestination,
+	Settings,
+	TerminalSettings,
+	ThinkingBudgetsSettings,
+	TransportSetting,
+	TuiMode,
+	WarningSettings,
+} from "./settings-schema.ts";
+
 export type {
 	BranchSummarySettings,
 	CacheWarmingMode,
