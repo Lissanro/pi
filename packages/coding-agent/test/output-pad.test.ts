@@ -1,4 +1,4 @@
-import { type Component, TuiMainScreen } from "@earendil-works/pi-tui";
+import { type Component, setPadLinesToWidth, TuiMainScreen } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
@@ -78,6 +78,9 @@ const components: Array<{ name: string; create: (outputPad: number) => OutputPad
 describe("outputPad", () => {
 	beforeAll(() => {
 		initTheme("dark");
+		// Crystal applies outputPad only when padLines is enabled; enable it so the
+		// outputPad 0 vs 1 distinction is observable.
+		setPadLinesToWidth(true);
 	});
 
 	afterAll(() => {
