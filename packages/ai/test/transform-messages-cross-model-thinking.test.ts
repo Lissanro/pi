@@ -63,6 +63,7 @@ describe("thinking from other models", () => {
 		const assistantMsg = result.find((m) => m.role === "assistant") as AssistantMessage;
 
 		expect(assistantMsg.content).toEqual([
+			{ type: "thinking", thinking: "The user asks about ECONNRESET. Candidates: proxy, IPv6, TLS.", thinkingSignature: "reasoning_content" },
 			{ type: "text", text: "Let me check the TLS versions." },
 			{ type: "toolCall", id: "call_1", name: "bash", arguments: { command: "curl -v" } },
 		]);
@@ -91,9 +92,9 @@ describe("thinking from other models", () => {
 
 		expect(contents).toEqual([
 			[thinking("kimi 1"), { type: "text", text: "a" }],
-			[{ type: "text", text: "b" }],
+			[thinking("glm 1"), { type: "text", text: "b" }],
 			[thinking("kimi 2"), { type: "text", text: "c" }],
-			[{ type: "text", text: "d" }],
+			[thinking("glm 2"), { type: "text", text: "d" }],
 		]);
 	});
 });

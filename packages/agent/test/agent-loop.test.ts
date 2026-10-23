@@ -1,8 +1,8 @@
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
-	createAssistantMessageEventStream,
 	type Context,
+	createAssistantMessageEventStream,
 	EventStream,
 	type Message,
 	type Model,
@@ -30,6 +30,20 @@ import type {
 	AgentToolCall,
 	StreamFn,
 } from "../src/types.ts";
+
+// Mock stream for testing - mimics MockAssistantStream
+class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
+	constructor() {
+		super(
+			(event) => event.type === "done" || event.type === "error",
+			(event) => {
+				if (event.type === "done") return event.message;
+				if (event.type === "error") return event.error;
+				throw new Error("Unexpected event type");
+			},
+		);
+	}
+}
 
 function createUsage() {
 	return {

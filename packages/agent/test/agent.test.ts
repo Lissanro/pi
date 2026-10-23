@@ -2,8 +2,8 @@ import { type ClientIdentity, PI_ATTRIBUTION } from "@earendil-works/pi-ai";
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
-	createAssistantMessageEventStream,
 	type Context,
+	createAssistantMessageEventStream,
 	EventStream,
 	getCurrentSystemMessage,
 	getModel,
@@ -23,6 +23,20 @@ import {
 	type StreamFn,
 	setDefaultStreamFn,
 } from "../src/index.ts";
+
+// Mock stream that mimics AssistantMessageEventStream
+class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
+	constructor() {
+		super(
+			(event) => event.type === "done" || event.type === "error",
+			(event) => {
+				if (event.type === "done") return event.message;
+				if (event.type === "error") return event.error;
+				throw new Error("Unexpected event type");
+			},
+		);
+	}
+}
 
 function createUserMessage(text: string): UserMessage {
 	return { role: "user", content: text, timestamp: Date.now() };
@@ -1421,6 +1435,7 @@ describe("Agent", () => {
 			agent.abort();
 			await firstPrompt.catch(() => {});
 		});
+	});
 	it("attributes requests to pi by default and merges a configured identity over it", async () => {
 		const received: (ClientIdentity | undefined)[] = [];
 		const agent = new Agent({
