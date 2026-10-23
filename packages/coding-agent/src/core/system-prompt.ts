@@ -153,11 +153,11 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		promptSections.preamble = customPrompt;
 	} else {
 		promptSections.preamble = "Pi agent harness runtime environment.";
-		const visibleTools = selectedTools.filter((name) => !!toolSnippets[name]);
+		const visibleTools = declaredTools.filter((name) => !!toolSnippets[name]);
 		const tools =
 			visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets[name]}`).join("\n") : "(none)";
 		promptSections.tools = `${tools}\n\nCustom tools may also be registered by extensions.`;
-		promptSections.rules = buildRules(selectedTools, toolGuidelines, promptGuidelines);
+		promptSections.rules = buildRules(declaredTools, toolGuidelines, promptGuidelines);
 		promptSections.docs = `Pi documentation:\n- README: ${getReadmePath()}\n- Docs directory: ${getDocsPath()}\n- Examples directory: ${getExamplesPath()}\n\nPi doc file locations:\n- Extensions: docs/extensions.md\n- Themes: docs/themes.md\n- Skills: docs/skills.md\n- Prompt templates: docs/prompt-templates.md\n- TUI components: docs/tui.md\n- Keybindings: docs/keybindings.md\n- SDK integrations: docs/sdk.md\n- Custom providers: docs/custom-provider.md\n- Adding models: docs/models.md\n- Pi packages: docs/packages.md\n- Environment variables: docs/environment-variables.md\n- MCP servers: docs/mcp.md\n\nWhen resolving relative doc paths, use ${getDocsPath()} as the docs root and ${getExamplesPath()} as the examples root.`;
 	}
 

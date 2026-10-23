@@ -153,8 +153,7 @@ describe("generateSummary reasoning options", () => {
 		// summarization request byte-matches the chat up to the cut point. The summarization
 		// instruction is appended at the end.
 		expect(prompt).toContain("previous checkpoint");
-		expect(prompt).toContain("Summarize this.");
-		expect(prompt).toContain("The messages above are a conversation to summarize.");
+		expect(prompt).toContain("Summarize the messages above into a structured context checkpoint");
 	});
 
 	it("rejects tool calls from conversation summaries", async () => {
