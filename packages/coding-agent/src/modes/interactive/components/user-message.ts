@@ -44,12 +44,11 @@ export class UserMessageComponent extends Container {
 		contentBox.addChild(
 			new Markdown(
 				this.text,
-				this.outputPad,
-				1,
+				0,
+				0,
 				this.markdownTheme,
 				{
 					color: (content: string) => theme.fg("userMessageText", content),
-					bgColor: (content: string) => theme.bg("userMessageBg", content),
 				},
 				{
 					preserveOrderedListMarkers: true,
