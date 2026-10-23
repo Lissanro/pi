@@ -1,4 +1,3 @@
-
 /** Runtime defaults shared by settings accessors and the published JSON Schema. */
 export const SETTINGS_DEFAULTS = {
 	transport: "auto",
@@ -66,7 +65,10 @@ export const SETTINGS_DEFAULTS = {
 		inlineBudget: 3000,
 	},
 	cacheWarming: "streaming",
-	tuiMode: "fullscreen",
+	tuiMode: "regular",
+	// Crystal defaults to the inline (regular) TUI, which lets the terminal
+	// soft-wrap long lines instead of the fullscreen mode that disables
+	// autowrap and truncates them.
 	fullscreenExitOutput: "transcript",
 	fullscreenScrollbar: "auto",
 	fullscreenCopyOnSelect: true,
