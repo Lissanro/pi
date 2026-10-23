@@ -35,7 +35,7 @@ test("produces a verified, content-addressed artifact set", (t) => {
 	execFileSync("git", ["init", "--quiet"], { cwd: repoRoot });
 	execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot });
 	execFileSync("git", ["config", "user.name", "Test"], { cwd: repoRoot });
-	execFileSync("git", ["add", "."], { cwd: repoRoot });
+	execFileSync("git", ["add", "*"], { cwd: repoRoot });
 	execFileSync("git", ["commit", "--quiet", "-m", "fixture"], { cwd: repoRoot });
 
 	const artifactSet = produceArtifactSet({ build: false, outDir: join(repoRoot, ".artifacts", "package set"), repoRoot });
