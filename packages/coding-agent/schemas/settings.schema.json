@@ -29,6 +29,10 @@
       },
       "description": "Per-model default thinking level overrides keyed by \"provider/modelId\"."
     },
+    "incomingMessagePrefix": {
+      "type": "string",
+      "description": "Prefix prepended to every incoming user message."
+    },
     "transport": {
       "anyOf": [
         {
@@ -116,6 +120,27 @@
           "maximum": 9007199254740991,
           "default": 20000
         },
+        "summaryPlacement": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "context"
+            },
+            {
+              "type": "string",
+              "const": "chronological"
+            }
+          ],
+          "description": "Where the compaction summary is shown in the chat UI. \"context\" shows it at its real position before the kept messages (default); \"chronological\" appends it at the end.",
+          "default": "context"
+        },
+        "summaryBlockMaxTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Maximum total tokens for the compaction summaries block in the prefix. Default keeps several summaries; 0 keeps only the most recent one.",
+          "default": 16384
+        },
         "modelOverrides": {
           "type": "object",
           "patternProperties": {
@@ -163,7 +188,7 @@
         },
         "maxRetries": {
           "type": "number",
-          "default": 3
+          "default": null
         },
         "baseDelayMs": {
           "type": "number",
@@ -172,7 +197,7 @@
         },
         "maxAgentDelayMs": {
           "type": "number",
-          "default": 60000
+          "default": 30000
         },
         "provider": {
           "type": "object",
@@ -562,6 +587,40 @@
       "description": "Horizontal padding for transcript content.",
       "default": 1
     },
+    "padLines": {
+      "type": "boolean",
+      "default": false
+    },
+    "wrapLines": {
+      "type": "boolean",
+      "default": false
+    },
+    "messageBackground": {
+      "type": "boolean",
+      "default": false
+    },
+    "messageSeparator": {
+      "type": "boolean",
+      "default": true
+    },
+    "tokenCountBase": {
+      "anyOf": [
+        {
+          "type": "number",
+          "const": 1000
+        },
+        {
+          "type": "number",
+          "const": 1024
+        }
+      ],
+      "default": 1024
+    },
+    "swipeSummaryChars": {
+      "type": "number",
+      "description": "Default per-section character count for /swipe list and /swipe search snippets.",
+      "default": 256
+    },
     "autocompleteMaxVisible": {
       "type": "number",
       "description": "Maximum visible items in the autocomplete dropdown.",
@@ -576,7 +635,7 @@
       "properties": {
         "codeBlockIndent": {
           "type": "string",
-          "default": "  "
+          "default": ""
         },
         "mermaid": {
           "anyOf": [
@@ -694,7 +753,7 @@
           "const": "fullscreen"
         }
       ],
-      "default": "fullscreen"
+      "default": "regular"
     },
     "fullscreenExitOutput": {
       "anyOf": [
