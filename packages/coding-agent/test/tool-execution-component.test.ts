@@ -16,6 +16,7 @@ setPadLinesToWidth(true);
 const imageConvertMocks = vi.hoisted(() => ({ ensurePngTranscoder: vi.fn() }));
 
 vi.mock("../src/utils/image-convert.ts", () => imageConvertMocks);
+
 import { getReadmePath } from "../src/config.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";

@@ -108,13 +108,13 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
+import type { McpHttpServerConfig } from "../../core/mcp-servers.ts";
 import {
 	formatMessageContent,
 	formatMessageForEdit,
 	formatMessageForSwipe,
 	isMessageEdit,
 } from "../../core/message-edit.ts";
-import type { McpHttpServerConfig } from "../../core/mcp-servers.ts";
 import { createCompactionSummaryMessage, createCustomMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,

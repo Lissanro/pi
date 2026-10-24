@@ -1184,4 +1184,3 @@ export async function compact(
 		details: { readFiles, modifiedFiles } as CompactionDetails,
 	};
 }
-
