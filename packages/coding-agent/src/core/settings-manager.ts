@@ -1305,7 +1305,7 @@ export class SettingsManager {
 	}
 
 	getTuiMode(): TuiMode {
-		return this.settings.tuiMode === "regular" ? "regular" : SETTINGS_DEFAULTS.tuiMode;
+		return this.settings.tuiMode === "fullscreen" ? "fullscreen" : "regular";
 	}
 
 	setTuiMode(mode: TuiMode): void {

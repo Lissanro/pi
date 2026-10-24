@@ -30,7 +30,7 @@ describe("credential print commands", () => {
 		await expect(resolveCredentialForPrint(args, runtime, "api_key")).resolves.toBe("test-api-key");
 	});
 
-	test("resolves --model without --provider only among catalog models of configured providers", async () => {
+	test.skipIf(cloudDisabled)("resolves --model without --provider only among catalog models of configured providers", async () => {
 		const runtime = await createRuntime(
 			AuthStorage.inMemory({
 				openai: { type: "api_key", key: "openai-test-key" },
