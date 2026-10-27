@@ -142,7 +142,15 @@ export function transformMessages<TApi extends Api>(
 					const toolCall = block as ToolCall;
 					let normalizedToolCall: ToolCall = toolCall;
 
-					if (normalizeToolCallId) {
+					// Ids are rewritten only for messages from another model. Same-model ids
+					// were issued by this API and already carry the required per-type prefix
+					// (fc_* for function_call, ctc_* for custom_tool_call); the fc_*
+					// normalization for foreign ids would break replay of the latter.
+					const isSameModel =
+						assistantMsg.provider === model.provider &&
+						assistantMsg.api === model.api &&
+						assistantMsg.model === model.id;
+					if (!isSameModel && normalizeToolCallId) {
 						const normalizedId = normalizeToolCallId(toolCall.id, model, assistantMsg);
 						if (normalizedId !== toolCall.id) {
 							toolCallIdMap.set(toolCall.id, normalizedId);

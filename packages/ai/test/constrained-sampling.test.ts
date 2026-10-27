@@ -244,7 +244,7 @@ describe("constrained tool sampling", () => {
 
 		expect(messages).toContainEqual({
 			type: "custom_tool_call",
-			id: "fc_ctc_1",
+			id: "ctc_1",
 			call_id: "call_1",
 			name: "sample_tool",
 			input: "abc",
