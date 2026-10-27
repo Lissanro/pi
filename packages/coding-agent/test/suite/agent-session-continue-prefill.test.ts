@@ -314,4 +314,71 @@ describe("AgentSession continue with prefill", () => {
 		expect(capturedReturnPrefill).toBe(true);
 		expect(getMessageText(harness.session.messages.at(-1)!)).toBe("edited answer continued");
 	});
+
+	it("continues successfully after a previous run was aborted", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		setOpenaiCompletions(harness);
+
+		// First run: the stream stays open until aborted, simulating Esc
+		// mid-stream. The aborted partial becomes the prefill candidate, and the
+		// abort request flag must not leak into the continuation below.
+		harness.session.agent.streamFunction = ((_model, _context, options) => {
+			const stream = new EventStream<AssistantMessageEvent, AssistantMessage>(
+				(event) => event.type === "done" || event.type === "error",
+				(event) => {
+					if (event.type === "done") return event.message;
+					if (event.type === "error") return event.error;
+					throw new Error("Unexpected event type");
+				},
+			);
+			options?.signal?.addEventListener("abort", () => {
+				stream.push({
+					type: "error",
+					reason: "aborted",
+					error: fauxAssistantMessage("Partial response", { stopReason: "aborted" }),
+				});
+			});
+			queueMicrotask(() => {
+				void harness.session.abort();
+			});
+			return stream;
+		}) as StreamFn;
+		await harness.session.prompt("Hello");
+		expect(getMessageText(harness.session.messages.at(-1)!)).toBe("Partial response");
+
+		// A stale abort request from the aborted run would kill this continuation
+		// at agent_start, leaving an aborted message instead of the echoed
+		// prefill plus new tokens. The abort lands before the stream function is
+		// invoked, so the stream sees an already-aborted signal rather than an
+		// abort event (which never re-fires on an already-aborted signal).
+		harness.session.agent.streamFunction = ((_model, _context, options) => {
+			const stream = new EventStream<AssistantMessageEvent, AssistantMessage>(
+				(event) => event.type === "done" || event.type === "error",
+				(event) => {
+					if (event.type === "done") return event.message;
+					if (event.type === "error") return event.error;
+					throw new Error("Unexpected event type");
+				},
+			);
+			queueMicrotask(() => {
+				if (options?.signal?.aborted) {
+					stream.push({
+						type: "error",
+						reason: "aborted",
+						error: fauxAssistantMessage("", { stopReason: "aborted" }),
+					});
+					return;
+				}
+				stream.push({ type: "done", reason: "stop", message: fauxAssistantMessage("Partial response continued") });
+			});
+			return stream;
+		}) as StreamFn;
+		await harness.session.continue();
+
+		const last = harness.session.messages.at(-1)! as AssistantMessage;
+		expect(getMessageText(last)).toBe("Partial response continued");
+		expect(last.stopReason).toBe("stop");
+	});
 });

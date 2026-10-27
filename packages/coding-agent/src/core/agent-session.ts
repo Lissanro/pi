@@ -3130,6 +3130,12 @@ export class AgentSession {
 			throw new Error("Cannot continue while compaction is in progress.");
 		}
 		this._isAgentRunActive = true;
+		// A previous run's abort request is consumed by that run's settle. Unlike
+		// _startRun (the only other run entry point, which clears this flag),
+		// continue() must clear it too: the agent_start handler aborts any run
+		// started while the flag is still set, which would kill the continuation
+		// at birth after an earlier Esc abort.
+		this._agentRunAbortRequested = false;
 		try {
 			await this._continueOnce(prefill);
 			while (await this._handlePostAgentRun()) {
