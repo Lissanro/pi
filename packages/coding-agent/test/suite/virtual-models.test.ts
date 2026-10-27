@@ -387,7 +387,7 @@ describe("AgentSession virtual models", () => {
 			settings: { compaction: { keepRecentTokens: 1 } },
 		});
 		const summary: FauxResponseStep = (_context, options, _state, model) => {
-			summaries.push(`${model.id}:${options?.reasoning ?? "off"}`);
+			summaries.push(`${model.id}:${options?.reasoning ?? "off"}:${options?.maxTokens}`);
 			return fauxAssistantMessage("summary");
 		};
 		// Compaction summarizes the whole replaced tail (history + turn prefix) with one routed model.
