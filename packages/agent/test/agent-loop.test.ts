@@ -1,9 +1,7 @@
 import {
 	type AssistantMessage,
-	type AssistantMessageEvent,
 	type Context,
 	createAssistantMessageEventStream,
-	EventStream,
 	type Message,
 	type Model,
 	type SimpleStreamOptions,
@@ -30,20 +28,6 @@ import type {
 	AgentToolCall,
 	StreamFn,
 } from "../src/types.ts";
-
-// Mock stream for testing - mimics MockAssistantStream
-class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
-	constructor() {
-		super(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => {
-				if (event.type === "done") return event.message;
-				if (event.type === "error") return event.error;
-				throw new Error("Unexpected event type");
-			},
-		);
-	}
-}
 
 function createUsage() {
 	return {
@@ -2219,7 +2203,7 @@ describe("harness message handling", () => {
 		let capturedMessages: Message[] | undefined;
 		const stream = agentLoopContinue(context, config, undefined, (_model, llmContext) => {
 			capturedMessages = llmContext.messages;
-			const s = new MockAssistantStream();
+			const s = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				s.push({
 					type: "done",
@@ -2310,7 +2294,7 @@ describe("agentLoopContinue prefill continuation", () => {
 		const streamFn: StreamFn = (_model, llmContext, options) => {
 			capturedContext = llmContext;
 			capturedOptions = options;
-			const stream = new MockAssistantStream();
+			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				stream.push({
 					type: "done",
@@ -2379,7 +2363,7 @@ describe("agentLoopContinue prefill continuation", () => {
 		const streamFn: StreamFn = (_model, llmContext, options) => {
 			capturedContext = llmContext;
 			capturedOptions = options;
-			const stream = new MockAssistantStream();
+			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				stream.push({
 					type: "done",

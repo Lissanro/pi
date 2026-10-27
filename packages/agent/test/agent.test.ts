@@ -1,10 +1,8 @@
 import { type ClientIdentity, PI_ATTRIBUTION } from "@earendil-works/pi-ai";
 import {
 	type AssistantMessage,
-	type AssistantMessageEvent,
 	type Context,
 	createAssistantMessageEventStream,
-	EventStream,
 	getCurrentSystemMessage,
 	getModel,
 	type Model,
@@ -23,20 +21,6 @@ import {
 	type StreamFn,
 	setDefaultStreamFn,
 } from "../src/index.ts";
-
-// Mock stream that mimics AssistantMessageEventStream
-class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
-	constructor() {
-		super(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => {
-				if (event.type === "done") return event.message;
-				if (event.type === "error") return event.error;
-				throw new Error("Unexpected event type");
-			},
-		);
-	}
-}
 
 function createUserMessage(text: string): UserMessage {
 	return { role: "user", content: text, timestamp: Date.now() };
@@ -1244,7 +1228,7 @@ describe("Agent", () => {
 				streamFn: (_model, context, options) => {
 					capturedContext = context;
 					capturedOptions = options;
-					const stream = new MockAssistantStream();
+					const stream = createAssistantMessageEventStream();
 					queueMicrotask(() => {
 						// Stream a response that echoes the prefill prefix so the echo
 						// verification check passes.
@@ -1298,7 +1282,7 @@ describe("Agent", () => {
 				streamFn: (_model, context, options) => {
 					capturedContext = context;
 					capturedOptions = options;
-					const stream = new MockAssistantStream();
+					const stream = createAssistantMessageEventStream();
 					queueMicrotask(() => {
 						// Echo the prefill tool call (same name + raw) so the prefill
 						// echo verification passes, then complete with toolUse.
@@ -1347,7 +1331,7 @@ describe("Agent", () => {
 			const agent = new Agent({
 				initialState: { model: createCompletionsModel(), tools: [bashTool] },
 				streamFn: () => {
-					const stream = new MockAssistantStream();
+					const stream = createAssistantMessageEventStream();
 					queueMicrotask(() => {
 						// Echo a DIFFERENT tool call name so the prefill echo verification fails.
 						const message = createAssistantToolUseMessage([
@@ -1378,7 +1362,7 @@ describe("Agent", () => {
 
 		it("throws when model is not openai-completions", async () => {
 			const agent = new Agent({
-				streamFn: () => new MockAssistantStream(),
+				streamFn: () => createAssistantMessageEventStream(),
 			});
 
 			const prefill: AgentMessage = createAssistantMessage("Partial response");
@@ -1392,7 +1376,7 @@ describe("Agent", () => {
 		it("throws when prefill is not an assistant message", async () => {
 			const agent = new Agent({
 				initialState: { model: createCompletionsModel() },
-				streamFn: () => new MockAssistantStream(),
+				streamFn: () => createAssistantMessageEventStream(),
 			});
 
 			const userPrefill: AgentMessage = { role: "user", content: "Not an assistant", timestamp: Date.now() };
@@ -1407,7 +1391,7 @@ describe("Agent", () => {
 				initialState: { model: createCompletionsModel() },
 				streamFn: (_model, _context, options) => {
 					abortSignal = options?.signal;
-					const stream = new MockAssistantStream();
+					const stream = createAssistantMessageEventStream();
 					queueMicrotask(() => {
 						stream.push({ type: "start", partial: createAssistantMessage("") });
 						const checkAbort = () => {
