@@ -15,6 +15,7 @@ import type {
 	MistralConversationsCompat,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
+	SystemOneCompat,
 } from "./providers/compat-schema.ts";
 import type {
 	CacheRetention,
@@ -40,6 +41,7 @@ export type {
 	OpenAIResponsesCompat,
 	OpenRouterRouting,
 	SessionAffinityFormat,
+	SystemOneCompat,
 	ThinkingTokenBudgetField,
 	VercelGatewayRouting,
 } from "./providers/compat-schema.ts";
@@ -497,11 +499,18 @@ export interface Usage {
 	reasoning?: number;
 	totalTokens: number;
 	cost: {
+		/** Catalog-derived input cost. */
 		input: number;
+		/** Catalog-derived output cost. */
 		output: number;
+		/** Catalog-derived cache-read cost. */
 		cacheRead: number;
+		/** Catalog-derived cache-write cost. */
 		cacheWrite: number;
+		/** Best available total: provider-reported billed cost when supported, otherwise the catalog estimate. */
 		total: number;
+		/** True when `total` is the billed cost reported by the provider. False when it is a catalog estimate; absent also means false. */
+		totalFromProvider?: boolean;
 	};
 }
 
@@ -607,7 +616,7 @@ export interface AssistantMessage {
 	api: Api;
 	provider: ProviderId;
 	model: string;
-	responseModel?: string; // Concrete model reported by the provider when different from the requested `model`
+	responseModel?: string; // Concrete model reported by the provider, when reported. May equal the requested `model`
 	responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
 	/** Exact provider-native effort level used for this response. Absent for legacy or unmanaged responses. */
 	providerThinkingLevel?: string;
@@ -916,6 +925,8 @@ export interface ImageModel<TApi extends ImageApi> extends BaseModel<TApi> {
 export interface ClassifierModel<TApi extends ClassifierApi> extends BaseModel<TApi> {
 	type: "classifier";
 	contextWindow: number;
+	/** Compatibility overrides for System One APIs. If not set, auto-detected from provider, baseUrl, and id. */
+	compat?: TApi extends "typesafe-system-one" | "cloudflare-workers-ai-system-one" ? SystemOneCompat : never;
 }
 
 /** Model shape for each model type. */

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `streamProxy()` re-parsing the accumulated tool-call arguments on every delta and keeping their raw text on the partial content block ([#9265](https://github.com/earendil-works/pi/issues/9265))
+
+## [1.4.0] - 2026-10-21
+
 ### Added
 
 - Added `Agent.continue(prefill)` for prefill continuation of an assistant message. The caller removes the prefill from the transcript and passes it to `continue()`, which sends it as the last assistant message with `returnPrefill` enabled so the provider echoes it back with newly generated tokens.
