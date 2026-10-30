@@ -391,11 +391,13 @@ describe("DefaultPackageManager git update", () => {
 			expect(getFileContent(cachedDir, "pi-extensions/session-breakdown.ts")).toBe("// fresh");
 		});
 
-		it("should not refresh pinned temporary git sources", async () => {
+		it("should not refresh pinned temporary git sources pinned to a commit hash", async () => {
 			const managerWithPaths = packageManager as unknown as PackageManagerPathInternals;
-			// The pinned checkout has the ref in its path hash, so seed the cache at the pinned path.
+			// A commit-hash ref that is already checked out is treated as pinned and
+			// never refreshed; only moving branch refs refresh.
+			const pinnedCommit = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
 			const cachedDir = managerWithPaths.getGitInstallPath(
-				managerWithPaths.parseSource(`${gitSource}@main`),
+				managerWithPaths.parseSource(`${gitSource}@${pinnedCommit}`),
 				"temporary",
 			);
 			const extensionFile = join(cachedDir, "pi-extensions", "session-breakdown.ts");
@@ -411,12 +413,19 @@ describe("DefaultPackageManager git update", () => {
 			const executedCommands: string[] = [];
 			const managerWithInternals = packageManager as unknown as {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
+				runCommandCapture: (command: string, args: string[], options?: { cwd?: string }) => Promise<string>;
 			};
 			managerWithInternals.runCommand = async (command, args) => {
 				executedCommands.push(`${command} ${args.join(" ")}`);
 			};
+			managerWithInternals.runCommandCapture = async (_command, args) => {
+				if (args[0] === "rev-parse" && args[1] === "HEAD") {
+					return pinnedCommit;
+				}
+				return "";
+			};
 
-			await packageManager.resolveExtensionSources([`${gitSource}@main`], { temporary: true });
+			await packageManager.resolveExtensionSources([`${gitSource}@${pinnedCommit}`], { temporary: true });
 
 			expect(executedCommands).toEqual([]);
 			expect(getFileContent(cachedDir, "pi-extensions/session-breakdown.ts")).toBe("// pinned");
