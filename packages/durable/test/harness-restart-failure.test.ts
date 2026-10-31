@@ -29,6 +29,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { openNodeSqliteStorage } from "../src/storage/sqlite/node.ts";
+import { commitWrites } from "../src/testing/commit-writes.ts";
 import { allEntries, type ChatSetup, chatSetup, openChat, textOf, unanswered, waitFor } from "./chat-support.ts";
 import { addSection, addTool } from "./harness-support.ts";
 import { context, followCommits } from "./session-support.ts";
@@ -650,7 +651,7 @@ describe("crash edges (#11139)", () => {
 		// As if the charge had been cut off twice before: the open after this crash counts 3, past the limit of 2.
 		const raw = await openNodeSqliteStorage(path);
 		const record = await raw.task(taskId, context);
-		await raw.commit([{ type: "task", value: { ...record!, restarts: 2 } }], () => {}, context);
+		await commitWrites(raw, [{ type: "task", value: { ...record!, restarts: 2 } }], context);
 		await raw.close(context);
 		const setup = chatSetup();
 		setup.settings.restartLimit = 2;
@@ -770,8 +771,9 @@ describe("the restart limit on the normal path (#11139)", () => {
 		for (let round = 0; round < rounds; round++) {
 			await (await root.submit({ type: "input", content: `round ${round}` }, context)).wait(context);
 		}
-		// One generation round with one tool call, as before the restart limit applied to every kind (#11327: 49).
-		expect(resolutions / rounds).toBe(49);
+		// One generation round with one tool call, no more often than before the restart limit applied to every kind
+		// (#11327: 49; group commit coalesces some reconcile passes).
+		expect(resolutions / rounds).toBeLessThanOrEqual(49);
 		await harness.close(context);
 	});
 });

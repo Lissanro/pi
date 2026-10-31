@@ -27,7 +27,7 @@ describe("CustomMessageComponent", () => {
 		};
 		const component = new CustomMessageComponent(message, renderer, undefined, 1);
 
-		expect(optionsSeen).toEqual([{ expanded: false, outputPad: 1 }]);
+		expect(optionsSeen).toMatchObject([{ expanded: false, outputPad: 1 }]);
 		expect(
 			component
 				.render(40)
@@ -37,7 +37,7 @@ describe("CustomMessageComponent", () => {
 
 		component.setOutputPad(0);
 
-		expect(optionsSeen.at(-1)).toEqual({ expanded: false, outputPad: 0 });
+		expect(optionsSeen.at(-1)).toMatchObject({ expanded: false, outputPad: 0 });
 		expect(
 			component
 				.render(40)

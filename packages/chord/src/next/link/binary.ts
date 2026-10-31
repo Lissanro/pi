@@ -50,11 +50,6 @@ const PRESENT = 1;
 
 const SEGMENTS = 2;
 
-/** A retry's optional fields, one bit each: its operation (16 raw bytes), then the ids it passed through (a list). */
-const OPERATION = 1;
-
-const THROUGH = 2;
-
 /** A hold's optional fields, one bit each. */
 const PRINCIPAL = 1;
 
@@ -131,17 +126,10 @@ function encodeFields(message: Message, writer: Writer): void {
 		case "loading":
 			writer.varint(message.hold);
 			return;
-		case "retry": {
-			const { operation, through } = message;
+		case "retry":
 			writer.varint(message.hold);
-			writer.byte((operation === undefined ? 0 : OPERATION) | (through === undefined ? 0 : THROUGH));
-			if (operation !== undefined) writer.raw(hex(operation.replaceAll("-", ""), 16));
-			if (through !== undefined) {
-				writer.varint(through.length);
-				for (const instance of through) writer.raw(hex(instance.replaceAll("-", ""), 16));
-			}
+			writer.varint(message.hops);
 			return;
-		}
 		case "call":
 			writer.varint(message.call);
 			writer.varint(message.hold);
@@ -242,14 +230,8 @@ function decodeFields(kind: (typeof KINDS)[number], reader: Reader): Message {
 		case "release":
 		case "loading":
 			return { kind, hold: reader.varint() };
-		case "retry": {
-			const hold = reader.varint();
-			const flags = reader.byte();
-			if (flags > (OPERATION | THROUGH)) throw new Error("binary: an unknown retry flag");
-			const operation = flags & OPERATION ? { operation: uuid(reader.raw(16)) } : {};
-			const through = flags & THROUGH ? { through: reader.list(() => uuid(reader.raw(16))) } : {};
-			return { kind, hold, ...operation, ...through };
-		}
+		case "retry":
+			return { kind, hold: reader.varint(), hops: reader.varint() };
 		case "call": {
 			const [call, hold, method] = [reader.varint(), reader.varint(), reader.varint()];
 			return { kind, call, hold, method, ...reader.payload("args") };

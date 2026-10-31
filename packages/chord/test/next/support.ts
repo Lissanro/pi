@@ -38,6 +38,7 @@ import {
 	type FacetSelf,
 	type Host,
 	type HostError,
+	type PluginFailure,
 	type RefState,
 	type Self,
 	type StoreSelf,
@@ -240,12 +241,13 @@ export async function loaded(
 		readonly readyTimeout?: number;
 		readonly store?: Store;
 	} = {},
-): Promise<{ readonly host: Host; readonly errors: HostError[] }> {
+): Promise<{ readonly host: Host; readonly errors: HostError[]; readonly failed: readonly PluginFailure[] }> {
 	const errors: HostError[] = [];
 	const { telemetry, closeTimeout, readyTimeout, store } = options;
 	const host = createHost({ telemetry, closeTimeout, readyTimeout, store, onError: (error) => errors.push(error) });
-	await host.load([{ name: "@test/app", facet: defineFacet(setup) }], options.context ?? BACKGROUND_CONTEXT);
-	return { host, errors };
+	const facets = [{ name: "@test/app", facet: defineFacet(setup) }];
+	const { failed } = await host.load(facets, options.context ?? BACKGROUND_CONTEXT);
+	return { host, errors, failed };
 }
 
 /**
@@ -255,12 +257,12 @@ export async function loaded(
 export async function loadedPlugins(
 	setups: Readonly<Record<string, (host: FacetHost, self: FacetSelf) => void>>,
 	options: { readonly telemetry?: InMemoryTelemetryContext; readonly readyTimeout?: number } = {},
-): Promise<{ readonly host: Host; readonly errors: HostError[] }> {
+): Promise<{ readonly host: Host; readonly errors: HostError[]; readonly failed: readonly PluginFailure[] }> {
 	const errors: HostError[] = [];
 	const host = createHost({ ...options, onError: (error) => errors.push(error) });
 	const facets = Object.entries(setups).map(([name, setup]) => ({ name, facet: defineFacet(setup) }));
-	await host.load(facets, BACKGROUND_CONTEXT);
-	return { host, errors };
+	const { failed } = await host.load(facets, BACKGROUND_CONTEXT);
+	return { host, errors, failed };
 }
 
 /** A store on a fresh SQLite `:memory:` database, as Chord's layers see it. */

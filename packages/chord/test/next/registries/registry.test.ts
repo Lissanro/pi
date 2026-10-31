@@ -19,24 +19,36 @@ describe("tokens", () => {
 describe("providers", () => {
 	const Names = defineRegistry<string, number>("app.names", { version: 1 });
 
-	it("one per host: a second serve is refused at load", async () => {
+	it("one per host: a second serve leaves its plugin out at load, reported", async () => {
 		const host = createHost({ onError: () => {} });
 		const serve = defineFacet((h) => h.serve(Names, { compose: (table) => table.length }));
-		await expect(
-			host.load(
-				[
-					{ name: "@app/a", facet: serve },
-					{ name: "@app/b", facet: serve },
-				],
-				context,
-			),
-		).rejects.toThrow("registry app.names is served twice");
+		const { failed } = await host.load(
+			[
+				{ name: "@app/a", facet: serve },
+				{ name: "@app/b", facet: serve },
+			],
+			context,
+		);
+		expect(failed).toEqual([
+			{
+				plugin: "@app/b",
+				error: expect.objectContaining({
+					message: 'plugin "@app/b": registry app.names is served twice (plugin "@app/a")',
+				}),
+			},
+		]);
+		await host.close(context);
 	});
 
-	it("a provider without compose is refused at load (plugin code is not type-checked)", async () => {
-		await expect(loadedPlugins({ "@app/a": (h) => h.serve(Names, {} as never) })).rejects.toThrow(
-			"registry app.names: compose is a function",
-		);
+	it("a provider without compose leaves its plugin out at load (plugin code is not type-checked)", async () => {
+		const { host, failed } = await loadedPlugins({ "@app/a": (h) => h.serve(Names, {} as never) });
+		expect(failed).toEqual([
+			{
+				plugin: "@app/a",
+				error: expect.objectContaining({ message: 'plugin "@app/a": registry app.names: compose is a function' }),
+			},
+		]);
+		await host.close(context);
 	});
 
 	it("a registry whose provider comes with `load` heals a `host.registry` made before it", async () => {

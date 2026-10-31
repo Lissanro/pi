@@ -32,12 +32,14 @@ function sameError(a: unknown, b: unknown): boolean {
  */
 type Mapped = {
 	readonly from: unknown;
+	/** The adapter it was made with: a reload's provider brings another, which maps again. */
+	readonly map: (current: never) => unknown;
 	readonly value: unknown;
 	readonly contributions: readonly RegistryContribution[] | undefined;
 };
 
-/** A failed mapping of composition `from`, until another composition maps. */
-type MapFailure = { readonly from: unknown; readonly error: unknown };
+/** A failed mapping of composition `from` by `map`, until another composition or adapter maps. */
+type MapFailure = { readonly from: unknown; readonly map: (current: never) => unknown; readonly error: unknown };
 
 /**
  * Where a value's registry stands for it: on the host, or closed with the host (its last start kept, the record let
@@ -69,12 +71,6 @@ export class RegistryValueSource extends FollowedSource<unknown> {
 		this.name = record.name;
 		this.version = version;
 		this.#registered = { kind: "open", record };
-	}
-
-	/** Its registry's record while the host is open. */
-	get record(): RegistryRecord | undefined {
-		const registered = this.#registered;
-		return registered.kind === "open" ? registered.record : undefined;
 	}
 
 	/** The composition (or its mapping) at its last good value; throws the failure when there is none. */
@@ -216,16 +212,16 @@ export class RegistryValueSource extends FollowedSource<unknown> {
 		}
 		const mapped = this.#mapped;
 		const failure = this.#mapFailure;
-		if (mapped !== undefined && mapped.from === from) {
+		if (mapped !== undefined && mapped.from === from && mapped.map === map) {
 			this.#mapFailure = undefined;
-		} else if (failure === undefined || failure.from !== from) {
+		} else if (failure === undefined || failure.from !== from || failure.map !== map) {
 			try {
 				const value = record.adapt(() => map(from as never));
-				this.#mapped = { from, value, contributions: record.composedFrom };
+				this.#mapped = { from, map, value, contributions: record.composedFrom };
 				this.#mapFailure = undefined;
 			} catch (error) {
 				if (failure === undefined) record.failed(error);
-				this.#mapFailure = { from, error };
+				this.#mapFailure = { from, map, error };
 			}
 		}
 		const last = this.#mapped === undefined ? undefined : { value: this.#mapped.value };

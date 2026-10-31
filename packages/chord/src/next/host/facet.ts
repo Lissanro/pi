@@ -3,7 +3,7 @@
 // routines or natives, so a facet cannot fail after `load`.
 
 import type { Watchable } from "../../watch.ts";
-import type { Contract } from "../contracts/index.ts";
+import type { AcceptsTable, Contract } from "../contracts/index.ts";
 import type { Principal } from "../data/index.ts";
 import type { Contribution, Registry, RegistryProvider } from "../registries/index.ts";
 import type { Factory } from "./attempt.ts";
@@ -11,8 +11,12 @@ import type { Presence } from "./presence.ts";
 
 /** What a setup serves types and registries with (valid only while the setup runs), and the host's presence lists. */
 export interface FacetHost<P extends Principal = Principal> {
-	/** Serves a type on this host with `factory`; a remote type's factory gets the principal its object is for. */
-	serve<C extends Contract>(Type: C, factory: Factory<C, P>, options?: ServeOptions): void;
+	/**
+	 * Serves a type on this host with `factory`; a remote type's factory gets the principal its object is for.
+	 * `options.accepts` maps the older versions it still serves (checked here: a declaration error rejects the load or
+	 * the reload).
+	 */
+	serve<C extends Contract>(Type: C, factory: Factory<C, P>, options?: ServeOptions<C>): void;
 	/**
 	 * Serves registry `R` on this host (its defining plugin's facet, the one provider, D1): `compose` builds the value
 	 * from the table, `accepts` adapts older versions. A second serve of a registry is refused at `load`.
@@ -23,7 +27,12 @@ export interface FacetHost<P extends Principal = Principal> {
 }
 
 /** What `host.serve` takes besides the type and the factory. */
-export type ServeOptions = {
+export type ServeOptions<C extends Contract = Contract> = {
+	/**
+	 * The older versions of `C` this provider still binds, with the mappings their edits need (Q10, `checkAccepts`):
+	 * an older consumer's state members mapped per binding, its calls' arguments and results mapped.
+	 */
+	readonly accepts?: AcceptsTable<C>;
 	/**
 	 * How long, in milliseconds, a live object with params stays live after its last reference is released (0 by
 	 * default): a reference within that time reuses it, with its documents and dependencies.

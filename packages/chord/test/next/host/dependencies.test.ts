@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { BACKGROUND_CONTEXT as context } from "../../../src/context/index.ts";
-import { int, local, remote } from "../../../src/next/contracts/index.ts";
+import { int, keyed, local, obj, remote } from "../../../src/next/contracts/index.ts";
+import { defineState } from "../../../src/next/documents/index.ts";
 import { createHost, defineFacet, type HostError } from "../../../src/next/host/index.ts";
-import { constant } from "../../../src/next/state/index.ts";
+import { ChordObject } from "../../../src/next/host/object.ts";
+import { defineRegistry } from "../../../src/next/registries/index.ts";
 import {
 	bindHold,
 	failures,
@@ -157,70 +159,131 @@ describe("the dependency check", () => {
 	});
 });
 
-describe("parked_long (dependency model §7)", () => {
+describe("parked_long (dependency model §7, audit A11)", () => {
 	fakeTimers();
+	const Missing = local("app.missing", { version: 1, params: {}, members: { n: int() } });
 
-	it("starts its clock when the hold gets on a link: a late link is not reported at once (fix round 2, Opus F2)", async () => {
-		const errors: HostError[] = [];
-		const client = createHost<TestPrincipal>({ readyTimeout: 1_000, onError: (error) => errors.push(error) });
-		const facet = defineFacet<TestPrincipal>((h) =>
-			h.serve(View, (_, self) => ({ n: self.get(Notes, { session: "S1" }).count })),
-		);
-		await client.load([{ name: "@test/view", facet }], context);
-		const view = client.hold(View, { id: 1 }, context);
-		await vi.advanceTimersByTimeAsync(5_000);
-		const peer = await rawParent(client);
-		await peer.next("hold");
-		const linked = Date.now();
-		await vi.advanceTimersByTimeAsync(10);
-		expect(errors).toEqual([]);
-		await vi.advanceTimersByTimeAsync(990);
-		expect(errors).toEqual([
-			{ kind: "parked_long", object: "app.view(1)", waitingFor: "app.notes(S1)", since: linked },
-		]);
-		view.release();
-	});
-
-	it("is not reported while the path has no link: no remote attempt answers for it (fix round 1, Opus F2)", async () => {
-		const errors: HostError[] = [];
-		const client = createHost<TestPrincipal>({ readyTimeout: 1_000, onError: (error) => errors.push(error) });
-		const facet = defineFacet<TestPrincipal>((h) =>
-			h.serve(View, (_, self) => ({ n: self.get(Notes, { session: "S1" }).count })),
-		);
-		await client.load([{ name: "@test/view", facet }], context);
-		const view = client.hold(View, { id: 1 }, context);
-		await vi.advanceTimersByTimeAsync(5_000);
-		expect(errors).toEqual([]);
-		expect(view.state.value).toEqual({ kind: "loading" });
-		// Once a link holds it and the remote attempt is only loading, it is.
-		const peer = await rawParent(client);
-		await peer.next("hold");
-		await vi.advanceTimersByTimeAsync(5_000);
-		expect(errors.map(({ kind }) => kind)).toEqual(["parked_long"]);
-		view.release();
-	});
-
-	it("is reported once per parking episode, after readyTimeout on a remote attempt only loading; nothing fails", async () => {
-		const errors: HostError[] = [];
-		const client = createHost<TestPrincipal>({ readyTimeout: 1_000, onError: (error) => errors.push(error) });
-		const peer = await rawParent(client);
-		const facet = defineFacet<TestPrincipal>((h) =>
-			h.serve(View, (_, self) => ({ n: self.get(Notes, { session: "S1" }).count })),
-		);
-		await client.load([{ name: "@test/view", facet }], context);
-		const view = client.hold(View, { id: 1 }, context);
-		await peer.next("hold");
+	it("is reported once after readyTimeout whatever the blocker: a missing local provider; nothing fails", async () => {
+		const { host, errors } = await loaded((h) => h.serve(View, (_, self) => ({ n: self.get(Missing, {}).n })), {
+			readyTimeout: 1_000,
+		});
+		const view = host.hold(View, { id: 1 }, context);
 		await vi.advanceTimersByTimeAsync(999);
 		expect(errors).toEqual([]);
 		await vi.advanceTimersByTimeAsync(1);
-		expect(errors).toEqual([{ kind: "parked_long", object: "app.view(1)", waitingFor: "app.notes(S1)", since: 0 }]);
+		expect(errors).toEqual([
+			{ kind: "parked_long", object: "app.view(1)", waitingFor: "app.missing", state: "failed", since: 0 },
+		]);
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(errors).toHaveLength(1);
-		expect(view.state.value).toEqual({ kind: "loading" });
+		expect(view.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
 		view.release();
+		await host.close(context);
 	});
 
-	it("is not reported for a remote blocker that failed: the parked attempt shows its cause instead", async () => {
+	it("names the first blocker in declaration order with its state; its clock runs from parking, with no link yet too", async () => {
+		const errors: HostError[] = [];
+		const client = createHost<TestPrincipal>({ readyTimeout: 1_000, onError: (error) => errors.push(error) });
+		const facet = defineFacet<TestPrincipal>((h) =>
+			h.serve(View, (_, self) => ({
+				n: self.derive([self.get(Notes, { session: "S1" }).count, self.get(Missing, {}).n], ([a, b]) => a + b),
+			})),
+		);
+		await client.load([{ name: "@test/view", facet }], context);
+		const view = client.hold(View, { id: 1 }, context);
+		await vi.advanceTimersByTimeAsync(1_000);
+		// The remote one comes first (no link holds it yet), though the attempt shows the failed one.
+		expect(errors).toEqual([
+			{ kind: "parked_long", object: "app.view(1)", waitingFor: "app.notes(S1)", state: "loading", since: 0 },
+		]);
+		expect(view.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
+		view.release();
+		await client.close(context);
+	});
+
+	it("keeps declaration order across registries and references: the parked cause and the report name the first (Astra)", async () => {
+		const Registry = defineRegistry<number, number>("app.missing-registry", { version: 1 });
+		const { host, errors } = await loaded(
+			(h) =>
+				h.serve(View, (_, self) => {
+					self.registry(Registry);
+					return { n: self.get(Missing, {}).n };
+				}),
+			{ readyTimeout: 1_000 },
+		);
+		const view = host.hold(View, { id: 1 }, context);
+		await flushed();
+		expect(view.state.value).toMatchObject({
+			kind: "failed",
+			cause: {
+				kind: "waiting",
+				error: { message: expect.stringMatching(/^waiting for registry app\.missing-registry: /) },
+			},
+		});
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(errors).toEqual([
+			{
+				kind: "parked_long",
+				object: "app.view(1)",
+				waitingFor: "registry app.missing-registry",
+				state: "failed",
+				since: 0,
+			},
+		]);
+		view.release();
+		await host.close(context);
+	});
+
+	it("names a reference whose pinned key still loads: the episode's clock includes the load (Sol)", async () => {
+		const Rows = defineState("rows", {
+			version: 1,
+			keyed: true,
+			schema: obj({ n: int() }),
+			initial: () => ({ n: 0 }),
+		});
+		const Keys = local("app.keys", { version: 1, params: {}, members: { rows: keyed(obj({ n: int() })) } });
+		const gate = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		const pinKey = ChordObject.prototype.pinKey;
+		const held = vi.spyOn(ChordObject.prototype, "pinKey").mockImplementation(async function (
+			this: ChordObject,
+			member,
+			key,
+			version,
+			pinContext,
+		) {
+			entered.resolve();
+			await gate.promise;
+			return pinKey.call(this, member, key, version, pinContext);
+		});
+		try {
+			const { host, errors } = await loaded(
+				(h) => {
+					h.serve(Keys, (_, self) => ({ rows: self.state(Rows) }));
+					h.serve(View, (_, self) => {
+						const row = self.get(Keys, {}).rows.at("a");
+						return { n: self.derive([row], ([value]) => value.n) };
+					});
+				},
+				{ readyTimeout: 1_000 },
+			);
+			const view = host.hold(View, { id: 1 }, context);
+			await entered.promise;
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(errors).toEqual([
+				{ kind: "parked_long", object: "app.view(1)", waitingFor: "app.keys", state: "loading", since: 0 },
+			]);
+			gate.resolve();
+			await vi.waitFor(() => expect(view.state.value).toEqual({ kind: "live" }));
+			view.release();
+			await host.close(context);
+		} finally {
+			gate.resolve();
+			held.mockRestore();
+		}
+	});
+
+	it("reports a ring across hosts whose member there waits on a failed dependency (it shows failed here)", async () => {
 		const errors: HostError[] = [];
 		const client = createHost<TestPrincipal>({ readyTimeout: 1_000, onError: (error) => errors.push(error) });
 		const peer = await rawParent(client);
@@ -230,34 +293,62 @@ describe("parked_long (dependency model §7)", () => {
 		await client.load([{ name: "@test/view", facet }], context);
 		const view = client.hold(View, { id: 1 }, context);
 		const { hold } = await peer.next("hold");
-		const error = { kind: "chord", error: { code: "unavailable", message: "app.notes is not served here" } } as const;
+		// The provider's object is parked there on a failed dependency (the ring's member back to this host waits too).
+		const error = {
+			kind: "chord",
+			error: { code: "unavailable", message: "waiting for app.c: not served" },
+		} as const;
 		peer.send({ kind: "failed", hold, cause: { kind: "waiting", error } });
-		await vi.advanceTimersByTimeAsync(60_000);
-		expect(errors).toEqual([]);
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(errors).toEqual([
+			{ kind: "parked_long", object: "app.view(1)", waitingFor: "app.notes(S1)", state: "failed", since: 0 },
+		]);
 		expect(view.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
-		expect(vi.getTimerCount()).toBe(0);
 		view.release();
+		await client.close(context);
 	});
 
-	it("is not reported for a local blocker: its own deadline bounds it", async () => {
-		const Slow = local("app.slow", { version: 1, params: { id: int() }, members: { n: int() } });
-		const { host, errors } = await loaded(
-			(h) => {
-				h.serve(Slow, (_, self) => {
-					self.open(
-						() => new Promise(() => {}),
-						() => {},
-					);
-					return { n: constant(1) };
-				});
-				h.serve(View, (_, self) => ({ n: self.get(Slow, { id: 1 }).n }));
-			},
-			{ readyTimeout: 1_000 },
-		);
+	it("is reported once per parking episode: again for an attempt that parks after leaving parking", async () => {
+		const { host, errors } = await loaded((h) => h.serve(View, (_, self) => ({ n: self.get(Missing, {}).n })), {
+			readyTimeout: 1_000,
+		});
 		const view = host.hold(View, { id: 1 }, context);
 		await vi.advanceTimersByTimeAsync(5_000);
-		expect(errors.map(({ kind }) => kind)).not.toContain("parked_long");
+		expect(errors.map(({ kind }) => kind)).toEqual(["parked_long"]);
+		// A reload of its plugin replaces the parked attempt: a new episode, its clock from its own parking.
+		const changed = defineFacet((h) => h.serve(View, (_, self) => ({ n: self.get(Missing, {}).n })));
+		await host.reload([{ name: "@test/app", facet: changed }], context);
+		await vi.advanceTimersByTimeAsync(999);
+		expect(errors).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(errors[1]).toEqual({
+			kind: "parked_long",
+			object: "app.view(1)",
+			waitingFor: "app.missing",
+			state: "failed",
+			since: 5_000,
+		});
 		view.release();
+		await host.close(context);
+	});
+
+	it("is not reported for an attempt that leaves parking within readyTimeout: its timer stops", async () => {
+		const errors: HostError[] = [];
+		const client = createHost<TestPrincipal>({ readyTimeout: 1_000, onError: (error) => errors.push(error) });
+		const peer = await rawParent(client);
+		const facet = defineFacet<TestPrincipal>((h) =>
+			h.serve(View, (_, self) => ({ n: self.get(Notes, { session: "S1" }).count })),
+		);
+		await client.load([{ name: "@test/view", facet }], context);
+		const view = client.hold(View, { id: 1 }, context);
+		const { hold } = await peer.next("hold");
+		await vi.advanceTimersByTimeAsync(500);
+		bindHold(peer, hold, [{ text: "a" }]);
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(view.state.value).toEqual({ kind: "live" });
+		expect(errors).toEqual([]);
+		view.release();
+		await client.close(context);
 	});
 });
 

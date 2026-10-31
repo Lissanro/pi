@@ -87,14 +87,12 @@ const SCAN_PAGE_SIZE = 256;
  */
 export class TaskGraphView {
 	readonly #session: SessionImpl;
-	readonly #storage: Storage;
 	readonly #blocking: TaskGraphBlocking;
 	#mount: Mount | undefined;
 	#closed = false;
 
-	constructor(session: SessionImpl, storage: Storage, blocking: TaskGraphBlocking) {
+	constructor(session: SessionImpl, blocking: TaskGraphBlocking) {
 		this.#session = session;
-		this.#storage = storage;
 		this.#blocking = blocking;
 		session.followCommits((publication, context) => {
 			// A commit held in memory changes documents only, which the graph does not show.
@@ -153,8 +151,11 @@ export class TaskGraphView {
 		create: (value: TaskGraph, release: () => void) => O,
 		context: Context,
 	): Promise<{ observer: O; detach: () => void }> {
-		return this.#session.readOnLine(async () => {
-			const mount = this.#mount ?? { ...(await this.#build(context)), observers: new Set<Observer<TaskGraph>>() };
+		return this.#session.readOnLine(async (storage) => {
+			const mount = this.#mount ?? {
+				...(await this.#build(storage, context)),
+				observers: new Set<Observer<TaskGraph>>(),
+			};
 			const detach = (): void => {
 				mount.observers.delete(observer);
 				if (mount.observers.size === 0 && this.#mount === mount) this.#mount = undefined;
@@ -190,19 +191,18 @@ export class TaskGraphView {
 			.catch(() => {});
 	}
 
-	async #build(context: Context): Promise<Omit<Mount, "observers">> {
+	/** Read the graph on the line, through the line's `storage`. */
+	async #build(storage: Storage, context: Context): Promise<Omit<Mount, "observers">> {
 		const tasks: Record<string, TaskGraphNode> = {};
 		const live = new Map<string, BlockedSubject>();
 		const records: AnyTaskRecord[] = [];
 		for (const status of LIVE_STATUSES) {
-			records.push(
-				...(await scanAll((cursor) => this.#storage.scanTasks({ status }, SCAN_PAGE_SIZE, cursor, context))),
-			);
+			records.push(...(await scanAll((cursor) => storage.scanTasks({ status }, SCAN_PAGE_SIZE, cursor, context))));
 		}
 		records.sort((a, b) => a.id - b.id);
 		for (const record of records) {
 			const owned = await scanAll((cursor) =>
-				this.#storage.scanConversations({ ownerTaskId: record.id }, SCAN_PAGE_SIZE, cursor, context),
+				storage.scanConversations({ ownerTaskId: record.id }, SCAN_PAGE_SIZE, cursor, context),
 			);
 			const conversations = owned.map((conversation) => conversation.id).sort((a, b) => a - b);
 			const subject = blockedSubject(record);

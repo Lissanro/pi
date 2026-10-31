@@ -68,8 +68,11 @@ const BUDGETS = {
 			// parse streamed tool-call arguments with pi-ai's utils/streaming-json.ts (and its json-parse.ts) to append what
 			// argument strings grew by (harness/partial-changes.ts). Chord's watches fold pending ops with Delta's
 			// pending queue (delta/pending.ts). `registryReader` (harness/registry-reader.ts) reads a Chord v2 registry
-			// value through type-only imports.
-			maxFiles: 78,
+			// value through type-only imports. The Session caches hot Storage reads (session/cached-storage.ts) and keeps
+			// each conversation's newest entry and head marker (session/conversation-tails.ts). Group commit sends batches
+			// through `commit()`, or one `commit()` each (storage/commit-batch.ts), from a writer off the Session line
+			// (session/writer.ts) that gates reads by the keys of unpublished writes (session/keys.ts).
+			maxFiles: 83,
 			forbid: [
 				"packages/ai/src/index.ts",
 				"packages/ai/src/utils/typebox-helpers.ts",

@@ -4,7 +4,6 @@
 import { type Dependent, type DeriveSource, handedOut, type NativeSource, Source } from "../state/internal.ts";
 import type { RegistryRecord } from "./record.ts";
 import type { RegistryEntry, RegistryProvider } from "./registry.ts";
-import { RegistryValueSource } from "./value.ts";
 
 /** Who contributes: a facet (by plugin) or a host-lifetime object (by plugin and type). */
 export type Contributor = { readonly plugin: string; readonly type: string | undefined };
@@ -30,8 +29,8 @@ export class RegistryContribution implements Dependent {
 	/** The registry version its contributor was built against. */
 	readonly version: number;
 	readonly #content: ContributionContent;
-	/** The last adaptation of an older contribution: the value it was made from and its result. */
-	#adapted: { readonly from: unknown; readonly value: unknown } | undefined;
+	/** The last adaptation of an older contribution: the value and adapter it was made from, and its result. */
+	#adapted: { readonly from: unknown; readonly adapter: (old: never) => unknown; readonly value: unknown } | undefined;
 	#entry: RegistryEntry<unknown> | undefined;
 	/** Left out since its last entry: failing (reported once), or refused (reported once). */
 	#out: "none" | "failed" | "refused" = "none";
@@ -60,14 +59,6 @@ export class RegistryContribution implements Dependent {
 	/** Stops following its source. */
 	unfollow(): void {
 		this.#followed()?.dependents.delete(this);
-	}
-
-	/** The registry whose value it is, when it is one (its edge in the cycle check, while it is in the table). */
-	get reads(): RegistryRecord | undefined {
-		const content = this.#content;
-		return content.kind === "native" && content.source instanceof RegistryValueSource
-			? content.source.record
-			: undefined;
 	}
 
 	/** Its source when it changes (a constant never does). */
@@ -122,9 +113,9 @@ export class RegistryContribution implements Dependent {
 
 	#adapt(raw: unknown, adapter: (old: never) => unknown): unknown {
 		const adapted = this.#adapted;
-		if (adapted !== undefined && adapted.from === raw) return adapted.value;
+		if (adapted !== undefined && adapted.from === raw && adapted.adapter === adapter) return adapted.value;
 		const value = this.record.adapt(() => adapter(raw as never));
-		this.#adapted = { from: raw, value };
+		this.#adapted = { from: raw, adapter, value };
 		return value;
 	}
 

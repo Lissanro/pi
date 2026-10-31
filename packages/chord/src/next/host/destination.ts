@@ -44,6 +44,14 @@ export class Destination {
 	}
 
 	/**
+	 * Whether a reference to `Type` with `params` goes here: a local type, or a remote one whose host address is this
+	 * host's. A `hostAddress` that throws, throws.
+	 */
+	placedHere(Type: Contract, params: ParamsOf<Contract>): boolean {
+		return Type.kind === "local" || this.#isHere(hostAddressOf(Type, params));
+	}
+
+	/**
 	 * Where a hold arriving on `link` acting as `principal` goes, by the address it names: here when it is this host's
 	 * (a relay never captures a hold for serving the same name); over the route of its kind; else over the parent link
 	 * (waiting for it while it is down), unless it came on the parent link or this host never had one (`unavailable`).

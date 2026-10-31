@@ -26,6 +26,7 @@ import {
 	type NextTaskState,
 	type Registry,
 	type Storage,
+	type StorageWrite,
 	type TaskGraph,
 	type TaskId,
 	type TaskOptions,
@@ -39,7 +40,7 @@ import { openNodeSqliteStorage } from "../src/storage/sqlite/node.ts";
 import { allEntries, chatSetup, openChat, waitFor } from "./chat-support.ts";
 import { addHooks, addTask, addTool } from "./harness-support.ts";
 import { generations, graphHistory, slotsOf, viewHistory } from "./live-support.ts";
-import { ControlledStorage, context } from "./session-support.ts";
+import { ControlledStorage, context, refusingAt } from "./session-support.ts";
 import { aborted, type Deferred, deferred, openTasks, settled } from "./task-support.ts";
 
 // ─── A scriptable task ──────────────────────────────────────────────────────
@@ -1361,19 +1362,20 @@ describe("tool rounds", () => {
 		let reject: TaskId | undefined;
 		const failure = new Error("disk gone");
 		class Failing extends ControlledStorage {
-			override async commit(
-				writes: Parameters<MemoryStorage["commit"]>[0],
-				adopt: Parameters<MemoryStorage["commit"]>[1],
+			override commit(
+				batches: Parameters<MemoryStorage["commit"]>[0],
+				receive: Parameters<MemoryStorage["commit"]>[1],
 				ctx: Parameters<MemoryStorage["commit"]>[2],
 			) {
-				const finalizes = writes.some(
-					(write) => write.type === "task" && write.value.id === reject && write.value.state.status === "terminal",
-				);
-				if (finalizes) {
-					reject = undefined;
-					throw failure;
-				}
-				return super.commit(writes, adopt, ctx);
+				const refuses = (writes: readonly StorageWrite[]): boolean => {
+					const finalizes = writes.some(
+						(write) =>
+							write.type === "task" && write.value.id === reject && write.value.state.status === "terminal",
+					);
+					if (finalizes) reject = undefined;
+					return finalizes;
+				};
+				return refusingAt((...args) => super.commit(...args), batches, receive, ctx, refuses, failure);
 			}
 		}
 		const storage = new Failing();
@@ -1647,19 +1649,20 @@ describe("conversation abort and boundaries", () => {
 		let reject: TaskId | undefined;
 		const failure = new Error("disk gone");
 		class Failing extends ControlledStorage {
-			override async commit(
-				writes: Parameters<MemoryStorage["commit"]>[0],
-				adopt: Parameters<MemoryStorage["commit"]>[1],
+			override commit(
+				batches: Parameters<MemoryStorage["commit"]>[0],
+				receive: Parameters<MemoryStorage["commit"]>[1],
 				ctx: Parameters<MemoryStorage["commit"]>[2],
 			) {
-				const finalizes = writes.some(
-					(write) => write.type === "task" && write.value.id === reject && write.value.state.status === "terminal",
-				);
-				if (finalizes) {
-					reject = undefined;
-					throw failure;
-				}
-				return super.commit(writes, adopt, ctx);
+				const refuses = (writes: readonly StorageWrite[]): boolean => {
+					const finalizes = writes.some(
+						(write) =>
+							write.type === "task" && write.value.id === reject && write.value.state.status === "terminal",
+					);
+					if (finalizes) reject = undefined;
+					return finalizes;
+				};
+				return refusingAt((...args) => super.commit(...args), batches, receive, ctx, refuses, failure);
 			}
 		}
 		const storage = new Failing();

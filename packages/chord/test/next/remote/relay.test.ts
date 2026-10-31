@@ -143,8 +143,9 @@ forEachCodec(() => {
 			const result = await raw.next("result");
 			expect(result).toMatchObject({ kind: "result", call: 5 });
 			expect(result.origin).toBeUndefined();
-			raw.send({ kind: "retry", hold: 7 });
-			expect(await worker.next("retry")).toEqual({ kind: "retry", origin: 1, hold: 7 });
+			raw.send({ kind: "retry", hold: 7, hops: 5 });
+			// Forwarded with its budget as it is: a relay visits no object.
+			expect(await worker.next("retry")).toEqual({ kind: "retry", origin: 1, hold: 7, hops: 5 });
 		});
 
 		it("give each downstream link its own origin, never reused", async () => {

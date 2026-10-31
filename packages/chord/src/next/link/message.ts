@@ -50,6 +50,9 @@ const incarnation = str({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 /** The longest activation chain a hold carries (Q5): a longer one keeps its last entries. */
 export const CHAIN = 32;
 
+/** A `retry`'s hop budget as the first host sends it (dependency model §3.7, audit A5): one less per host after it. */
+export const RETRY_HOPS = 16;
+
 /** The kinds of a `failed` message's cause, in their codes' order (the binary codec's byte, the text codec's letter). */
 export const CAUSE_KINDS: ["transient", "broken", "waiting"] = ["transient", "broken", "waiting"];
 
@@ -78,16 +81,10 @@ const MESSAGE = union([
 	obj({ kind: lit("release"), origin: opt(origin), hold: id }),
 	obj({ kind: lit("call"), origin: opt(origin), call: id, hold: id, method: index, args: opt(part), segments }),
 	obj({ kind: lit("abort"), origin: opt(origin), call: id }),
-	// Asks the provider for an attempt of a failed hold's object now (`ref.retry()`); `operation` names the one retry it
-	// belongs to (a uuidv7) and `through` the instance ids of the objects it passed through (with `operation` only), so
-	// an object it reaches twice (a diamond, a ring) handles it once. Relays forward both.
-	obj({
-		kind: lit("retry"),
-		origin: opt(origin),
-		hold: id,
-		operation: opt(incarnation),
-		through: opt(Type.Array(incarnation, { maxItems: CHAIN })),
-	}),
+	// Asks the provider for an attempt of a failed hold's object now (`ref.retry()`); `hops` is its budget: the host
+	// there passes it on to its remote dependencies with one less, never at 0, so a waiting ring of hosts stops. Relays
+	// forward it as it is.
+	obj({ kind: lit("retry"), origin: opt(origin), hold: id, hops: int({ min: 1, max: RETRY_HOPS }) }),
 	// Binds several holds at once (first bindings, re-holds), applied in one batch.
 	obj({
 		kind: lit("bound"),

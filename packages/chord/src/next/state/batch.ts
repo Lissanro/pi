@@ -171,7 +171,12 @@ export class Batch {
 	 * Counts one unit of derive or registry work on the host's metrics (a lazy read has no context to count through).
 	 */
 	count(
-		counter: "chord.derive.computes" | "chord.derive.diffs" | "chord.registry.composes" | "chord.registry.adapts",
+		counter:
+			| "chord.derive.computes"
+			| "chord.derive.diffs"
+			| "chord.registry.composes"
+			| "chord.registry.adapts"
+			| "chord.contract.adapts",
 	): void {
 		this.#metrics?.counter(counter).add(1);
 	}

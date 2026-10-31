@@ -72,11 +72,9 @@ host.serve(Server, (_, self) => {
 
 - `RegistryRecord`: one per registry and host (`ChordHost.registryRecord(name)`, made by its first use): the provider
   (`serve`), the contributions in table order (`add`, `remove`, inside a batch), the last table and composition
-  (`start()`: composed now when dirty; a read while composing is a cycle, `invalid/cycle`), the episode reports, the
-  direct edges between registries whose values are contributions in its table (counted, kept while those
-  contributions are in it; `assertNoCycle` refuses a cycle at `contribute`, through those edges and the
-  contributing attempt's own earlier declarations), and its values by reader version
-  (`value(version)`); `close()` at the host's close.
+  (`start()`: composed now when dirty; a read while composing is a cycle, `invalid/cycle`: the contribution that read
+  it is left out, so a ring of registries is caught at its first composition, audit A2), the episode reports, and its
+  values by reader version (`value(version)`); `close()` at the host's close.
 - `RegistryContribution` (`contribution.ts`): one contributor's contribution, a `Dependent` of its source;
   `entry(version, provider)` is its table entry (the same object while its value is), or `undefined` when left out.
 - `RegistryValueSource`: a `FollowedSource` per reader version; `read()` registers a reader (an attempt that declared

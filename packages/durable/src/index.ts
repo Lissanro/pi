@@ -147,6 +147,7 @@ export type {
 	CommitOptions,
 	CommitPersistence,
 	CommitPublication,
+	CommitResult,
 	CommonDocDefinition,
 	ContextEdit,
 	ConversationDocFamilyToken,

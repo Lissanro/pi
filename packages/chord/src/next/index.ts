@@ -48,4 +48,4 @@ export type { Order } from "./store/sql.ts";
 /** @internal */
 export type { StagedWrite, Step } from "./store/step.ts";
 /** @internal */
-export type { ChordStore } from "./store/store.ts";
+export type { ChordStore, SeriesCommit, SeriesResult } from "./store/store.ts";

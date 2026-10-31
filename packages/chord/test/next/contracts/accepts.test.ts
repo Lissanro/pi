@@ -5,6 +5,7 @@ import {
 	evolve,
 	hostKind,
 	int,
+	keyed,
 	local,
 	method,
 	nul,
@@ -187,6 +188,23 @@ describe("method mappings", () => {
 			'notes accepts[1]: unknown key "extra"',
 		);
 		expect(() => checkUntyped(v2, null)).toThrow("notes accepts: expected an object");
+	});
+});
+
+describe("keyed mappings (slice 7b)", () => {
+	const Store = local("store", { version: 1, params: {}, members: { notes: keyed(Note), drafts: keyed(Note) } });
+	const V2 = evolve(Store, (e) => e.keyed("notes", NoteV2).removeKeyed("drafts"));
+
+	it("needs a function or refuse for a changed keyed member, refuse for a removed one", () => {
+		expect(checkAccepts(V2, { 1: { keyed: { notes: toV1, drafts: "refuse" } } }).versions).toHaveLength(1);
+		expect(checkAccepts(V2, { 1: { keyed: { notes: "refuse", drafts: "refuse" } } }).versions).toHaveLength(1);
+		expect(() => checkUntyped(V2, { 1: { keyed: { notes: toV1 } } })).toThrow(
+			"accepts[1].keyed.drafts: missing mapping",
+		);
+		expect(() => checkUntyped(V2, { 1: { keyed: { notes: toV1, drafts: toV1 } } })).toThrow(
+			'accepts[1].keyed.drafts: expected "refuse"',
+		);
+		expect(() => checkUntyped(Store, {})).not.toThrow();
 	});
 });
 

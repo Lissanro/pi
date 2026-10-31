@@ -1,6 +1,6 @@
 # Dependency resolution in Chord v2: one model (decided, 2026-10-29)
 
-Status: decided (owner, 2026-10-29); **built for slice 7a** (§1-4 and §6-11 without what installs and reloads add:
+Status: decided (owner, 2026-10-29); **built for slice 7a** (audit A1, 2026-10-30: `installing` is cut, staging being synchronous; A5: retry dedupe by a visited set and a hop budget; A11: `parked_long` for any long park) (§1-4 and §6-11 without what installs and reloads add:
 §1's `installing`, §4's install-end and reload wakes, §3.9's reload handover and §5's removal, versions and rollout
 are slice 7b's; folded into `design.md` §3, §5, §6, §7, §17, §21's start barrier, §22; `slice-7a.md`). The draft
 history below is kept as it was. Sources: the owner's direction

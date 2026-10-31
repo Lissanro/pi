@@ -1,7 +1,9 @@
 // Attempts (§6, §13, §14, §15): one activation of an object, a fresh instance each time. It is the `self` its factory
 // declares with (handles to the object's documents and jobs, under its seal token); it runs the activation steps,
 // each failing with its own kind; it takes the live object's calls and starts its routines and jobs; and it ends with
-// its seal (slice 6a §1.3), the drain and the closes of its natives.
+// its seal (slice 6a §1.3), the drain and the closes of its natives. A reload's swap hands it over (slice 7b §5): its
+// routines stop and hand over to the new attempt's, its jobs to the new attempt's, and it is sealed once its calls
+// settled.
 
 import { awaitWithContext, type Context, withAbortSignal } from "../../context/index.ts";
 import type { JsonValue } from "../../json.ts";
@@ -9,10 +11,9 @@ import type { NativeWatchable, Watchable, WatchEnd } from "../../watch.ts";
 import type { Contract, Implementation, ParamsOf } from "../contracts/index.ts";
 import { contractData, type ShapeOf } from "../contracts/internal.ts";
 import { ChordError, type FailureCause, type Principal } from "../data/index.ts";
-import { asChordError, checkArgs, checkParams, invalid, openFailure } from "../data/internal.ts";
+import { asChordError, checkArgs, checkParams, invalid, openFailure, type Value } from "../data/internal.ts";
 import type { HandleOf, JsonObject, StateDefinition, Tx } from "../documents/index.ts";
 import {
-	AddressSource,
 	type AnyDefinition,
 	type KeyDeclarer,
 	type KeyedSlot,
@@ -20,14 +21,9 @@ import {
 	SealToken,
 } from "../documents/internal.ts";
 import type { JobDefinition, JobHandle, JobImplementation } from "../jobs/index.ts";
-import { type AnyJobImplementation, Job } from "../jobs/internal.ts";
+import { type AnyJobImplementation, type CutReason, Job } from "../jobs/internal.ts";
 import type { Contribution, Registry, RegistryValue } from "../registries/index.ts";
-import {
-	type RegistryContribution,
-	type RegistryEdge,
-	RegistryValueSource,
-	type RegistryWaiter,
-} from "../registries/internal.ts";
+import type { RegistryContribution, RegistryWaiter } from "../registries/internal.ts";
 import type { Writable } from "../state/index.ts";
 import { Derive, type DeriveSource, WritableSource } from "../state/internal.ts";
 import type { Columns } from "../store/columns.ts";
@@ -36,12 +32,20 @@ import type { ChordStore } from "../store/store.ts";
 import type { TableDefinition } from "../store/table.ts";
 import { type Table, TableHandle } from "../store/table-handle.ts";
 import { prepareTables } from "../store/table-migration.ts";
+import { AdaptedMembers } from "./adapted.ts";
 import { CallContext, type Caller, type Ctx, withLinkedAbortSignal } from "./ctx.ts";
 import { Deadline } from "./deadline.ts";
-import { checkDependencies, type Dependency, ParkedLong, waitingOn } from "./dependencies.ts";
+import { checkDependencies, type Dependency, ParkedLong, parkedCause, waitingOn } from "./dependencies.ts";
 import { type FollowAttach, FollowSource } from "./follow.ts";
 import type { HostError } from "./host.ts";
-import { attachDerives, checkImplementation, contributionOf, type KeyedBinding, type Members } from "./members.ts";
+import {
+	attachDerives,
+	checkImplementation,
+	contributionOf,
+	type KeyedBinding,
+	type Members,
+	type Method,
+} from "./members.ts";
 import {
 	type CloseFailed,
 	drained,
@@ -51,9 +55,9 @@ import {
 	type NativeOptions,
 	type NativeSlot,
 } from "./native.ts";
-import type { ChordObject } from "./object.ts";
+import type { ChordObject, Served } from "./object.ts";
 import type { Failed } from "./ref-state.ts";
-import type { Binding, CheckedParams, Reference, RetryOperation } from "./reference.ts";
+import type { Binding, CheckedParams, Reference, RetryWalk } from "./reference.ts";
 import { type RetrySource, retrySource } from "./retry-on.ts";
 import {
 	type OnHandler,
@@ -150,6 +154,9 @@ export interface StoreSelf<P extends Principal = Principal> extends Self<P> {
 	contribute<C>(R: Registry<C, unknown>, value: Contribution<C>): void;
 }
 
+/** A key of a keyed member pinned on one instance, loaded: its source (mapped when older), and the release (once). */
+export type PinnedKey = { readonly source: DeriveSource; readonly release: () => void };
+
 /**
  * A factory: synchronous and declarative, run once per attempt. A remote one also gets the principal in its object's
  * identity and returns one variant, `{ variant, members }`. Methods get a `Ctx` for the app's principal type `P`.
@@ -161,10 +168,36 @@ export type Factory<C extends Contract, P extends Principal = Principal> = Shape
 /** No declarations of a kind: the shared empty list. */
 const NONE: readonly never[] = [];
 
+/** Running work of one kind (calls, routine calls, job invocations), with the bookkeeping each runs once. */
+type Work = Map<Promise<unknown>, (() => void) | undefined>;
+
+/** Its routines once started: aborted when they stop (its seal, a reload's handover or restart), and their running calls. */
+type RoutineRun = { readonly abort: AbortController; readonly calls: Work };
+
+/**
+ * What a reload did to an attempt: `started` (a reload started it), `handedOver` (a swap: its jobs are the new
+ * attempt's, its invocations finish on their own), `callsDrained` (a swap or restart waited for its calls: its end's
+ * drain does not again), `routinesStopped` (its routines stopped, and do not start late after a handover).
+ */
+type Reloaded = { started: boolean; handedOver: boolean; callsDrained: boolean; routinesStopped: boolean };
+
+/** A first dependency check that did not park: the shared answer. */
+const NOT_PARKED = { done: true, cause: undefined } as const;
+
+/** No running work: the shared empty map. */
+const NO_WORK: ReadonlyMap<Promise<unknown>, (() => void) | undefined> = new Map();
+
+/** Runs the bookkeeping of the work still in `work` (stuck past the drain) and forgets it. */
+function cleanUp(work: Work | undefined): void {
+	if (work === undefined) return;
+	for (const [running, cleanup] of work) {
+		work.delete(running);
+		cleanup?.();
+	}
+}
+
 /** An attempt's registry reads, contributions and wake signals, and its writables (slice 8). */
 type RegistryDeclarations = {
-	/** The registry values it declared (`self.registry`): dependencies, as its references are. */
-	readonly registries: RegistryValueSource[];
 	/** Releases its registry reads (with its references): a read keeps an older version's mapping. */
 	readonly reads: (() => void)[];
 	/** Its wake signals (`self.retryOn`), handed to its object right after the factory. */
@@ -200,6 +233,10 @@ export function notLive(label: string, ms: number): ChordError {
  */
 export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	readonly #object: ChordObject;
+	/** The type its object was served as when it was made: its provider's `accepts` map its older consumers. */
+	readonly #served: Served;
+	/** Its shared mappings for the consumers of older versions (Q10), by version; made by the first. */
+	#adapted: Map<number, AdaptedMembers> | undefined;
 	/** The object's context: the natives' closes run under it. */
 	readonly #context: Context;
 	/** Aborted when the attempt is abandoned or ends: openers, activation's waits and calls run under its signal. */
@@ -208,6 +245,8 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	readonly #opening: Context;
 	/** The seal token its handles and transactions carry (the seal fence). */
 	readonly #token = new SealToken();
+	/** Its routines once they started (most attempts have none). */
+	#routineRun: RoutineRun | undefined;
 	/** The documents it declared, by name: "declared twice" is per attempt. */
 	readonly #declared = new Map<string, AnyDefinition>();
 	/** Its factory's `at(key)` pins: the object holds them from its factory's return to the next one's (rule 6). */
@@ -228,6 +267,12 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	/** References this attempt declared with `self.get` (params checked), bound during activation. */
 	readonly #references: { readonly binding: Binding; readonly contract: Contract; readonly params: CheckedParams }[] =
 		[];
+	/**
+	 * Its dependencies (`self.get` references and `self.registry` values) in declaration order: the parked cause and
+	 * `parked_long` name the first that blocks. Made by the first; let go after the dependency check (a live attempt
+	 * keeps none).
+	 */
+	#dependencies: Dependency[] | undefined;
 	readonly #natives: NativeSlot[] = [];
 	/**
 	 * Running calls' handlers, routine calls and job runs, each with its bookkeeping (call counts, `ctx.get`
@@ -235,7 +280,12 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	 * teardown for work stuck past the drain (decision "The seal fence" (4)). One map and one reaction per piece of work:
 	 * the call path costs no more than before the cleanups.
 	 */
-	readonly #running = new Map<Promise<unknown>, (() => void) | undefined>();
+	readonly #running: Work = new Map();
+	/**
+	 * Its running job invocations, as `#running`: the drain at its end waits for them; a swap does not (they finish on
+	 * their old code, slice 7b §8). Made by the first.
+	 */
+	#runs: Work | undefined;
 	/** What activation returns once the attempt was abandoned: a timeout, a cycle through its object, or its end. */
 	#abandoned: NotLive | undefined;
 	/** Its dependencies while it is parked on them (the dependency check); `undefined` otherwise. */
@@ -248,9 +298,20 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	#endedEarly: ChordError | undefined;
 	/** Its registry reads, contributions, wake signals and writables, made by the first: most attempts have none. */
 	#registryDeclarations: RegistryDeclarations | undefined;
+	/**
+	 * Its first dependency check, for a reload (its report, a swap's handover): waited for by someone, or done with why
+	 * it parked (`undefined`: it did not). Made by the first who asks or by the check.
+	 */
+	#check:
+		| { readonly done: false; readonly waiting: PromiseWithResolvers<FailureCause | undefined> }
+		| { readonly done: true; readonly cause: FailureCause | undefined }
+		| undefined;
+	/** What a reload did to it, made by the first such step (most attempts never meet one). */
+	#reloaded: Reloaded | undefined;
 
 	constructor(object: ChordObject, context: Context) {
 		this.#object = object;
+		this.#served = object.served;
 		this.#context = context;
 		this.#opening = withAbortSignal(this.#abort.signal, context);
 	}
@@ -319,6 +380,8 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 		const checked = checkParams(Type, params, this.#opening);
 		const binding = host.reference(Type, this.#object, this.#caller(), {});
 		this.#references.push({ binding, contract: Type, params: checked });
+		this.#dependencies ??= [];
+		this.#dependencies.push({ kind: "reference", binding });
 		// The binding was built from `Type`'s members.
 		return binding.reference as Reference<C>;
 	}
@@ -326,7 +389,8 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	registry<C, V>(R: Registry<C, V>): RegistryValue<V> {
 		this.#assertDeclaring("registry");
 		const value = this.#object.host.registryRecord(R.name).value(R.version);
-		this.#declarations().registries.push(value);
+		this.#dependencies ??= [];
+		this.#dependencies.push({ kind: "registry", value });
 		// Its values are the composition as `R`'s version has it, `V`.
 		return value as RegistryValue<V>;
 	}
@@ -352,7 +416,7 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 
 	contribute<C>(R: Registry<C, unknown>, value: Contribution<C>): void {
 		this.#assertDeclaring("contribute");
-		const { served, label, host } = this.#object;
+		const { served, label } = this.#object;
 		// R21: the types allow it only to host-lifetime objects; plugin code is bundled without type checks.
 		if (served.kind !== "local" || !served.hostLifetime) {
 			throw new Error(`${label}: self.contribute is valid only in a local type with empty params`);
@@ -361,9 +425,6 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 		if (declared.some(({ registry }) => registry.name === R.name)) {
 			throw new Error(`${label}: registry ${R.name} is contributed to twice`);
 		}
-		// Refused at `contribute` (declaration policy), also a cycle within this factory's own declarations; the edges
-		// live with the contributions in the tables, from live on.
-		if (value instanceof RegistryValueSource) host.registryRecord(R.name).assertNoCycle(value, this.#pendingEdges());
 		declared.push({ registry: R as Registry<unknown, unknown>, value });
 	}
 
@@ -430,7 +491,11 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 			signal: this.#abort.signal,
 			token: this.#token,
 			documents: object.documents,
-			admit: (running: Promise<unknown>, cleanup?: () => void) => this.#admit(running, cleanup),
+			admit: (running: Promise<unknown>, cleanup?: () => void) => this.#admit(this.#running, running, cleanup),
+			admitRun: (running: Promise<unknown>, cleanup: () => void) => {
+				this.#runs ??= new Map();
+				this.#admit(this.#runs, running, cleanup);
+			},
 		};
 		// The job keeps its runs as JSON and calls the implementation with them; the handle types them again.
 		const records = object.jobRecords(definition as JobDefinition<unknown, unknown, unknown>);
@@ -460,6 +525,8 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 			return await this.#activate(deadline);
 		} finally {
 			deadline.clear();
+			// Ended before its first dependency check (its factory threw, it was abandoned): nothing parked.
+			this.#settleCheck(undefined);
 		}
 	}
 
@@ -467,7 +534,9 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	abandon(outcome: NotLive): void {
 		if (this.#abandoned !== undefined) return;
 		this.#abandoned = outcome;
-		this.#abort.abort(outcome.kind === "ended" ? outcome.error : outcome.cause.error);
+		const reason = outcome.kind === "ended" ? outcome.error : outcome.cause.error;
+		this.#abort.abort(reason);
+		this.#stopRoutines(reason);
 	}
 
 	/**
@@ -490,8 +559,12 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 		this.abandon({ kind: "failed", cause: { kind: "transient", error } });
 	}
 
-	/** The object went live: its jobs take starts and its routines start, in this turn; both stop when it is sealed. */
-	live(): void {
+	/**
+	 * The object went live: its jobs take starts and its routines start, in this turn; both stop when it is sealed.
+	 * After a swap (`previous`, the attempt it replaced) its routines start once the previous attempt's routine calls
+	 * finished (the handover per object, §14), calls never wait for it.
+	 */
+	live(previous?: Attempt): void {
 		this.#isLive = true;
 		const early = this.#endedEarly;
 		if (early !== undefined) {
@@ -499,14 +572,123 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 			return;
 		}
 		for (const job of this.#jobs.values()) job.live();
+		if (this.#routines.empty) return;
+		if (previous === undefined) this.#startRoutines();
+		else void previous.handOverRoutines().then(() => this.#startRoutines());
+	}
+
+	/** Starts its routines, unless it was sealed meanwhile. */
+	#startRoutines(): void {
+		if (this.#abandoned !== undefined || this.#reloaded?.routinesStopped === true) return;
 		const { host, label } = this.#object;
+		const run: RoutineRun = { abort: new AbortController(), calls: new Map() };
+		this.#routineRun = run;
 		this.#routines.start({
 			label,
 			host,
 			caller: this.#caller(),
-			context: this.#opening,
-			admit: (running, cleanup) => this.#admit(running, cleanup),
+			context: withAbortSignal(run.abort.signal, this.#context),
+			admit: (running, cleanup) => this.#admit(run.calls, running, cleanup),
 		});
+	}
+
+	/** Its routines stop with `reason` (or may not start any more: `#startRoutines` asks the abandonment too). */
+	#stopRoutines(reason: unknown): void {
+		this.#routineRun?.abort.abort(reason);
+	}
+
+	/**
+	 * A reload swaps this live attempt out (slice 7b §5): its routines stop, its jobs are handed over (their running
+	 * invocations finish on this code), it takes no new starts; its calls run on until `drainCalls` settled.
+	 */
+	handOver(): void {
+		this.#reload().handedOver = true;
+		this.stopRoutines();
+		for (const job of this.#jobs.values()) job.handOver();
+	}
+
+	/** Its routines stop (their ctx aborted); their running calls are waited for by the drain or the handover. */
+	stopRoutines(): void {
+		this.#reload().routinesStopped = true;
+		this.#stopRoutines(
+			new ChordError({ code: "released", reason: "ended", message: `${this.#object.label}: reloaded` }),
+		);
+	}
+
+	/**
+	 * The new attempt's routines may start: once this attempt's routine calls finished, bounded by `closeTimeout` (a
+	 * stuck one is reported `drain_timeout`; the whole attempt is sealed by then: the swap's retirement drains its
+	 * calls and routine calls on the same bound from the swap's start, then seals it, so a stuck call's later commit
+	 * is refused `released`).
+	 */
+	async handOverRoutines(): Promise<void> {
+		const { host, label } = this.#object;
+		const calls = this.#routineRun?.calls ?? NO_WORK;
+		if ((await drained(calls.keys(), calls.size, host.timeouts.close)) === "timeout") {
+			host.report({ kind: "drain_timeout", object: label });
+		}
+	}
+
+	/**
+	 * Waits for its running calls and routine calls (not its job invocations), bounded by `closeTimeout`
+	 * (`drain_timeout` reported): a reload's swap or restart lets them finish before the seal. Its end's drain then
+	 * waits for them no more.
+	 */
+	async drainCalls(): Promise<void> {
+		const { host, label } = this.#object;
+		const calls = [...this.#running.keys(), ...(this.#routineRun?.calls ?? NO_WORK).keys()];
+		this.#reload().callsDrained = true;
+		if ((await drained(calls, calls.length, host.timeouts.close)) === "timeout") {
+			host.report({ kind: "drain_timeout", object: label });
+		}
+	}
+
+	/** A reload started it: once live, its object retries its blocked job runs (slice 7b §8). */
+	startedByReload(): void {
+		this.#reload().started = true;
+	}
+
+	/** Whether a reload started it. */
+	get reloadStarted(): boolean {
+		return this.#reloaded?.started === true;
+	}
+
+	/** What a reload did to it, made by the first such step. */
+	#reload(): Reloaded {
+		this.#reloaded ??= { started: false, handedOver: false, callsDrained: false, routinesStopped: false };
+		return this.#reloaded;
+	}
+
+	/** Whether its factory declared job `name`. */
+	declaresJob(name: string): boolean {
+		return this.#jobs.has(name);
+	}
+
+	/** Whether its factory opens natives (`self.open`): a reload restarts it instead of swapping it. */
+	get opensNatives(): boolean {
+		return this.#natives.length > 0;
+	}
+
+	/**
+	 * Its first dependency check: why it parked (`parkedCause`), `undefined` when it went on (its dependencies live) or
+	 * its activation ended before (a reload's report and a swap's handover wait for it).
+	 */
+	get checked(): Promise<FailureCause | undefined> {
+		const check = this.#check;
+		if (check?.done === true) return Promise.resolve(check.cause);
+		if (check !== undefined) return check.waiting.promise;
+		const waiting = Promise.withResolvers<FailureCause | undefined>();
+		this.#check = { done: false, waiting };
+		return waiting.promise;
+	}
+
+	/** Its first dependency check is done: parked for `cause`, or not (once). */
+	#settleCheck(cause: FailureCause | undefined): void {
+		const check = this.#check;
+		if (check?.done === true) return;
+		// Not parked (most attempts): the shared answer, nothing made.
+		this.#check = cause === undefined ? NOT_PARKED : { done: true, cause };
+		check?.waiting.resolve(cause);
 	}
 
 	/** Whether it is parked on its dependencies (the dependency check runs). */
@@ -530,17 +712,32 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	}
 
 	/**
-	 * Calls a method for `caller`: a method outside the variant fails `invalid/member` first, then the arguments are
-	 * checked against the current version (L1); the handler runs under a ctx aborted by the caller and by this attempt's
-	 * end. Either rejects the caller at once; the handler runs on, its transactions refused, and the drain waits for it.
-	 * Its `ctx.get` references are released when it settles.
+	 * Calls a method for `caller`, bound at `version`: a method outside the variant fails `invalid/member` first (for an
+	 * older version after its table's checks), then the arguments are checked against that version (L1) and, for an
+	 * older one (Q10), mapped forwards, the handler's result mapped back, or the provider's replacement of a removed
+	 * method run instead; a refused method fails `contract_mismatch`. The handler runs under a ctx aborted by the caller
+	 * and by this attempt's end, admitted to the drain before it runs. Either rejects the caller at once; the handler
+	 * runs on, its transactions refused, and the drain waits for it. Its `ctx.get` references are released when it
+	 * settles. Measured choices (fix round 2): one body for every version (with the shared part in a helper method, a
+	 * call over a link was about 10% slower in the links benchmark), and no `async` (a check's throw is returned as a
+	 * rejection; as an async function a local call allocated about 250 B more).
 	 */
-	async call(method: string, args: unknown, context: Context, caller: Caller): Promise<unknown> {
-		context.abortSignal?.throwIfAborted();
-		const { host, served, label } = this.#object;
-		const handler = this.#members!.methods.get(method);
-		if (handler === undefined) throw invalid("member", `${label}${this.#inVariant()} has no method "${method}"`);
-		const checked = checkArgs(served.provider, method, args, served.contract.version, context);
+	call(method: string, args: unknown, context: Context, caller: Caller, version: number): Promise<unknown> {
+		let checked: ReturnType<typeof checkArgs>;
+		let handler: Method | undefined;
+		try {
+			context.abortSignal?.throwIfAborted();
+			const { served } = this.#object;
+			const own = this.#members!.methods.get(method);
+			if (own === undefined && version === served.contract.version) throw this.#noMethod(method);
+			checked = checkArgs(served.provider, method, args, version, context);
+			const call = checked.kind === "call" ? checked.call : undefined;
+			handler = call !== undefined ? (callArgs, ctx) => call(callArgs as Value, ctx) : own;
+			if (handler === undefined) throw this.#noMethod(method);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const { host, served } = this.#object;
 		const linked = withLinkedAbortSignal(this.#abort.signal, context);
 		const callContext = linked.context;
 		// A local object's handlers act as the host, its principal and its incarnation (§4); a remote one's as their
@@ -550,14 +747,26 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 		// Admitted to the drain before the handler runs: the handler may end its own object before it returns.
 		const running = Promise.withResolvers<unknown>();
 		host.count("calls", 1);
-		this.#admit(running.promise, () => {
+		this.#admit(this.#running, running.promise, () => {
 			host.count("calls", -1);
 			linked.release();
 			ctx.settle();
 		});
-		// Plugin code, not type-checked: a synchronous throw or a plain value becomes the promise.
-		(async () => handler(checked.args, ctx))().then(running.resolve, running.reject);
-		return awaitWithContext(running.promise, callContext);
+		// Plugin code, not type-checked: a synchronous throw or a plain value becomes the promise. Constants: the closure
+		// captures them, not the `let`s above.
+		const run = handler;
+		const runArgs = checked.args;
+		(async () => run(runArgs, ctx))().then(running.resolve, running.reject);
+		const settled = awaitWithContext(running.promise, callContext);
+		if (checked.kind === "call" || checked.result === undefined) return settled;
+		// The handler's result is the current version's: its mapping back is the provider's (results are not validated).
+		const back = checked.result;
+		return settled.then((result) => back(result as Value));
+	}
+
+	/** The `invalid/member` error of a method outside the variant. */
+	#noMethod(method: string): ChordError {
+		return invalid("member", `${this.#object.label}${this.#inVariant()} has no method "${method}"`);
 	}
 
 	/**
@@ -576,12 +785,76 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	}
 
 	/**
-	 * Whether `source` (a state member) changes only through this object's own commits: one of this attempt's derives,
-	 * or one of the object's documents. Another object's member source or document is foreign.
+	 * State member `member` as a consumer of `version` follows it: its own member at its version, else its shared mapping
+	 * for that version (`AdaptedMembers`); `invalid/member` outside the variant, `contract_mismatch` for a version or
+	 * member its provider refuses.
 	 */
-	owns(source: DeriveSource): boolean {
-		if (source instanceof Derive) return this.#derives.includes(source);
-		return source instanceof AddressSource && source.owner === this.#object.documents;
+	memberAt(member: string, version: number): DeriveSource {
+		if (version === this.#served.contract.version) return this.member(member);
+		return this.#adaptedAt(version).member(member);
+	}
+
+	/** How a consumer of `version` reads keyed member `member`'s documents: mapped when older (`undefined`: as they are). */
+	keyMapping(member: string, version: number): ((current: JsonValue) => JsonValue) | undefined {
+		if (version === this.#served.contract.version) return undefined;
+		return this.#adaptedAt(version).keyed(member);
+	}
+
+	/**
+	 * Pins `key` of keyed member `member` on this instance, loaded (its own slot's document, or the re-exposed reference's
+	 * key), as a consumer of `version` reads it (mapped when older); `release` lets it go.
+	 */
+	async pinKey(member: string, key: string, version: number, context: Context): Promise<PinnedKey> {
+		const keyed = this.#members!.keyed.get(member);
+		if (keyed === undefined) throw invalid("member", `${this.#object.label} has no keyed member "${member}"`);
+		const raw =
+			keyed.kind === "own"
+				? await pinned(keyed.slot, key, context)
+				: await keyed.binding.pinKey(keyed.member, key, context);
+		if (version === this.#served.contract.version) return raw;
+		try {
+			const mapped = this.#adaptedAt(version).key(member, raw.source);
+			return {
+				source: mapped.source,
+				release: () => {
+					mapped.release();
+					raw.release();
+				},
+			};
+		} catch (error) {
+			raw.release();
+			throw error;
+		}
+	}
+
+	/** No consumer of `version` is left: its shared mapping goes. */
+	dropVersion(version: number): void {
+		const adapted = this.#adapted?.get(version);
+		if (adapted === undefined) return;
+		this.#adapted!.delete(version);
+		adapted.detach(this.#object.ended());
+	}
+
+	/** Its mapping for `version`, made by the first use, reading this instance's own members and provider. */
+	#adaptedAt(version: number): AdaptedMembers {
+		this.#adapted ??= new Map();
+		let adapted = this.#adapted.get(version);
+		if (adapted === undefined) {
+			const { host, label } = this.#object;
+			adapted = new AdaptedMembers(
+				{
+					served: this.#served,
+					variant: this.#variant,
+					label,
+					batch: host.batch,
+					member: (name) => this.member(name),
+					report: (member, error) => host.report({ kind: "derive_failed", object: label, member, error }),
+				},
+				version,
+			);
+			this.#adapted.set(version, adapted);
+		}
+		return adapted;
 	}
 
 	/** The state member `member`, as Chord follows it; one outside the variant fails `invalid/member`. */
@@ -595,13 +868,15 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 
 	/**
 	 * Ends the attempt at once (the seal fence): calls, openers and routines aborted with `error` (their callers
-	 * rejected with it), its transactions refused and the one holding the line discarded, its job invocations cut off;
-	 * documents stay readable.
+	 * rejected with it), its transactions refused and the one holding the line discarded, its job invocations cut off
+	 * (an in-memory run ends `aborted` with `runs` as its reason: `reload` for a native restart, slice 7b §8); documents
+	 * stay readable.
 	 */
-	seal(error: ChordError): void {
+	seal(error: ChordError, runs: CutReason = "restart"): void {
 		this.abandon({ kind: "ended", error });
-		this.#object.documents.fence(this.#token);
-		for (const job of this.#jobs.values()) job.seal(error);
+		const { documents } = this.#object;
+		documents.fence(this.#token);
+		for (const job of this.#jobs.values()) job.seal(error, runs);
 	}
 
 	/**
@@ -610,16 +885,14 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	 */
 	async close(reason: NativeCloseReason): Promise<CloseFailed[]> {
 		const { host, label } = this.#object;
-		if ((await drained(this.#running.keys(), this.#running.size, host.timeouts.close)) === "timeout") {
-			host.report({ kind: "drain_timeout", object: label });
-		}
+		if ((await this.#drained()) === "timeout") host.report({ kind: "drain_timeout", object: label });
 		// The close writer: the persisted runs the seal stopped, and the held state changes (slice 6b §4.2).
-		for (const job of this.#jobs.values()) await job.writeAtClose(this.#context);
+		const handedOver = this.#reloaded?.handedOver === true;
+		if (!handedOver) for (const job of this.#jobs.values()) await job.writeAtClose(this.#context);
 		// Work stuck past the drain keeps running, but no longer counts as a call or holds its `ctx.get` references.
-		for (const [running, cleanup] of this.#running) {
-			this.#running.delete(running);
-			cleanup?.();
-		}
+		cleanUp(this.#running);
+		cleanUp(this.#routineRun?.calls);
+		if (!handedOver) cleanUp(this.#runs);
 		const failures: CloseFailed[] = [];
 		for (const native of [...this.#natives].reverse()) {
 			const failure = await native.close(reason);
@@ -629,11 +902,29 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	}
 
 	/**
+	 * The drain at its end, bounded by `closeTimeout`: its running calls (unless a reload's `drainCalls` waited for them
+	 * already), routine calls and job invocations (unless a swap handed its jobs over: they finish on their own).
+	 */
+	#drained(): Promise<"settled" | "timeout"> {
+		const { close } = this.#object.host.timeouts;
+		const reloaded = this.#reloaded;
+		const running = reloaded?.callsDrained === true ? NO_WORK : this.#running;
+		const runs = reloaded?.handedOver === true ? undefined : this.#runs;
+		const routineCalls = this.#routineRun?.calls;
+		// Most attempts have only calls: no list is made for them.
+		if (routineCalls === undefined && runs === undefined) return drained(running.keys(), running.size, close);
+		const all = [...running.keys(), ...(routineCalls ?? NO_WORK).keys(), ...(runs ?? NO_WORK).keys()];
+		return drained(all, all.length, close);
+	}
+
+	/**
 	 * Detaches its derives (once their object no longer needs them: reads throw `released`, their watches end), its
 	 * followed sources (their observers detached, their watches ended) and its writables (their watches ended).
 	 */
 	detach(): void {
 		const ended = this.#object.ended();
+		for (const adapted of this.#adapted?.values() ?? []) adapted.detach(ended);
+		this.#adapted = undefined;
 		for (const derive of this.#derives) derive.detach(ended);
 		for (const follow of this.#follows) follow.detach();
 		const declarations = this.#registryDeclarations;
@@ -650,7 +941,7 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	/** The activation steps; each catches its own failures with their kind (the table in slice 2's spec). */
 	async #activate(deadline: Deadline): Promise<Activation> {
 		let implementation: unknown;
-		const dependencies: Dependency[] = [];
+		let dependencies: readonly Dependency[] = NONE;
 		try {
 			implementation = this.#declare();
 			// Right after the factory, before anything can fail: a failed attempt keeps its wake signals.
@@ -666,18 +957,18 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 			const { host } = this.#object;
 			for (const { binding, contract, params } of this.#references) {
 				host.bind(binding, contract, params, this.#opening);
-				dependencies.push({ kind: "reference", binding });
 			}
 			// Once all are bound: a dependency made here may have bound back to this object meanwhile.
-			for (const dependency of dependencies) {
-				const target = dependency.kind === "reference" ? dependency.binding.target : undefined;
+			for (const { binding } of this.#references) {
+				const { target } = binding;
 				if (target !== undefined) this.#object.assertNoCycle(target, this.#opening);
 			}
-			const declarations = this.#registryDeclarations;
-			for (const value of declarations?.registries ?? NONE) {
+			// Needed only up to the dependency check: a live attempt keeps none.
+			dependencies = this.#dependencies ?? NONE;
+			this.#dependencies = undefined;
+			for (const dependency of dependencies) {
 				// Read from here until its references are released: an older version's mapping is kept meanwhile.
-				declarations?.reads.push(value.read());
-				dependencies.push({ kind: "registry", value });
+				if (dependency.kind === "registry") this.#declarations().reads.push(dependency.value.read());
 			}
 		} catch (error) {
 			return this.#broken(error);
@@ -687,6 +978,7 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 			const parked = await this.#park(dependencies, deadline);
 			if (parked !== undefined) return parked;
 		} else {
+			this.#settleCheck(undefined);
 			// Its own steps start in a later turn: an object ended in the turn it was made opens nothing.
 			await undefined;
 		}
@@ -713,10 +1005,11 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 			for (;;) {
 				this.#moved = false;
 				const check = checkDependencies(dependencies);
+				if (check.kind !== "parked") this.#settleCheck(undefined);
 				if (check.kind === "broken")
 					return this.#abandoned ?? { kind: "failed", cause: { kind: "broken", error: check.error } };
 				if (check.kind === "live") {
-					const pinned = await this.#pinKeys();
+					const pinned = await this.#pinKeys(long);
 					if (this.#abandoned !== undefined) return this.#abandoned;
 					// Changed while the keys loaded: checked again.
 					if (pinned === undefined && !this.#moved) {
@@ -725,10 +1018,10 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 						return undefined;
 					}
 					if (pinned !== undefined) object.parked(this, pinned, true);
-					long.stop();
 				} else {
 					object.parked(this, check.shown, check.firstPass);
-					long.waitingOn(check.remoteLoading);
+					this.#settleCheck(parkedCause(check));
+					long.blockedBy(check.blocker);
 				}
 				if (!(await this.#nextChange())) return this.#abandoned!;
 			}
@@ -759,16 +1052,21 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	}
 
 	/**
-	 * Loads the keys the factory pinned on its dependencies' keyed members (`at(key)`); `undefined` once all are, else
-	 * what the parked attempt shows for the first that failed to load (`waiting` on its reference).
+	 * Loads the keys the factory pinned on its dependencies' keyed members (`at(key)`), each reference's named to `long`
+	 * as the blocker while they load (`failed` when they failed); `undefined` once all are, else what the parked attempt
+	 * shows for the first that failed to load (`waiting` on its reference).
 	 */
-	async #pinKeys(): Promise<Failed | undefined> {
+	async #pinKeys(long: ParkedLong): Promise<Failed | undefined> {
 		for (const { binding } of this.#references) {
+			const { label } = binding;
 			try {
 				const pinning = binding.pinKeys(this.#opening);
-				if (pinning !== undefined) await pinning;
+				if (pinning === undefined) continue;
+				long.blockedBy({ label, state: "loading" });
+				await pinning;
 			} catch (error) {
-				return waitingOn(binding.label, asChordError(error, binding.label));
+				long.blockedBy({ label, state: "failed" });
+				return waitingOn(label, asChordError(error, label));
 			}
 		}
 		return undefined;
@@ -798,13 +1096,13 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 
 	/**
 	 * `ref.retry()` on its parked object (`failed { waiting }`): passed on to every failed dependency (a broken or
-	 * transient one retries, a parked one passes it on, a request waiting in an index is left alone), as `operation`;
-	 * then it checks again (a key that failed to load is loaded again).
+	 * transient one retries, a parked one passes it on, a request waiting in an index is left alone), as a step of
+	 * `walk`; then it checks again (a key that failed to load is loaded again).
 	 */
-	retryDependencies(operation: RetryOperation): void {
+	retryDependencies(walk: RetryWalk): void {
 		for (const dependency of this.#parked ?? NONE) {
 			if (dependency.kind === "reference" && dependency.binding.refState.kind === "failed") {
-				dependency.binding.retry(operation);
+				dependency.binding.retry(walk);
 			}
 		}
 		this.dependencyMoved();
@@ -852,14 +1150,6 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 		} catch (error) {
 			return this.#broken(error);
 		}
-		try {
-			// The keys references pin on the object's keyed members, loaded on this attempt's before it goes live.
-			const preparing = this.#object.prepareKeys(members.keyed, this.#opening);
-			if (preparing !== undefined) await preparing;
-		} catch (error) {
-			const cause: FailureCause = { kind: "transient", error: asChordError(error, this.#object.label) };
-			return this.#abandoned ?? { kind: "failed", cause };
-		}
 		return this.#abandoned ?? { kind: "live" };
 	}
 
@@ -867,9 +1157,8 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 	#resolveContributions({ declared }: RegistryDeclarations): readonly RegistryContribution[] {
 		const { served, host } = this.#object;
 		const contributor = { plugin: served.plugin, type: served.contract.name };
-		const pending = this.#pendingEdges();
 		return declared.map(({ registry, value }) =>
-			contributionOf(host.registryRecord(registry.name), contributor, registry.version, value, pending),
+			contributionOf(host.registryRecord(registry.name), contributor, registry.version, value),
 		);
 	}
 
@@ -921,12 +1210,15 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 		return host.store;
 	}
 
-	/** Adds `running` to the drain, with `cleanup` run once: when it settles, or at teardown if it never does. */
-	#admit(running: Promise<unknown>, cleanup?: () => void): void {
-		this.#running.set(running, cleanup);
+	/**
+	 * Adds `running` to `work` (its calls, routine calls or job invocations: the drain), with `cleanup` run once: when
+	 * it settles, or at teardown if it never does.
+	 */
+	#admit(work: Work, running: Promise<unknown>, cleanup?: () => void): void {
+		work.set(running, cleanup);
 		// Out of the map already: the teardown ran the cleanup.
 		const settled = (): void => {
-			if (this.#running.delete(running)) cleanup?.();
+			if (work.delete(running)) cleanup?.();
 		};
 		running.then(settled, settled);
 	}
@@ -947,20 +1239,8 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 		return this.#abandoned ?? { kind: "failed", cause };
 	}
 
-	/** The registry edges its declared contributions would add (another registry's value contributed). */
-	#pendingEdges(): RegistryEdge[] {
-		const edges: RegistryEdge[] = [];
-		const { host } = this.#object;
-		for (const { registry, value } of this.#registryDeclarations?.declared ?? NONE) {
-			const to = value instanceof RegistryValueSource ? value.record : undefined;
-			if (to !== undefined) edges.push({ from: host.registryRecord(registry.name), to });
-		}
-		return edges;
-	}
-
 	#declarations(): RegistryDeclarations {
 		this.#registryDeclarations ??= {
-			registries: [],
 			reads: [],
 			retrySources: [],
 			writables: [],
@@ -975,4 +1255,16 @@ export class Attempt implements StoreSelf, KeyDeclarer, RegistryWaiter {
 			throw new Error(`${this.#object.label}: self.${declaration} is valid only in the factory`);
 		}
 	}
+}
+
+/** Pins `key` on `slot` and loads it when it is not in memory; a failed load releases the pin. */
+async function pinned(slot: KeyedSlot, key: string, context: Context): Promise<PinnedKey> {
+	const release = slot.pin(key, context);
+	try {
+		await slot.ensure(key, context);
+	} catch (error) {
+		release();
+		throw error;
+	}
+	return { source: slot.source(key), release };
 }

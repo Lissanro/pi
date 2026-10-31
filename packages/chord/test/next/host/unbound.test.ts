@@ -49,6 +49,22 @@ describe("the index", () => {
 		expect(a.log).toEqual(["wake"]);
 	});
 
+	it("wakes the requests of the names a reload serves only (carry-over: publications wake per name)", () => {
+		const index = new UnboundIndex();
+		const [a, b, c] = [request(), request(), request()];
+		index.add("app.a", a);
+		index.add("app.b", b);
+		index.add("app.c", c);
+		index.wake(["app.a", "app.c", "app.unknown"]);
+		expect([a.log, b.log, c.log]).toEqual([["wake"], [], ["wake"]]);
+		// The others stay indexed until their own names are served.
+		index.wake(["app.b"]);
+		expect(b.log).toEqual(["wake"]);
+		// Woken out of the index: a later publication wakes none of them again.
+		index.wakeAll();
+		expect([a.log, b.log, c.log]).toEqual([["wake"], ["wake"], ["wake"]]);
+	});
+
 	it("ends the requests of a revoked principal only, and every request at the host's close", () => {
 		const index = new UnboundIndex();
 		const guest = request({ kind: "guest" });

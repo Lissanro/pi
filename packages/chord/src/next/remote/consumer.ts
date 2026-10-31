@@ -8,7 +8,6 @@ import type { Context } from "../../context/index.ts";
 import { type MethodData, takesNoArgs } from "../contracts/internal.ts";
 import { ChordError, isChordError } from "../data/index.ts";
 import { asChordError } from "../data/internal.ts";
-import type { RetryOperation } from "../host/internal.ts";
 import {
 	type BoundEntry,
 	type ConsumerMessage,
@@ -126,10 +125,9 @@ export class ConsumerSide {
 		this.forget(hold, error);
 	}
 
-	/** `ref.retry()` on a failed hold, as retry `operation`: the provider is asked for an attempt now. */
-	retry(hold: number, { id, through }: RetryOperation): void {
-		const passed = through.length === 0 ? {} : { through };
-		this.#link.send({ kind: "retry", hold, operation: id, ...passed });
+	/** `ref.retry()` on a failed hold, with `hops` left of its budget: the provider is asked for an attempt now. */
+	retry(hold: number, hops: number): void {
+		this.#link.send({ kind: "retry", hold, hops });
 	}
 
 	/** Drops hold `hold` from the tables; its calls, in flight and waiting, fail with `error` and free their slots. */
@@ -162,7 +160,7 @@ export class ConsumerSide {
 				break;
 			}
 			case "failed":
-				this.#entries.get(message.hold)?.failed(message);
+				this.#failed(message);
 				break;
 			case "loading":
 				this.#loading(message.hold);
@@ -302,6 +300,18 @@ export class ConsumerSide {
 		const error = new ChordError({ code: "unavailable", message: `hold ${hold}: rebinding` });
 		for (const call of this.#window.removeHold(hold)) call.reject(error);
 		holder.loading();
+	}
+
+	/**
+	 * `failed`: its holder fails; its calls still waiting for a slot reject with the cause (a bound hold is unbound by it,
+	 * slice 7b; its calls in flight are rejected by the provider).
+	 */
+	#failed(message: Extract<Message, { readonly kind: "failed" }>): void {
+		const holder = this.#entries.get(message.hold);
+		if (holder === undefined) return;
+		const error = asChordError(errorFromWire(message.cause.error), `hold ${message.hold}`);
+		for (const call of this.#window.removeHold(message.hold)) call.reject(error);
+		holder.failed(message);
 	}
 
 	/**

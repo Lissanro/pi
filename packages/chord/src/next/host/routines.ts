@@ -111,6 +111,11 @@ export class Routines {
 		this.#declared.push({ kind: "on", at: { kind: "on", position: ++this.#ons }, source, fn });
 	}
 
+	/** Whether nothing was declared. */
+	get empty(): boolean {
+		return this.#declared.length === 0;
+	}
+
 	/** Declares `onLive(fn)`. */
 	onLive(fn: OnLiveHandler): void {
 		this.#declared.push({ kind: "onLive", at: { kind: "onLive", position: ++this.#lives }, fn });

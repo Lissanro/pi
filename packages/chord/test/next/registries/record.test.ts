@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT as context } from "../../../src/context/index.ts";
 import { bool, int, local, method, obj } from "../../../src/next/contracts/index.ts";
 import { defineState } from "../../../src/next/documents/index.ts";
-import type { HostError } from "../../../src/next/host/index.ts";
+import { createHost, defineFacet, type HostError } from "../../../src/next/host/index.ts";
 import { ChordObject } from "../../../src/next/host/object.ts";
 import {
 	defineRegistry,
@@ -11,6 +11,7 @@ import {
 	type RegistryTable,
 	type TableItem,
 } from "../../../src/next/registries/index.ts";
+import type { Writable } from "../../../src/next/state/index.ts";
 import type { NativeWatchCall } from "../../../src/watch.ts";
 import {
 	delivered,
@@ -411,104 +412,124 @@ describe("contributions", () => {
 		await host.close(context);
 	});
 
-	it("refuses a contribution closing a cycle with the registries' tables; one through a derive is cut and reported", async () => {
-		const A = defineRegistry<unknown, unknown>("app.a", { version: 1 });
-		const B = defineRegistry<unknown, unknown>("app.b", { version: 1 });
-		const Direct = local("app.direct", { version: 1, params: {}, members: {} });
-		const Late = local("app.late", { version: 1, params: {}, members: {} });
-		const Derived = local("app.derived", { version: 1, params: {}, members: {} });
-		const Back = local("app.back", { version: 1, params: {}, members: {} });
-		let lateAttempts = 0;
+	it("catches a ring of registries at its first composition: the contributors go live, the rest works (audit A2)", async () => {
+		const A = defineRegistry<unknown, number>("app.ring-a", { version: 1 });
+		const B = defineRegistry<unknown, number>("app.ring-b", { version: 1 });
+		const ToA = local("app.to-a", { version: 1, params: {}, members: {} });
+		const ToB = local("app.to-b", { version: 1, params: {}, members: {} });
 		const { host, errors } = await loadedPlugins({
-			"@app/cycles": (host) => {
-				host.serve(A, { compose: (table) => table.length });
-				host.serve(B, { compose: (table) => table.length });
-				host.serve(Direct, (_, self) => {
+			"@app/ring": (h, self) => {
+				h.serve(A, { compose: (table) => table.length });
+				h.serve(B, { compose: (table) => table.length });
+				h.serve(ToA, (_, self) => {
 					self.contribute(A, self.registry(B));
 					return {};
 				});
-				// Its first attempt is discarded (the factory throws), then, once `Direct` is live, it closes a cycle.
-				host.serve(Late, (_, self) => {
+				h.serve(ToB, (_, self) => {
 					self.contribute(B, self.registry(A));
-					if (++lateAttempts === 1) throw new Error("first attempt");
 					return {};
 				});
-				host.serve(Derived, (_, self) => {
-					self.contribute(
-						A,
-						self.derive([self.registry(B)], ([n]) => n as number),
-					);
+				self.contribute(A, "plain");
+				self.contribute(B, "plain");
+			},
+		});
+		const live = [await host.get(ToA, {}, context), await host.get(ToB, {}, context)];
+		expect(live.map((reference) => reference.state.value)).toEqual([{ kind: "live" }, { kind: "live" }]);
+		// A composes first: B composes for it and its contribution of A, read while A composes, is left out. A has its
+		// plain entry and B's value, B its plain entry.
+		expect([(await host.registry(A, context)).value, (await host.registry(B, context)).value]).toEqual([2, 1]);
+		expect(errors).toEqual([
+			{
+				kind: "contribution_failed",
+				registry: "app.ring-b",
+				plugin: "@app/ring",
+				type: "app.to-b",
+				error: expect.objectContaining({ code: "invalid", reason: "cycle" }),
+			},
+		]);
+		await host.close(context);
+	});
+
+	it("keeps a ring's later recompositions bounded: a change composes each registry once, then nothing (audit A2)", async () => {
+		const A = defineRegistry<unknown, number>("app.later-a", { version: 1 });
+		const B = defineRegistry<unknown, number>("app.later-b", { version: 1 });
+		const Ring = local("app.later-ring", { version: 1, params: {}, members: {} });
+		const Back = local("app.later-back", { version: 1, params: {}, members: {} });
+		const Extra = local("app.later-extra", { version: 1, params: {}, members: {} });
+		let composes = 0;
+		let extra: Writable<number> | undefined;
+		const sum = (table: RegistryTable<unknown>): number => {
+			composes++;
+			return table.reduce((total, { value }) => total + (typeof value === "number" ? value : 0), 0);
+		};
+		const { host, errors } = await loadedPlugins({
+			"@app/later": (h) => {
+				h.serve(A, { compose: sum });
+				h.serve(B, { compose: sum });
+				h.serve(Ring, (_, self) => {
+					self.contribute(A, self.registry(B));
+					return {};
+				});
+				h.serve(Back, (_, self) => {
+					self.contribute(B, self.registry(A));
+					return {};
+				});
+				h.serve(Extra, (_, self) => {
+					extra = self.writable(1);
+					self.contribute(B, extra);
 					return {};
 				});
 			},
-			"@app/back": (host) =>
-				host.serve(Back, (_, self) => {
+		});
+		await host.get(Ring, {}, context);
+		await host.get(Back, {}, context);
+		await host.get(Extra, {}, context);
+		const a = await host.registry(A, context);
+		const b = await host.registry(B, context);
+		const watches = [await a.watch(context), await b.watch(context)];
+		await flushed();
+		const before = composes;
+		extra!.set(5);
+		await flushed();
+		// B changed and composes first now: it reads A, whose contribution of B, read while B composes, is cut instead.
+		expect(composes - before).toBe(2);
+		expect([a.value, b.value]).toEqual([0, 5]);
+		expect(errors.map((error) => (error.kind === "contribution_failed" ? error.registry : error.kind))).toEqual([
+			"app.later-b",
+			"app.later-a",
+		]);
+		// Nothing composes on by itself.
+		await flushed();
+		expect(composes - before).toBe(2);
+		for (const watch of watches) await watch.stop();
+		await host.close(context);
+	});
+
+	it("catches a ring through a derive, and one declared within one factory, the same way (audit A2)", async () => {
+		const A = defineRegistry<unknown, number>("app.both-a", { version: 1 });
+		const B = defineRegistry<unknown, number>("app.both-b", { version: 1 });
+		const Both = local("app.both", { version: 1, params: {}, members: {} });
+		const { host, errors } = await loadedPlugins({
+			"@app/both": (h) => {
+				h.serve(A, { compose: (table) => table.length });
+				h.serve(B, { compose: (table) => table.length });
+				h.serve(Both, (_, self) => {
+					self.contribute(A, self.registry(B));
 					self.contribute(
 						B,
 						self.derive([self.registry(A)], ([n]) => n as number),
 					);
 					return {};
-				}),
-		});
-		const late = host.hold(Late, {}, context);
-		late.retry();
-		await flushed();
-		expect(late.state.value).toMatchObject({
-			kind: "failed",
-			cause: { kind: "broken", error: { code: "invalid", reason: "cycle" } },
-		});
-		// A reads B's derive, which reads A while A composes: that contribution is cut, A composes without the cycle.
-		expect((await host.registry(A, context)).value).toBe(2);
-		expect(errors.find((error) => error.kind === "contribution_failed")).toMatchObject({
-			registry: "app.b",
-			plugin: "@app/back",
-			error: { code: "invalid", reason: "cycle" },
-		});
-		late.release();
-		await host.close(context);
-	});
-
-	it("refuses a cycle declared within one factory: broken, invalid/cycle (Sol)", async () => {
-		const A = defineRegistry<unknown, number>("app.fix-a", { version: 1 });
-		const B = defineRegistry<unknown, number>("app.fix-b", { version: 1 });
-		const Both = local("app.direct-cycle", { version: 1, params: {}, members: {} });
-		const { host, errors } = await loadedPlugins({
-			"@app/cycle": (h) => {
-				h.serve(A, { compose: (table) => table.length });
-				h.serve(B, { compose: (table) => table.length });
-				h.serve(Both, (_, self) => {
-					self.contribute(A, self.registry(B));
-					self.contribute(B, self.registry(A));
-					return {};
 				});
 			},
 		});
-		expect(
-			errors.find((error) => error.kind === "activation_failed" && error.object === "app.direct-cycle"),
-		).toMatchObject({ failure: { kind: "broken", error: { code: "invalid", reason: "cycle" } } });
-		await host.close(context);
-	});
-
-	it("leaves no cycle edge from a contribution that never entered a table (Sol)", async () => {
-		const A = defineRegistry<number, number>("app.edge-a", { version: 1 });
-		const B = defineRegistry<number, number>("app.edge-b", { version: 1 });
-		const Failed = local("app.failed", { version: 1, params: {}, members: {} });
-		const Good = local("app.good", { version: 1, params: {}, members: {} });
-		const { host, errors } = await loadedPlugins({
-			"@app/a": (h) => {
-				h.serve(A, { compose: (table) => table.length });
-				h.serve(B, { compose: (table) => table.length });
-				h.serve(Failed, (_, self) => {
-					self.contribute(A, self.registry(B));
-					throw new Error("factory discarded");
-				});
-				h.serve(Good, (_, self) => {
-					self.contribute(B, self.registry(A));
-					return {};
-				});
-			},
-		});
-		expect(failures(errors)).toEqual(["app.failed: broken"]);
+		expect((await host.get(Both, {}, context)).state.value).toEqual({ kind: "live" });
+		await host.registry(A, context);
+		await host.registry(B, context);
+		const cut = errors.filter((error) => error.kind === "contribution_failed");
+		expect(cut.length).toBeGreaterThan(0);
+		for (const error of cut) expect(error).toMatchObject({ error: { code: "invalid", reason: "cycle" } });
+		expect(failures(errors)).toEqual([]);
 		await host.close(context);
 	});
 
@@ -670,5 +691,40 @@ describe("the table's memory", () => {
 			return [names, new WeakRef(host)];
 		})();
 		await expectCollected(...refs);
+	});
+});
+
+describe("a reload's new contribution adapter (fix round 1)", () => {
+	it("remaps an unchanged contributor with the new provider's adapter", async () => {
+		const R = defineRegistry<number, number>("astra.contrib", { version: 2 });
+		const Old = defineRegistry<number, number>("astra.contrib", { version: 1 });
+		const contribution = defineFacet((_, self) => self.contribute(Old, 7));
+		const provider = (factor: number) =>
+			defineFacet((h) =>
+				h.serve(R, {
+					compose: (entries) => entries.reduce((n, e) => n + e.value, 0),
+					accepts: { 1: { contribution: (n) => n * factor, value: (n) => n } },
+				}),
+			);
+		const host = createHost({ onError: () => {} });
+		await host.load(
+			[
+				{ name: "@astra/provider", facet: provider(2) },
+				{ name: "@astra/contribution", facet: contribution },
+			],
+			context,
+		);
+		const value = await host.registry(R, context);
+		expect(value.value).toBe(14);
+		await host.reload(
+			[
+				{ name: "@astra/provider", facet: provider(3) },
+				{ name: "@astra/contribution", facet: contribution },
+			],
+			context,
+		);
+		const actual = value.value;
+		await host.close(context);
+		expect(actual).toBe(21);
 	});
 });

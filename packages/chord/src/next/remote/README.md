@@ -91,9 +91,11 @@ within each link's limits, compression at the origin, activation chains and revo
   as `failed` (with `retryIn`, the rest of the object's backoff window, for a transient one; absent for broken and
   waiting), each new cause of an object parked on a failed dependency too, the current one at once when the object is
   failed already; the next attempt (or the parked object's next `loading`) is announced with `loading`; the hold stays,
-  so a `retry` (from any holder) renews even a broken object for every holder (a parked object passes it on, one retry
-  operation of this host). Live, it binds through the window (`boundEntry`: the variant and each member's value as a part,
-  names as indexes into the bound version). Its members' frames arrive as `Subscriber` calls inside the batch; at its
+  so a `retry` (from any holder) renews even a broken object for every holder (a parked object passes it on, one walk
+  of this host with one hop less of the message's budget). After a swap in place it gets a fresh `bound` once the new
+  instance is live, answering calls by the names it was bound with until that is sent (the window may hold it). Live,
+  it binds through the window (`boundEntry`: the variant and each member's value as a part, names as indexes into the
+  bound version). Its members' frames arrive as `Subscriber` calls inside the batch; at its
   end the hold's entry lists the members that changed with their ops, each encoded with that member's own Delta
   encoder (`entry`), or queues them (`queue`, later `pendingEntry`). Each entry counts one `chord.link.encodes`. A
   call's method is an index into the bound variant's methods; one outside them is a protocol error, its arguments are

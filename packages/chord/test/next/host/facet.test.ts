@@ -1,4 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
+import { BACKGROUND_CONTEXT as context } from "../../../src/context/index.ts";
 import { int, local } from "../../../src/next/contracts/index.ts";
 import { defineFacet, type Facet, type FacetHost, type FacetSelf, type Host } from "../../../src/next/host/index.ts";
 import { defineRegistry } from "../../../src/next/registries/index.ts";
@@ -30,20 +31,23 @@ describe("facets", () => {
 
 	it("contribute at most one value per registry, only while their setup runs", async () => {
 		const Names = defineRegistry<string, number>("app.names", { version: 1 });
-		await expect(
-			loaded((_, self) => {
-				self.contribute(Names, "a");
-				self.contribute(Names, "b");
-			}),
-		).rejects.toThrow("@test/app: registry app.names is contributed to twice");
+		const twice = await loaded((_, self) => {
+			self.contribute(Names, "a");
+			self.contribute(Names, "b");
+		});
+		expect(twice.failed.map(({ error }) => (error as Error).message)).toEqual([
+			'plugin "@test/app": @test/app: registry app.names is contributed to twice',
+		]);
+		await twice.host.close(context);
 		let later: FacetSelf | undefined;
-		await loaded((host, self) => {
+		const { host } = await loaded((host, self) => {
 			host.serve(Names, { compose: (table) => table.length });
 			later = self;
 		});
 		expect(() => later!.contribute(Names, "late")).toThrow(
 			"@test/app: self.contribute is valid only in the facet's setup",
 		);
+		await host.close(context);
 	});
 
 	it("are typed by exactly the app's principal type", () => {

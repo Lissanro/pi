@@ -1,7 +1,8 @@
 # Slice 7b: reload in the kernel (spec)
 
-Status: **ready to build** (owner, 2026-10-29: the brief `slice-7b/` and its six points decided as recommended, decision
-"Slice 7b's open points, as recommended"). 7b builds `host.reload` and everything an object, a reference, a job and a
+Status: **built** (2026-10-29; the rules folded into `design.md` §21, §6, §7, §15, §17, §22, §27). Spec: owner,
+2026-10-29, the brief `slice-7b/` and its six points decided as recommended, decision "Slice 7b's open points, as
+recommended"; decisions of the build, below each section where they apply (owner, 2026-10-29). 7b builds `host.reload` and everything an object, a reference, a job and a
 registry does across it, on one host. Facets are passed in imported (tests import them statically); the bundler and
 the dev loop are slice 7c, the rollout across hosts is the app's.
 
@@ -34,8 +35,9 @@ type ReloadedObject = { readonly object: string } & (
 ```
 
 - `facets` is the host's **complete new plugin set**: a plugin in it and not loaded is added; one in it and loaded is
-  changed (always treated as changed: Chord compares no code); one loaded and not in it is removed. The core facet is a
-  plugin like the others; base code passes it every time.
+  changed (Chord compares no code), unless its facet is the very same object as the loaded one (`===`): that plugin
+  is unchanged, untouched and not in the report (owner, 2026-10-29); one loaded and not in it is removed. The core
+  facet is a plugin like the others; base code passes the same facet value every time.
 - `reload` resolves once the commit happened and every object has taken its fate (§4): swaps done, restarts and retries
   started (it does not wait for them to go live; their outcome is in their `ref.state`). It rejects with the code error
   when load or staging fails, and nothing has changed. Reloads are serialized per host (a second call waits for the
@@ -43,7 +45,7 @@ type ReloadedObject = { readonly object: string } & (
   (decision 4: no install watchdog); its abort before the commit rejects `aborted` and changes nothing; after the commit
   it only ends the wait.
 
-## 2. Staging (all or nothing)
+## 2. Staging (all or nothing; **superseded** 2026-10-30 by "Per plugin at startup and reload": a failing plugin keeps its old code, slice 7c §4)
 
 1. **Setups.** Every facet's setup runs into a **staged** table, beside the live one: served types (with their factory,
    options and `bindProvider(contract, options.accepts)`, which runs `checkAccepts`), served registries (provider
@@ -90,7 +92,7 @@ Each object of a changed or removed plugin's types takes one fate, decided in st
 | any of the above whose new factory declares a dependency that is not there | **parked** on it (decision 4): the gate stays closed, holders see `loading` or `failed { waiting }`; no overlap of old and new code |
 
 - A restarted object gets a new instance id (an old activation chain must not match it, carry-over from 4b); a swapped
-  object keeps it; a retried one gets one as any new attempt.
+  object keeps it; a retried one keeps it, as any retry does (slice 4b; fix round 1, Opus F3).
 - Objects of plugins not in the reload are untouched; their requests to changed types follow §6.
 - Host-lifetime objects of an added plugin start after the commit as at `load` (no barrier: `reload` does not wait for
   first outcomes).
@@ -115,8 +117,8 @@ A pure swap is not a replacement (decision "The seal fence"): the old attempt is
 - **Routines** hand over per object: the old attempt's routines are aborted; the new ones start once the old routine
   calls finished, bounded by `closeTimeout` (a stuck one is reported and the new ones start anyway); calls never wait for
   it; each old routine invocation is fenced on its own (carry-over from 6a).
-- **Derives** have no names: exposed derives are matched by member name through the member sources; internal ones are
-  rebuilt.
+- **Derives** have no names: exposed derives are matched by member name (references move to the new instance's members, §13
+  item 11); internal ones are rebuilt.
 - **In-memory documents** migrate through their definition's `migrate` when the new code declares a higher version
   (6a built the slot version check; carry-over).
 - **`self.writable`** starts at its new initial value (decision 2).
@@ -139,7 +141,7 @@ A pure swap is not a replacement (decision "The seal fence"): the old attempt is
   it once. `Hold.moved` and `ProviderSide.unbind` handle bound and binding holds (carry-over from 3a/6a). A served hold
   whose object leaves `live` while its `bound` waits for a slot goes back to pending.
 - **On the same host,** a `Binding` whose target ended by removal becomes unbound and accepts a second `bind` (model
-  §5): member sources re-bind by name, keyed pins re-pin, parked calls flush or reject, presence lists it again.
+  §5): the reference moves its members to the next object by name (§13 item 11), keyed pins re-pin, parked calls flush or reject, presence lists it again.
 - **The consumer's own reload:** the new factory makes new requests (§5's handover). A reference made by outside code
   (`host.hold`) keeps the token its caller passed; Chord reloads no caller code.
 - **A remote object that leaves `live`** (`RemoteObject.failed` ignores a failure while live today): handled by the
@@ -151,8 +153,9 @@ A pure swap is not a replacement (decision "The seal fence"): the old attempt is
   (`bindProvider(contract, {})`); 7b passes `options.accepts`, checked by `checkAccepts` at the setup (a declaration
   error rejects the reload or the load).
 - **Binding an older consumer:** a hold whose version is accepted binds through the mappings of that version (Q10):
-  state members through `(current) => old`, served like a derive of the provider's member per binding (adapted bindings
-  get diffs: the last adapted value per binding, `diffRevisions`, never a whole value per commit); method calls through
+  state members through `(current) => old`, served like a derive of the provider's member per object and version
+  (adapted bindings get diffs: the last adapted value per object and version, `diffRevisions`, never a whole value per
+  commit; §13.11); method calls through
   `checkArgs`: `{ kind: "method", args, result? }` runs the handler and maps the result back with `result`; `{ kind:
   "call", args, call }` runs the provider's replacement (L1 built the check; 7b invokes it). Removed state members with
   `"refuse"` and removed methods with `"refuse"` fail the binding or the call `contract_mismatch`.
@@ -197,7 +200,7 @@ A pure swap is not a replacement (decision "The seal fence"): the old attempt is
   missing); the swap (old calls on old handles, R15 for documents and tables, the handover of references without a gap,
   member re-binding, routines handed over and fenced, derives, in-memory migrate, a writable back to initial);
   references (each provider-side row over a memory link and through a relay, the window full while unbinding, a
-  removed-then-re-served type with a live local dependent and with a remote one); `accepts` (state mapped per binding as
+  removed-then-re-served type with a live local dependent and with a remote one); `accepts` (state mapped per object and version as
   diffs, old args mapped, a result mapped back, a replacement `call`, `"refuse"`, keyed members per key); jobs (each
   rule of §8, in memory and persisted); registries (provider replaced, contributions by plugin replaced, a reader of an
   older version); a three-host scenario (server, worker, tab) reloaded in the app's order, as an example's test.
@@ -214,3 +217,39 @@ A pure swap is not a replacement (decision "The seal fence"): the old attempt is
 Slice 7c: the bundler and loader (`chord/next/loader`), the dev loop (`chord/next/dev`), plugin discovery and npm
 dependencies. The app: the rollout across hosts (decision 3: it calls `host.reload` per host in order). Slices 10 and
 11: the app kit. `rebuild` of tables (key or column-type changes): only if a case needs it (carry-over stays).
+
+## 13. Decisions of the build (owner, 2026-10-29; 11 is the builder's, reported for review)
+
+1. An object of a reloaded plugin that is activating but not parked (its own steps), or waiting for its backoff, is
+   `retried` (an activating attempt sealed, its natives closed `reload`).
+2. The report's `parked` is for swaps and retries whose new attempt's first dependency check is not live (`reload`
+   waits for that check, not for live); restarts are reported `restarted` at once (their check follows the drain). A
+   blocker that is only loading gives the cause `waiting` "waiting for X: X is loading".
+3. A swapped-out attempt is sealed once its running calls settled (bounded by `closeTimeout`, `drain_timeout`) and
+   the swap ended; its references are released then. Its job invocations finish on their old code. Retiring
+   attempts are bounded by `closeTimeout` each; a later swap does not wait for them (several may retire at once after
+   quick reloads), a restart, an end and the host's close do (an end rejects their callers at once). (Fix round 1:
+   Fable, Opus F1.)
+4. A stuck old routine call past the handover is reported `drain_timeout`; the old attempt's routine calls share one
+   fence token, sealed when the new routines start.
+5. A swap whose new factory picks another variant sends its holds a fresh `bound`; so does one after which a hold's
+   version is an older one (adapted members).
+6. A native restart: in-memory runs end `aborted { reason: "reload" }` and finish on the new code; persisted runs
+   follow 6b R3 (a seal while the object continues is a clean stop): written back stopped, resumed per `resume` by the
+   new attempt without counting a restart.
+7. Staging is synchronous; `installing` is built and tested from inside a staged factory.
+8. ~~A removed object's member sources and pinned keys are frozen and handed over to the next object of its identity.~~
+   **Superseded** (owner, 2026-10-29, decision "References are the only indirection"): references keep their last
+   values while unbound and move their subscriptions to the next object; nothing is handed between objects.
+9. A loaded plugin passed as the same facet object is unchanged (§1).
+10. Keyed members' versions (§7) are built with L1's keyed edits (`keyed`, `addKeyed`, `removeKeyed`) and an accepts
+    section `keyed: { member: (current) => old | "refuse" }` (removed ones: `"refuse"`).
+11. Adapted state members are shared per object instance and version (not per binding): one cached value and one diff
+    per commit for every consumer of a version; each hold encodes its own ops. Fix rounds 1 to 7 built sources owned by
+    (identity, version) that outlived their object and moved to the next one (`host/handover.ts`), and kept finding
+    edge cases in that hand-over. **Replaced** (owner, 2026-10-29, decision "References are the only indirection"): a
+    consumer's watches and derives attach through the reference's member, which passes them straight to the object's
+    own document or derive and moves them when the reference's target changes (one frame); while unbound the reference
+    keeps its last values (watches get one `failed` call); an older consumer attaches to the instance's shared mapping
+    for its version (made on first use, dropped when no reference of the version is left, gone with the instance).
+    Nothing outlives its object instance.

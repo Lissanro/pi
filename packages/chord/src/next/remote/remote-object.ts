@@ -2,7 +2,7 @@
 // (the parent, or a route address). Its state, the replicas of its last bound variant (kept while its link is down),
 // its hold on the path's current link and calls through it.
 
-import type { Context } from "../../context/index.ts";
+import { BACKGROUND_CONTEXT, type Context } from "../../context/index.ts";
 import type { JsonValue } from "../../json.ts";
 import type { Contract, ParamsOf } from "../contracts/index.ts";
 import {
@@ -16,15 +16,17 @@ import { ChordError } from "../data/index.ts";
 import { asChordError, invalid } from "../data/internal.ts";
 import {
 	type AnyHost,
+	type Attachable,
 	type Binding,
 	type Caller,
 	type CheckedParams,
 	type ChordObject,
+	type Followed,
 	LIVE,
 	LOADING,
 	type PinnedKey,
 	type RefState,
-	type RetryOperation,
+	type RetryWalk,
 	type Target,
 } from "../host/internal.ts";
 import {
@@ -110,11 +112,6 @@ export class RemoteObject implements Target {
 		return this.#state;
 	}
 
-	/** Whether its hold is on a link now (a remote attempt answers for it), not while its path has no link. */
-	get heldOnLink(): boolean {
-		return this.#hold !== undefined;
-	}
-
 	/** An object over a link is no blocker of this host's first pass. */
 	get blocksFirstPass(): false {
 		return false;
@@ -154,15 +151,12 @@ export class RemoteObject implements Target {
 	attach(link: HostLink): void {
 		const chain = this.#dependent?.activationChain();
 		this.#hold = { side: link.consumer, id: link.consumer.attach(this, chain) };
-		// Held on a link now: a parked dependent checks again (`parked_long` counts a hold on a link only).
-		this.#dependent?.dependencyMoved();
 	}
 
 	/** The link dropped: loading until a new link's hold is bound (`#startOver`). */
 	dropped(_error: ChordError): void {
 		this.#hold = undefined;
 		this.#startOver();
-		this.#dependent?.dependencyMoved();
 	}
 
 	/**
@@ -194,9 +188,37 @@ export class RemoteObject implements Target {
 		return replica;
 	}
 
-	/** A failed remote object's members are not read: its failure is the reads' error (see `Target.lastValues`). */
-	get lastValues(): false {
-		return false;
+	/**
+	 * What its reference follows of `member` (a consumer over a link binds at its own version, mapped at the provider):
+	 * the replica while live, a member the bound variant lacks (`invalid/member`); while loading or failed nothing, the
+	 * replica (kept until the next binding) giving its last value (rule 5).
+	 */
+	followed(member: string, _version: number): Followed {
+		const bound = this.#bound;
+		const replica = bound?.replicas.get(member);
+		const state = this.#state;
+		if (state.kind === "live") {
+			if (replica !== undefined) return { kind: "live", source: replica, instance: bound };
+			const message = `${this.label} (variant ${bound?.variant}) has no state member "${member}"`;
+			return { kind: "lacking", error: invalid("member", message) };
+		}
+		if (state.kind === "failed") return { kind: "failed", error: state.cause.error, last: replica, instance: bound };
+		return { kind: "loading", last: replica, instance: bound };
+	}
+
+	/** Its binding while live (its replicas change); `undefined` while loading or failed. */
+	get attachable(): Attachable | undefined {
+		return this.#state.kind === "live" ? this.#bound : undefined;
+	}
+
+	/** Keyed members are only in local contracts: no instance to pin a key on. */
+	get instance(): undefined {
+		return undefined;
+	}
+
+	/** Keyed members are only in local contracts (`keyedMember`). */
+	keyedMapping(member: string): never {
+		return this.keyedMember(member);
 	}
 
 	/** Keyed members are only in local contracts (`keyedMember`). */
@@ -220,18 +242,18 @@ export class RemoteObject implements Target {
 	}
 
 	/**
-	 * `ref.retry()`: a failed object's provider is asked for an attempt (a hold it refused is started there again; a
-	 * parked object there passes it on as an operation of its own host). One that failed for a part past the link's
-	 * limits is placed anew and held with a new id, now or on its path's next link (a `hostAddress` that throws fails it
-	 * broken again).
+	 * `ref.retry()`, as a step of `walk`: a failed object's provider is asked for an attempt with the walk's hop budget,
+	 * none left: nothing is sent (a hold it refused is started there again; a parked object there passes it on with one
+	 * hop less). One that failed for a part past the link's limits is placed anew and held with a new id, now or on its
+	 * path's next link (a `hostAddress` that throws fails it broken again).
 	 */
-	retry(operation: RetryOperation): void {
+	retry(walk: RetryWalk): void {
 		if (this.#state.kind !== "failed") return;
 		if (this.#path === this.#host.unplaced) {
 			this.#place();
 			return;
 		}
-		this.#hold?.side.retry(this.#hold.id, operation);
+		if (walk.hops > 0) this.#hold?.side.retry(this.#hold.id, walk.hops);
 	}
 
 	/** Places a reference whose part was past the limits anew, on its path now (a throwing `hostAddress` fails it). */
@@ -328,11 +350,10 @@ export class RemoteObject implements Target {
 
 	/**
 	 * `failed`: the provider's object failed and no attempt runs (`retryIn`: the rest of its backoff window), or the hold
-	 * is unbound there or its object parked on a failed dependency (`waiting`), each new cause a new message. Ignored once
-	 * live (only a pending hold is told).
+	 * is unbound there or its object parked on a failed dependency (`waiting`), each new cause a new message. On a bound
+	 * hold it unbinds it (slice 7b, model §5): the members keep their last values until the next `bound`.
 	 */
 	failed(message: Extract<Message, { readonly kind: "failed" }>): void {
-		if (this.#state.kind === "live") return;
 		// A plugin's error a provider failed with is this object's failure, as a ChordError.
 		const error = asChordError(errorFromWire(message.cause.error), this.label);
 		this.#lastFailure = error;
@@ -430,9 +451,13 @@ export class RemoteObject implements Target {
 		if (kind !== "ended" && kind !== "loading") this.#move(LOADING);
 	}
 
-	/** Moves to `state` and tells the reference. */
+	/** Moves to `state` and tells the reference: its members follow what it shows now (in a batch), then its state. */
 	#move(state: RefState): void {
 		this.#state = state;
-		this.#binding?.moved();
+		const binding = this.#binding;
+		if (binding === undefined) return;
+		if (binding.following) this.#host.batch.within(() => binding.retarget(), BACKGROUND_CONTEXT);
+		else binding.retarget();
+		binding.moved();
 	}
 }

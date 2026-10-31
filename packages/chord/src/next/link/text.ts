@@ -105,10 +105,7 @@ function ownTuple(message: Message): string {
 		case "revoke":
 			return json(["V", message.revocation]);
 		case "retry":
-			// `through` travels only with an `operation` (Chord sends both).
-			if (message.operation === undefined) return json(["T", message.hold]);
-			if (message.through === undefined) return json(["T", message.hold, message.operation]);
-			return json(["T", message.hold, message.operation, message.through]);
+			return json(["T", message.hold, message.hops]);
 		case "loading":
 			return json(["l", message.hold]);
 		case "ack":
@@ -281,13 +278,8 @@ function fromFields(fields: unknown[], rest: Uint8Array): Message {
 			arity(1);
 			return { kind: "revoke", revocation: f[0] };
 		case "T":
-			arity(1, 2, 3);
-			return {
-				kind: "retry",
-				hold: field(0),
-				...(f.length >= 2 ? { operation: field<string>(1) } : {}),
-				...(f.length === 3 ? { through: field<string[]>(2) } : {}),
-			};
+			arity(2);
+			return { kind: "retry", hold: field(0), hops: field(1) };
 		case "l":
 			arity(1);
 			return { kind: "loading", hold: field(0) };

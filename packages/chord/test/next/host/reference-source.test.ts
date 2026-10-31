@@ -1,12 +1,14 @@
-// Tests of member sources (slice 6a §1.2, §1.4): a local object's state members as references and other objects'
-// derives follow them across attempts: passed on while live, frozen while failed, re-bound by name when live again.
+// Tests of a reference's members (`ReferenceSource`; slice 6a §1.2, §1.4; decision "References are the only
+// indirection"): consumers' watches and derives over `ref.member` pass straight through to the instance's member while
+// live, keep the last value while it points at nothing (one `failed` call for a failure), move by name to the next
+// instance (one frame, whole after a failure).
 
 import { describe, expect, it } from "vitest";
 import { type Context, BACKGROUND_CONTEXT as context } from "../../../src/context/index.ts";
 import { arr, int, keyed, local, method, obj, remote, str } from "../../../src/next/contracts/index.ts";
 import { ChordError } from "../../../src/next/data/index.ts";
 import { defineState, type SingletonHandle } from "../../../src/next/documents/index.ts";
-import { createHost, defineFacet, type Self, type StoreSelf } from "../../../src/next/host/index.ts";
+import { createHost, defineFacet, type Reference, type Self, type StoreSelf } from "../../../src/next/host/index.ts";
 import { ChordObject } from "../../../src/next/host/object.ts";
 import { resolveWatchable } from "../../../src/next/host/reference.ts";
 import { constant } from "../../../src/next/state/index.ts";
@@ -16,6 +18,7 @@ import {
 	delivered,
 	expectCollected,
 	failLive,
+	flushed,
 	holdNextCommit,
 	instancesOf,
 	linked,
@@ -96,7 +99,7 @@ describe("following the live attempt", () => {
 });
 
 describe("a failed object's members", () => {
-	it("keep their last values and get no frames; a new watch opens at the last value (slice 6a §1.4)", async () => {
+	it("keep their last values and get the failure once; a new watch opens at the last value (slice 6a §1.4)", async () => {
 		const { host, store, lists, fail } = await served();
 		await store.add({ text: "a" }, context);
 		const counted = changesOf(await store.count.watch(context));
@@ -112,13 +115,15 @@ describe("a failed object's members", () => {
 		store.retry();
 		await (await host.get(Store, {}, context)).add({ text: "b" }, context);
 		await delivered();
-		expect(valuesOf(counted)).toEqual([2]);
-		expect(valuesOf(listed)).toEqual([{ items: ["a", "b"] }]);
-		expect(valuesOf(lately)).toEqual([2]);
+		// The failure once; after it, whole values: the next instance's (unchanged) 1, then 2.
+		expect(valuesOf(counted)).toEqual([{ failed: "boom" }, 1, 2]);
+		// Opened while failed: at the last value, the failure once, then whole values.
+		expect(valuesOf(listed)).toEqual([{ failed: "boom" }, { items: ["a"] }, { items: ["a", "b"] }]);
+		expect(valuesOf(lately)).toEqual([{ failed: "boom" }, 1, 2]);
 		await host.close(context);
 	});
 
-	it("re-exposed from another object freeze with the re-exposing object; the provider's source goes on", async () => {
+	it("re-exposed from another object hold with the re-exposing object; the provider's source goes on", async () => {
 		const Note = obj({ title: str() });
 		const Memo = defineState("memo", { schema: Note, version: 1, initial: () => ({ title: "" }), keyed: true });
 		const Own = defineState("own", { schema: obj({ n: int() }), version: 1, initial: () => ({ n: 0 }) });
@@ -167,7 +172,7 @@ describe("a failed object's members", () => {
 		await delivered();
 		expect(exposed.state.value.kind).toBe("failed");
 		expect([exposed.n.value, exposed.note.value]).toEqual([1, { title: "x" }]);
-		expect([exposedN, exposedNote]).toEqual([[], []]);
+		expect([exposedN, exposedNote].map((calls) => calls.map((call) => call.kind))).toEqual([["failed"], ["failed"]]);
 		expect(provider.n.value).toBe(7);
 		expect(valuesOf(providerN)).toEqual([7]);
 		await host.close(context);
@@ -175,7 +180,7 @@ describe("a failed object's members", () => {
 });
 
 describe("the window of a live failure", () => {
-	it("members following another object's sources freeze at once, while an admitted commit of the object runs", async () => {
+	it("every member follows on while an admitted commit of the object runs, then all hold (audit A10)", async () => {
 		const Counter = defineState("counter", { schema: obj({ n: int() }), version: 1, initial: () => ({ n: 0 }) });
 		const Persisted = defineState("own", {
 			schema: obj({ n: int() }),
@@ -224,12 +229,14 @@ describe("the window of a live failure", () => {
 		failLive(attempted, exposer!, new ChordError({ code: "unavailable", message: "boom" }));
 		await provider.set(9, context);
 		await delivered();
-		expect([exposed.n.value, frames]).toEqual([1, []]);
+		// A re-exposed member shows one more change of its provider in the window.
+		expect([exposed.n.value, frames.map((call) => call.kind)]).toEqual([9, ["value"]]);
 		held.release();
 		await change;
 		await delivered();
-		// The object's own admitted commit still publishes once.
-		expect(valuesOf(owned)).toEqual([{ n: 5 }]);
+		// The object's own admitted commit still publishes once; then every member holds (the failure once).
+		expect(valuesOf(owned)).toEqual([{ n: 5 }, { failed: "boom" }]);
+		expect([exposed.n.value, frames.map((call) => call.kind)]).toEqual([9, ["value", "failed"]]);
 		await host.close(context);
 		await store.close(context);
 	});
@@ -292,8 +299,9 @@ describe("re-binding when a new attempt goes live", () => {
 		await delivered();
 		expect(viewer.state.value.kind).toBe("live");
 		expect([store.count.value, viewer.tens.value]).toEqual([2, 20]);
+		// A derive over the held member keeps its last value (no failure); the member's watch gets it once.
 		expect(valuesOf(tens)).toEqual([10, 20]);
-		expect(valuesOf(counted)).toEqual([1, 2]);
+		expect(valuesOf(counted)).toEqual([1, { failed: "boom" }, 1, 2]);
 		await host.close(context);
 	});
 
@@ -437,6 +445,8 @@ describe("a member the new attempt's variant lacks", () => {
 		two.retry();
 		(await host.get(Two, {}, context)).release();
 		await delivered();
+		// The failed instance is followed until its admitted commits published (audit A10), when the retry's attempt
+		// loads already (no failure call for it); then the new variant's lack of it.
 		expect(calls).toEqual([
 			{ kind: "failed", error: expect.objectContaining({ code: "invalid", reason: "member" }) },
 		]);
@@ -511,5 +521,127 @@ describe("member sources and memory", () => {
 			return [ref];
 		})();
 		await expectCollected(...refs);
+	});
+});
+
+describe('what a reference keeps (decision "References are the only indirection")', () => {
+	it("keeps nothing of an ended instance while it waits with an open watch, its failure's error included", async () => {
+		const Count = local("app.kept", { version: 1, params: {}, members: { n: int() } });
+		const Doc = defineState("kept", { schema: obj({ n: int() }), version: 1, initial: () => ({ n: 5 }) });
+		const selves: WeakRef<object>[] = [];
+		const facet = defineFacet((h) =>
+			h.serve(Count, (_, self) => {
+				selves.push(new WeakRef(self));
+				const doc = self.state(Doc);
+				return { n: self.derive([doc], ([value]) => value.n) };
+			}),
+		);
+		const host = createHost({ onError: () => {} });
+		const from = attempted.length;
+		await host.load([{ name: "@app/kept", facet }], context);
+		let ref: Reference<typeof Count> | undefined = await host.get(Count, {}, context);
+		const watch = await ref.n.watch(context);
+		const calls = changesOf(watch);
+		const objects = attempted.slice(from);
+		const documents = objects.map((object) => new WeakRef(object.deref()!.documents));
+		// Removed: the reference waits with its last value and its failure; the instance ends.
+		await host.reload([], context);
+		await delivered();
+		const state = ref.state.value;
+		if (state.kind !== "failed") throw new Error("expected failed");
+		const kept = state.cause.error;
+		expect([ref.n.value, valuesOf(calls)]).toEqual([5, [{ failed: kept.message }]]);
+		await expectCollected(...selves, ...objects, ...documents);
+		// Released: its last values and bindings go with it.
+		const released = new WeakRef(ref);
+		await watch.stop();
+		ref.release();
+		ref = undefined;
+		await expectCollected(released);
+		expect(kept.code).toBe("unavailable");
+		await host.close(context);
+	});
+
+	it("never takes values from an instance it never attached to: a reference made while its object is failed has none", async () => {
+		const { host, store, fail } = await served();
+		await store.add({ text: "a" }, context);
+		fail();
+		await delivered();
+		const late = host.hold(Store, {}, context);
+		expect(store.count.value).toBe(1);
+		expect(() => late.count.value).toThrow("boom");
+		late.release();
+		await host.close(context);
+	});
+
+	it("computes a consumer's derive over a watched reference member once per commit (cost guard)", async () => {
+		const { telemetry, counts } = await metered();
+		const { host, store } = await served({ telemetry });
+		const viewer = await host.get(Viewer, {}, context);
+		const counted = changesOf(await store.count.watch(context));
+		const tens = changesOf(await viewer.tens.watch(context));
+		await store.add({ text: "a" }, context);
+		await delivered();
+		const before = counts()["chord.derive.computes"] ?? 0;
+		for (const text of ["b", "c", "d"]) await store.add({ text }, context);
+		await delivered();
+		// The store's count and the viewer's tens: one compute each per commit, nothing for passing through.
+		expect((counts()["chord.derive.computes"] ?? 0) - before).toBe(6);
+		expect([valuesOf(counted), valuesOf(tens)]).toEqual([
+			[1, 2, 3, 4],
+			[10, 20, 30, 40],
+		]);
+		await host.close(context);
+	});
+});
+
+describe("a reference keeps the last values of its attached instance's variant (final review)", () => {
+	it("keeps an unread member of a remote contract served on its host when the type is removed (Astra)", async () => {
+		const Type = remote("app.remote-unread", {
+			version: 1,
+			params: {},
+			hostAddress: () => Server(),
+			variants: { full: { state: { n: int() } } },
+		});
+		const owner = { kind: "owner" } as const;
+		const facet = defineFacet<typeof owner>((h) =>
+			h.serve(Type, () => ({ variant: "full", members: { n: constant(7) } })),
+		);
+		const host = createHost<typeof owner>({ address: Server(), principal: owner, onError: () => {} });
+		await host.load([{ name: "@app/remote-unread", facet }], context);
+		const ref = await host.get(Type, {}, context);
+		// `n` never read: the removal takes its last value from the instance's variant (the object is live no more).
+		await host.reload([], context);
+		await delivered();
+		expect(ref.n.value).toBe(7);
+		ref.release();
+		await host.close(context);
+	});
+});
+
+describe("a failed object lets its ended instance go (final review)", () => {
+	it("collects the instance while a reference keeps its last value with an open watch (Astra, GC)", async () => {
+		const Type = local("app.failed-gc", { version: 1, params: {}, members: { n: int() } });
+		let self: Self | undefined;
+		const facet = defineFacet((h) =>
+			h.serve(Type, (_, declared) => {
+				self = declared;
+				return { n: constant(7) };
+			}),
+		);
+		const host = createHost({ onError: () => {} });
+		await host.load([{ name: "@app/failed-gc", facet }], context);
+		const ref = await host.get(Type, {}, context);
+		changesOf(await ref.n.watch(context));
+		const instance = new WeakRef(self!);
+		failLive(attempted, self!, new ChordError({ code: "unavailable", message: "boom" }));
+		self = undefined;
+		await flushed();
+		await delivered();
+		// The object stays failed (host lifetime) and its reference keeps 7: neither keeps the ended instance.
+		expect(ref.n.value).toBe(7);
+		await expectCollected(instance);
+		ref.release();
+		await host.close(context);
 	});
 });

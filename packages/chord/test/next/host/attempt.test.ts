@@ -905,7 +905,7 @@ describe("parked attempts (dependency model §3)", () => {
 	/** A view with params: no host lifetime, so `load` does not wait for it. */
 	const Viewer = local("app.viewer", { version: 1, params: { id: int() }, members: { n: int() } });
 
-	it("run no timer while parked: no dependency deadline, no backoff, the factory run once", async () => {
+	it("run no timer while parked but parked_long's: no dependency deadline, no backoff, the factory run once", async () => {
 		const factories = vi.fn();
 		const { host, errors } = await loaded((h) =>
 			h.serve(View, (_, self) => {
@@ -921,8 +921,12 @@ describe("parked attempts (dependency model §3)", () => {
 			cause: { kind: "waiting", error: { message: "waiting for app.missing: app.missing is not served here" } },
 			retryAt: undefined,
 		});
+		// `parked_long`'s one timer fired (once, after readyTimeout); nothing else runs.
 		expect(vi.getTimerCount()).toBe(0);
-		expect([factories.mock.calls.length, errors]).toEqual([1, []]);
+		expect([factories.mock.calls.length, errors]).toEqual([
+			1,
+			[{ kind: "parked_long", object: "app.view", waitingFor: "app.missing", state: "failed", since: 0 }],
+		]);
 		view.release();
 	});
 

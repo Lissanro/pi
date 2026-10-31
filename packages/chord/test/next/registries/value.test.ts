@@ -521,3 +521,20 @@ describe("observe", () => {
 		expect(calls.at(-1)).toEqual({ kind: "ended" });
 	});
 });
+
+describe("a reload's new value adapter (fix round 1)", () => {
+	it("uses a new value adapter even when compose returns the same primitive", async () => {
+		const R = defineRegistry<number, number>("astra.registry", { version: 2 });
+		const Old = defineRegistry<number, number>("astra.registry", { version: 1 });
+		const host = createHost({ onError: () => {} });
+		const facet = (factor: number) =>
+			defineFacet((h) => h.serve(R, { compose: () => 7, accepts: { 1: { value: (n) => n * factor } } }));
+		await host.load([{ name: "@astra/reg", facet: facet(2) }], context);
+		const old = await host.registry(Old, context);
+		expect(old.value).toBe(14);
+		await host.reload([{ name: "@astra/reg", facet: facet(3) }], context);
+		const actual = old.value;
+		await host.close(context);
+		expect(actual).toBe(21);
+	});
+});
