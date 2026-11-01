@@ -12,7 +12,12 @@ import { createHost, defineFacet, type Host, type ReloadReport } from "../../../
 import type { ChordHost } from "../../../src/next/host/internal.ts";
 import { memoryLinkPair } from "../../../src/next/link/index.ts";
 import { constant } from "../../../src/next/state/index.ts";
-import { createPlugins, type Plugins, type RolloutStep } from "../../../src/next-node/plugins/index.ts";
+import {
+	createPlugins,
+	type Plugins,
+	type RolloutHost,
+	type RolloutStep,
+} from "../../../src/next-node/plugins/index.ts";
 import {
 	changesOf,
 	delivered,
@@ -22,7 +27,7 @@ import {
 	transported,
 	valuesOf,
 } from "../../next/support.ts";
-import { HOST_PACKAGES, KINDS, tempRoot, writeFiles, writePackage, writePlugin } from "./support.ts";
+import { HOST_PACKAGES, kindsOf, tempRoot, writeFiles, writePackage, writePlugin } from "./support.ts";
 
 /** The fixtures' contracts, as the `contracts` fixture declares them. */
 const Worker = hostKind("test.worker");
@@ -46,15 +51,20 @@ async function itemPlugin(root: string, dir: string, label: string): Promise<voi
 	});
 }
 
+/** The report of an in-process step's one host. */
+function reportOf(hosts: readonly RolloutHost[]): ReloadReport {
+	const [entry] = hosts;
+	if (entry === undefined || !("report" in entry)) throw new Error("no report");
+	return entry.report;
+}
+
 /** The component over `root`, its reports collected. */
 function component(root: string): { plugins: Plugins; reported: unknown[] } {
 	const reported: unknown[] = [];
 	const plugins = createPlugins(
 		{
 			roots: [root],
-			kinds: KINDS,
-			browserKinds: ["web"],
-			hostPackages: HOST_PACKAGES,
+			kinds: kindsOf(HOST_PACKAGES),
 			onError: (e) => reported.push(e),
 		},
 		context,
@@ -81,7 +91,11 @@ describe("per plugin at startup", () => {
 		const { plugins } = component(root);
 		const host = createHost({ onError: () => {} });
 		const core = defineFacet((h) => h.serve(Item, () => ({ label: constant("core") })));
-		const report = await plugins.load(host, { kind: "worker", core: [{ name: "@app/core", facet: core }] }, context);
+		const report = await plugins.load(
+			host,
+			{ kind: "worker", core: [{ name: "@app/core", facet: core }], modules: HOST_PACKAGES },
+			context,
+		);
 		expect(report.failed.map(({ plugin, error }) => [plugin, (error as Error).message])).toEqual([
 			[
 				"@test/syntax",
@@ -105,7 +119,7 @@ describe("per plugin at reload", () => {
 		for (const dir of ["a", "b", "c"]) await itemPlugin(root, dir, `${dir}1`);
 		const { plugins } = component(root);
 		const host = createHost({ onError: () => {} });
-		await plugins.load(host, { kind: "worker", core: [] }, context);
+		await plugins.load(host, { kind: "worker", core: [], modules: HOST_PACKAGES }, context);
 		const label = async (dir: string) =>
 			(await host.get(local(`test.${dir}`, { version: 1, params: {}, members: { label: str() } }), {}, context))
 				.label.value;
@@ -180,7 +194,7 @@ describe("per plugin at reload", () => {
 		await writePlugin(root, "consumer", "@test/consumer", { "worker.ts": consumer(1) });
 		const { plugins } = component(root);
 		const host = createHost({ onError: () => {} });
-		await plugins.load(host, { kind: "worker", core: [] }, context);
+		await plugins.load(host, { kind: "worker", core: [], modules: HOST_PACKAGES }, context);
 		const C = local("test.consumer", { version: 1, params: {}, members: { label: str() } });
 		const shown = await host.get(C, {}, context);
 		await writeFiles(join(root, "provider"), { "worker.ts": `${provider(2)}\nexport const broken = ;` });
@@ -201,14 +215,19 @@ describe("per plugin at reload", () => {
 });
 
 describe("rollout", () => {
-	/** A step recording its name into `order`, answering `report`, or rejecting with `error`. */
-	const step = (name: string, order: string[], outcome: { report?: ReloadReport; error?: Error }): RolloutStep => ({
+	/** A step recording its name into `order`, answering `report` for one host (or `hosts`), or rejecting with `error`. */
+	const step = (
+		name: string,
+		order: string[],
+		outcome: { report?: ReloadReport; hosts?: readonly RolloutHost[]; error?: Error },
+		kinds: readonly string[] = ["worker"],
+	): RolloutStep => ({
 		name,
-		kinds: ["worker"],
+		kinds,
 		reload: async () => {
 			order.push(name);
 			if (outcome.error !== undefined) throw outcome.error;
-			return outcome.report!;
+			return { hosts: outcome.hosts ?? [{ host: name, report: outcome.report! }] };
 		},
 	});
 	const report = (failed: readonly string[]): ReloadReport => ({
@@ -244,6 +263,56 @@ describe("rollout", () => {
 		plugins.close();
 	});
 
+	it("counts a host's error as the step's built plugins failing there; a host stopped cleanly dirties nothing (D12)", async () => {
+		const root = await tempRoot();
+		await itemPlugin(root, "a", "a1");
+		await itemPlugin(root, "b", "b1");
+		const { plugins } = component(root);
+		await plugins.build([], context);
+		await writeFile(join(root, "a", "worker.ts"), "// a\n");
+		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] }), { timeout: 5_000 });
+		const stopped: RolloutHost[] = [{ host: "session|S1", stopped: true }];
+		await plugins.rollout(
+			[step("workers", [], { hosts: stopped })],
+			await plugins.build(["@test/a"], context),
+			context,
+		);
+		expect(plugins.state.value).toMatchObject({ dirty: [] });
+		await writeFile(join(root, "a", "worker.ts"), "// a again\n");
+		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] }), { timeout: 5_000 });
+		const crashed: RolloutHost[] = [
+			{ host: "session|S1", report: report([]) },
+			{ host: "session|S2", error: new Error("crashed") },
+		];
+		const result = await plugins.rollout(
+			[step("workers", [], { hosts: crashed })],
+			await plugins.build(["@test/a"], context),
+			context,
+		);
+		expect(result.steps).toEqual([{ name: "workers", hosts: crashed }]);
+		expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] });
+		plugins.close();
+	});
+
+	it("keeps dirty a plugin whose built kind no step shipped", async () => {
+		const root = await tempRoot();
+		await writePlugin(root, "a", "@test/a", { "worker.ts": "export default { setup: () => {} };", "server.ts": "" });
+		const { plugins } = component(root);
+		await plugins.build([], context);
+		await writeFile(join(root, "a", "worker.ts"), "export default { setup: () => {} }; // edited\n");
+		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] }), { timeout: 5_000 });
+		const built = await plugins.build(["@test/a"], context);
+		await plugins.rollout([step("worker", [], { report: report([]) })], built, context);
+		expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] });
+		await plugins.rollout(
+			[step("worker", [], { report: report([]) }), step("server", [], { report: report([]) }, ["server"])],
+			built,
+			context,
+		);
+		expect(plugins.state.value).toMatchObject({ dirty: [] });
+		plugins.close();
+	});
+
 	it("stops at a step that rejects, clearing no mark; a change during the build keeps its mark", async () => {
 		const root = await tempRoot();
 		await itemPlugin(root, "a", "a1");
@@ -275,6 +344,38 @@ describe("rollout", () => {
 	});
 });
 
+describe("current sets (slice 10 D11)", () => {
+	it("scripts(kind): built on first use; a build changes no set; a rollout applies it right before a step of its kind", async () => {
+		const root = await tempRoot();
+		await itemPlugin(root, "a", "a1");
+		await writePlugin(root, "b", "@test/b", { "server.ts": "export default { setup: () => {} };" });
+		const { plugins } = component(root);
+		const digests = async () =>
+			(await plugins.scripts("worker", context)).map(({ plugin, built }) => [
+				plugin.name,
+				built.kind === "script" ? built.digest.slice(0, 8) : built.kind,
+			]);
+		const first = await digests();
+		expect(first.map(([name]) => name)).toEqual(["@test/a"]);
+		await itemPlugin(root, "a", "a2");
+		const built = await plugins.build(["@test/a"], context);
+		expect(await digests()).toEqual(first);
+		const rejecting: RolloutStep = {
+			name: "server",
+			kinds: ["server"],
+			reload: async () => {
+				throw new Error("closed");
+			},
+		};
+		const shipped: RolloutStep = { name: "workers", kinds: ["worker"], reload: async () => ({ hosts: [] }) };
+		await plugins.rollout([rejecting, shipped], built, context);
+		expect(await digests()).toEqual(first);
+		await plugins.rollout([shipped], built, context);
+		expect(await digests()).not.toEqual(first);
+		plugins.close();
+	});
+});
+
 describe("installs through the component", () => {
 	it("clears the plugin's install mark and dirties it", async () => {
 		const root = await tempRoot();
@@ -285,8 +386,7 @@ describe("installs through the component", () => {
 		const plugins = createPlugins(
 			{
 				roots: [root],
-				kinds: KINDS,
-				hostPackages: HOST_PACKAGES,
+				kinds: kindsOf(HOST_PACKAGES),
 				install: { npmCommand: [process.execPath, join(tools, "npm.mjs")] },
 				onError: (error) => reported.push(error),
 			},
@@ -321,12 +421,10 @@ describe("GC", () => {
 				"export default defineFacet((host) => host.serve(Item, () => ({ label: constant(state.label) })));",
 			].join("\n");
 		await writePlugin(root, "gc", "@test/gc", { "worker.ts": source("a") });
-		const plugins = createPlugins(
-			{ roots: [root], kinds: KINDS, hostPackages: { ...HOST_PACKAGES, "@test/probe": probe }, onError: () => {} },
-			context,
-		);
+		const modules = { ...HOST_PACKAGES, "@test/probe": probe };
+		const plugins = createPlugins({ roots: [root], kinds: kindsOf(modules), onError: () => {} }, context);
 		const host = createHost({ onError: () => {} });
-		await plugins.load(host, { kind: "worker", core: [] }, context);
+		await plugins.load(host, { kind: "worker", core: [], modules }, context);
 		const first = await plugins.build(["@test/gc"], context);
 		await writeFiles(join(root, "gc"), { "worker.ts": source("b") });
 		const second = await plugins.build(["@test/gc"], context);
@@ -358,8 +456,8 @@ describe("end to end: a server and a worker", () => {
 			{ authorize: () => true, resolve: async () => ({ link: down, principal: { kind: "worker" } }) },
 			context,
 		);
-		await plugins.load(worker, { kind: "worker", core: [] }, context);
-		await plugins.load(server, { kind: "server", core: [] }, context);
+		await plugins.load(worker, { kind: "worker", core: [], modules: HOST_PACKAGES }, context);
+		await plugins.load(server, { kind: "server", core: [], modules: HOST_PACKAGES }, context);
 		const notes = await server.get(Notes, {}, context);
 		const index = await server.get(Index, {}, context);
 		expect([notes.label.value, index.label.value]).toEqual(["v1", "v1"]);
@@ -370,7 +468,9 @@ describe("end to end: a server and a worker", () => {
 		await writeFile(join(root, "notes", "label.ts"), 'export const label = "v2";\n');
 		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/notes"] }), { timeout: 5_000 });
 		const rolled = await plugins.rollout(steps, await plugins.build(plugins.state.value.dirty, context), context);
-		expect(rolled.steps.map(({ name, report }) => [name, report.plugins.changed, report.objects])).toEqual([
+		expect(
+			rolled.steps.map(({ name, hosts }) => [name, reportOf(hosts).plugins.changed, reportOf(hosts).objects]),
+		).toEqual([
 			["server", ["@test/notes"], [{ object: "test.index", kind: "swapped" }]],
 			["worker", ["@test/notes"], [{ object: "test.notes", kind: "swapped" }]],
 		]);
@@ -383,7 +483,7 @@ describe("end to end: a server and a worker", () => {
 		await writeFile(join(root, "notes", "label.ts"), "export const label = ;\n");
 		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/notes"] }), { timeout: 5_000 });
 		const broken = await plugins.rollout(steps, await plugins.build(plugins.state.value.dirty, context), context);
-		expect(broken.steps.map(({ name, report }) => [name, failedNames(report)])).toEqual([
+		expect(broken.steps.map(({ name, hosts }) => [name, failedNames(reportOf(hosts))])).toEqual([
 			["server", ["@test/notes"]],
 			["worker", ["@test/notes"]],
 		]);
@@ -403,7 +503,7 @@ describe("fix round 1", () => {
 		await itemPlugin(root, "b", "b1");
 		const { plugins } = component(root);
 		const host = createHost({ onError: () => {} });
-		await plugins.load(host, { kind: "worker", core: [] }, context);
+		await plugins.load(host, { kind: "worker", core: [], modules: HOST_PACKAGES }, context);
 		await itemPlugin(root, "a", "a2");
 		const builtA = await plugins.build(["@test/a"], context);
 		await itemPlugin(root, "b", "b2");
@@ -424,7 +524,7 @@ describe("fix round 1", () => {
 		await itemPlugin(root, "b", "b1");
 		const { plugins } = component(root);
 		const host = createHost({ onError: () => {} });
-		await plugins.load(host, { kind: "worker", core: [] }, context);
+		await plugins.load(host, { kind: "worker", core: [], modules: HOST_PACKAGES }, context);
 		await itemPlugin(root, "a", "a2");
 		const first = await plugins.build(["@test/a"], context);
 		await rm(join(root, "b"), { recursive: true });
@@ -444,7 +544,7 @@ describe("fix round 1", () => {
 		await itemPlugin(root, "b", "b1");
 		const { plugins } = component(root);
 		const host = createHost({ onError: () => {} });
-		await plugins.load(host, { kind: "worker", core: [] }, context);
+		await plugins.load(host, { kind: "worker", core: [], modules: HOST_PACKAGES }, context);
 		const Item = local("test.a", { version: 1, params: {}, members: { label: str() } });
 		const item = await host.get(Item, {}, context);
 		await itemPlugin(root, "a", "a2");
@@ -476,7 +576,7 @@ describe("fix round 1", () => {
 		await itemPlugin(root, "a", "a1");
 		const { plugins } = component(root);
 		const host = createHost({ onError: () => {} });
-		await plugins.load(host, { kind: "worker", core: [] }, context);
+		await plugins.load(host, { kind: "worker", core: [], modules: HOST_PACKAGES }, context);
 		// The plugin keeps a server facet only.
 		await rm(join(root, "a", "worker.ts"));
 		await writeFiles(join(root, "a"), {
@@ -500,7 +600,7 @@ describe("fix round 1", () => {
 		await itemPlugin(root, "a", "a1");
 		const { plugins } = component(root);
 		const host = createHost({ onError: () => {} });
-		await plugins.load(host, { kind: "worker", core: [] }, context);
+		await plugins.load(host, { kind: "worker", core: [], modules: HOST_PACKAGES }, context);
 		const item = await host.get(local("test.a", { version: 1, params: {}, members: { label: str() } }), {}, context);
 		await itemPlugin(root, "a", "a2");
 		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] }), { timeout: 5_000 });
@@ -526,8 +626,7 @@ describe("fix round 1", () => {
 		const plugins = createPlugins(
 			{
 				roots: [root],
-				kinds: KINDS,
-				hostPackages: HOST_PACKAGES,
+				kinds: kindsOf(HOST_PACKAGES),
 				install: { npmCommand: [process.execPath, join(tools, "npm.mjs")] },
 				onError: () => {},
 			},
@@ -567,12 +666,10 @@ describe("the reload queues and garbage collection", () => {
 				"});",
 			].join("\n");
 		const dir = await writePlugin(root, "failed", "@test/failed", { "worker.ts": source(false) });
-		const plugins = createPlugins(
-			{ roots: [root], kinds: KINDS, hostPackages: { ...HOST_PACKAGES, "@test/probe": probe }, onError: () => {} },
-			context,
-		);
+		const modules = { ...HOST_PACKAGES, "@test/probe": probe };
+		const plugins = createPlugins({ roots: [root], kinds: kindsOf(modules), onError: () => {} }, context);
 		const host = createHost({ onError: () => {} });
-		await plugins.load(host, { kind: "worker", core: [] }, context);
+		await plugins.load(host, { kind: "worker", core: [], modules }, context);
 		await writeFiles(dir, { "worker.ts": source(true) });
 		const built = await plugins.build(["@test/failed"], context);
 		// The report (its failure's error holds the new facet's closure) is dropped here; the queues must not keep it.

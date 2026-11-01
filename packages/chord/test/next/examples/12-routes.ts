@@ -144,8 +144,8 @@ await guest.get(Notes, { session: "S2" }, context).catch((error) => {
 const lobby = await guest.get(Lobby, {}, context);
 console.log("guest via the lobby:", await lobby.peek({ session: "S1" }, context));
 
-// 5. The worker drops: references go loading, the route resolves the address again after its backoff (1 s), and
-// the new worker (a fresh run, empty notes here) binds them again.
+// 5. The worker drops: references go loading, the route resolves the address again at once (its link had completed
+// its handshake), and the new worker (a fresh run, empty notes here) binds them again.
 const states: string[] = [];
 const watch = await notes.state.watch(context);
 watch.start(async (call) => {

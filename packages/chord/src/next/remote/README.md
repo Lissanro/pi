@@ -14,7 +14,9 @@ within each link's limits, compression at the origin, activation chains and revo
   `call`, `abort`, `retry` and `ack` to the provider side of their `origin` (0 when absent; a `hold` makes it, other
   messages for an origin without one are ignored), `closed { origin }` ends that provider side; `bound`, `state`,
   `failed`, `loading`, `result`, `error` and `gone` to the consumer side; `revoke` to the host, from a parent link only
-  (`host.revoke` with this host's own `revokedBy`; anywhere else it is ignored). `origin` is honoured on every link.
+  (`host.revoke` with this host's own `revokedBy`; anywhere else it is ignored). `origin` is honoured only on parent and route links, where a relay's messages arrive; on a child link a message
+  carrying one is a protocol error (decision "Origins only from relays"). A provider side (one per origin) goes once it
+  has no holds, no calls and nothing in flight; its origin's next hold makes a new one (origins are never reused).
   Closing it, from either end, ends both sides: the provider sides release the peer's holds and abort their calls, the
   consumer side's calls reject and its path tells the holders. It makes the parts this host originates (`part`:
   deflated above 16 KiB with the host's compressor) and opens the parts it owns (`openPart`: within the limits its
@@ -139,7 +141,9 @@ within each link's limits, compression at the origin, activation chains and revo
   waiting when its hold gets `loading` is rejected `unavailable` (it may name a method of the old variant).
 - `Path` (the parent, or one route address): its current link and its holders (`RemoteObject`s and `RelayedHold`s),
   held on that link and again on every next one; when the link drops, every holder is told (`dropped`). `changed`
-  tells its owner (a route) when it needs a link or lost its last holder.
+  tells its owner (a route) what happened without a link: a holder `attached`, the link `dropped`, the last holder
+  `released`. `unreachable(error)` fails every holder `failed { waiting }` (a route's `resolve` failed, a suspension):
+  a `RemoteObject` moves there, a `RelayedHold` sends `failed` downstream; the next link binds them again.
 - `RemoteObject` (one per remote reference, owned by its host across the links of its path): its `state` (`loading`
   until a link's hold is bound and again on every drop or `loading`, `failed` from `failed` with `retryAt = now +
   retryIn` for a transient cause, `retryAt` undefined for a broken or waiting one, `live` on `bound`, `released`;

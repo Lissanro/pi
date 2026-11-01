@@ -63,11 +63,12 @@ const Counter = local("example.counter", { version: 1, params: {}, members: { st
 const Summary = local("example.summary", { version: 1, params: {}, members: { text: str() } });
 const Status = local("example.status", { version: 1, params: {}, members: { text: str() } });
 
+// The host packages: this process's Chord.
+const modules = { "@earendil-works/chord/next": chordNext };
 const plugins = createPlugins(
 	{
 		roots: [root],
-		kinds: ["server"],
-		hostPackages: { "@earendil-works/chord/next": chordNext },
+		kinds: { server: { platform: "node", hostPackages: Object.keys(modules) } },
 		onError: (error) => console.log("plugins:", error.kind),
 	},
 	context,
@@ -76,7 +77,7 @@ const host = createHost({ onError: () => {} });
 
 // 1. Startup: the weather plugin's setup throws; it is left out and reported, the other plugins run. A reference to
 //    what it would serve waits (`failed`, cause `waiting`: not served here), and so does its consumer's object.
-const loaded = await plugins.load(host, { kind: "server", core: [] }, context);
+const loaded = await plugins.load(host, { kind: "server", core: [], modules }, context);
 for (const { plugin, error } of loaded.failed) console.log(`1. left out ${plugin}: ${(error as Error).message}`);
 const weather = host.hold(Weather, {}, context);
 const forecast = host.hold(Forecast, {}, context);

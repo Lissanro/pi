@@ -1,4 +1,4 @@
-// A browser build (slice 7c §2): a facet of a browser kind (`browserKinds: ["web"]`) is built for the browser. Its
+// A browser build (slice 7c §2): a facet of a browser kind (`web: { platform: "browser", … }`) is built for the browser. Its
 // stylesheets become one CSS file (`css`), an asset imported by URL (`./logo.svg?url`) a content-hashed file whose
 // import evaluates to its URL under the app's `publicPath`. The build is plain data: script, stylesheet and assets,
 // what the app serves to its pages (slice 11 ships it); a page evaluates the script with its host packages, as Node
@@ -20,10 +20,8 @@ const hostPackages = { "@earendil-works/chord/next": chordNext };
 const plugins = createPlugins(
 	{
 		roots: [root],
-		kinds: ["web"],
-		browserKinds: ["web"],
+		kinds: { web: { platform: "browser", hostPackages: Object.keys(hostPackages) } },
 		publicPath: "/plugin-assets/",
-		hostPackages,
 		onError: (error) => console.log("plugins:", error.kind),
 	},
 	context,

@@ -48,17 +48,21 @@ const line = (report: ReloadReport) =>
 
 /** A rollout, step by step. */
 function print(result: RolloutResult): void {
-	for (const { name, report } of result.steps) console.log(`   ${name}:`, line(report));
+	for (const { name, hosts } of result.steps) {
+		for (const host of hosts) if ("report" in host) console.log(`   ${name}:`, line(host.report));
+	}
 	if (result.stopped !== undefined) {
 		console.log(`   stopped at ${result.stopped.step}: ${(result.stopped.error as Error).message}`);
 	}
 }
 
+// The host packages: this process's Chord, kept external in Node builds.
+const modules = { "@earendil-works/chord/next": chordNext };
+const node = { platform: "node", hostPackages: Object.keys(modules) } as const;
 const plugins = createPlugins(
 	{
 		roots: [root],
-		kinds: ["server", "worker"],
-		hostPackages: { "@earendil-works/chord/next": chordNext },
+		kinds: { server: node, worker: node },
 		// The app's own code: a change marks `base`.
 		base: [join(copy, "app")],
 		// A stand-in for npm (no network; these plugins have no dependencies).
@@ -69,8 +73,8 @@ const plugins = createPlugins(
 );
 const server = createHost({ onError: () => {} });
 const worker = createHost({ onError: () => {} });
-await plugins.load(server, { kind: "server", core: [] }, context);
-await plugins.load(worker, { kind: "worker", core: [] }, context);
+await plugins.load(server, { kind: "server", core: [], modules }, context);
+await plugins.load(worker, { kind: "worker", core: [], modules }, context);
 const steps = [plugins.step("server", server as Host), plugins.step("worker", worker as Host)];
 console.log("1. loaded:", plugins.discovery.plugins.map(({ name }) => name).join(", "), "| marks:", marks());
 
@@ -79,7 +83,7 @@ await edit("plugins/notes/label.ts", "notes v1", "notes v2");
 await dirty("@example/notes");
 console.log("2. a file of notes edited:", marks());
 await edit("plugins/contracts/contract.ts", "one type per plugin", "one type per plugin (edited)");
-await dirty("@example/contracts", "@example/tags");
+await dirty("@example/shared", "@example/tags");
 console.log("   the shared contract edited:", marks());
 await edit("plugins/tags/package.json", '"private": true', '"private": true,\n\t"description": "tags"');
 await until(() => plugins.state.value.install.includes("@example/tags"));

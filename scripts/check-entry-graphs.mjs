@@ -26,6 +26,7 @@ const WORKSPACE = {
 	"@earendil-works/pi-codemode": "packages/codemode/src",
 	"@earendil-works/pi-telemetry": "packages/telemetry/src",
 	"@earendil-works/pi-mcp": "packages/mcp/src",
+	"@earendil-works/pi-schema": "packages/schema/src",
 	"@earendil-works/pi-tui": "packages/tui/src",
 };
 
@@ -34,6 +35,10 @@ const WORKSPACE = {
  * graph it is allowed to reach.
  */
 const BUDGETS = {
+	"packages/schema": {
+		// The format checks (vendored from TypeBox, about 40 KB) load only through ./formats.
+		".": { maxFiles: 10, forbid: ["schema/src/formats/"] },
+	},
 	"packages/ai": {
 		"./models": {
 			// Request telemetry reaches pi-ai's telemetry.ts and pi-telemetry's root (index, noop, metrics, memory).

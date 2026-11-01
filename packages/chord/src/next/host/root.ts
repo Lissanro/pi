@@ -2,19 +2,22 @@
 // (a Durable tool, a CLI), sealed when `fn` settles, when `context` aborts and when the host closes: its signal aborted,
 // its `ctx.get` refused `released`, every reference it took released.
 
-import { awaitWithContext, type Context } from "../../context/index.ts";
+import { awaitWithContext, type Context, withAbortSignal, withoutAbortSignal } from "../../context/index.ts";
 import { ChordError, type Principal } from "../data/index.ts";
-import { CallContext, type Ctx, withLinkedAbortSignal } from "./ctx.ts";
+import { CallContext, type Ctx } from "./ctx.ts";
 import type { AnyHost } from "./host.ts";
 
 /** What `host.root` takes besides `fn` and the context. */
 export type RootOptions<P extends Principal = Principal> = {
-	/** Whom the scope acts as: the host's principal by default; a trusted same-host caller's choice (base code). */
-	readonly principal?: P;
+	/**
+	 * Whom the scope acts as: the host's principal when omitted; a trusted same-host caller's choice (base code), an
+	 * explicit `undefined` anonymous (`ctx.principal` undefined).
+	 */
+	readonly principal?: P | undefined;
 };
 
-/** An open root scope: its seal, and the rejection its caller gets when the host closes. */
-type OpenScope = { readonly seal: (reason: unknown) => void; readonly closed: PromiseWithResolvers<never> };
+/** An open root scope: its seal, and how its caller is rejected when the host closes. */
+type OpenScope = { readonly seal: (reason: unknown) => void; readonly reject: (reason: unknown) => void };
 
 /** The open root scopes of a host, each sealed once; `close` seals the rest and rejects their callers. */
 export class RootScopes {
@@ -33,41 +36,50 @@ export class RootScopes {
 	 * next use of Chord), or when `context` was aborted already (`fn` does not run).
 	 */
 	run<T>(fn: (ctx: Ctx) => Promise<T>, principal: Principal | undefined, context: Context): Promise<T> {
-		context.abortSignal?.throwIfAborted();
+		const caller = context.abortSignal;
+		caller?.throwIfAborted();
 		const host = this.#host;
+		// The scope's own signal, aborted by its seal; the caller's abort seals it (one listener, no linked signal: a
+		// request's scope is made per HTTP request).
 		const controller = new AbortController();
-		const linked = withLinkedAbortSignal(controller.signal, context);
-		const scope = linked.context;
+		const scope = withAbortSignal(controller.signal, caller === undefined ? context : withoutAbortSignal(context));
 		const ctx = new CallContext(scope, { principal, incarnation: host.incarnation }, host);
+		const result = Promise.withResolvers<T>();
 		const open: OpenScope = {
 			seal: (reason) => {
 				if (!this.#open.delete(open)) return;
-				scope.abortSignal?.removeEventListener("abort", aborted);
+				caller?.removeEventListener("abort", aborted);
 				// References first: a `get` still waiting gives up with `released`, not with the abort's reason.
 				ctx.settle();
-				// While still linked, so the scope's own signal (a caller's context has one) aborts too.
 				controller.abort(reason);
-				linked.release();
 			},
-			closed: Promise.withResolvers<never>(),
+			reject: result.reject,
 		};
-		const aborted = (): void => open.seal(scope.abortSignal?.reason);
+		const aborted = (): void => open.seal(caller?.reason);
 		this.#open.add(open);
-		scope.abortSignal?.addEventListener("abort", aborted, { once: true });
+		caller?.addEventListener("abort", aborted, { once: true });
 		// Plugin code: a synchronous throw becomes the rejection.
 		const running = (async () => fn(ctx))();
-		const settled = (): void => open.seal(SETTLED);
-		running.then(settled, settled);
-		// A method's caller gets `released` when its object ends, whatever the handler still does: so does this one. One
-		// wait on the caller's signal around both, so the close removes its listener too.
-		return awaitWithContext(Promise.race([running, open.closed.promise]), context);
+		running.then(
+			(value) => {
+				open.seal(SETTLED);
+				result.resolve(value);
+			},
+			(error: unknown) => {
+				open.seal(SETTLED);
+				result.reject(error);
+			},
+		);
+		// A method's caller gets `released` when its object ends, whatever the handler still does: so does this one
+		// (`close` rejects `result`), and at once when its context aborts.
+		return caller === undefined ? result.promise : awaitWithContext(result.promise, context);
 	}
 
 	/** The host closes: every open scope is sealed with `reason`, its caller rejected with it. */
 	close(reason: unknown): void {
 		for (const open of [...this.#open]) {
 			open.seal(reason);
-			open.closed.reject(reason);
+			open.reject(reason);
 		}
 	}
 }

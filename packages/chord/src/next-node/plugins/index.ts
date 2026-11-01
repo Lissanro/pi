@@ -15,11 +15,14 @@ export { type InstallOptions, installDependencies } from "./install.ts";
 export {
 	type Built,
 	createPlugins,
+	type KindDefinition,
 	type Plugins,
 	type PluginsError,
 	type PluginsOptions,
+	type RolloutHost,
 	type RolloutResult,
 	type RolloutStep,
 } from "./plugins.ts";
+export { createPluginRuntime, type PluginRuntime, type PluginScript, type RuntimeLoad } from "./runtime.ts";
 export { mapStack } from "./stack.ts";
 export type { PluginsState } from "./watcher.ts";

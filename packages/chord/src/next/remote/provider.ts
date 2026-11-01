@@ -83,17 +83,20 @@ export class ProviderSide {
 				break;
 			case "release":
 				this.#release(message.hold);
+				this.#settle();
 				break;
 			case "call":
 				return this.#call(message);
 			case "abort":
 				this.#abort(message.call);
+				this.#settle();
 				break;
 			case "retry":
 				this.#entries.get(message.hold)?.retry(message);
 				break;
 			case "ack":
 				this.#ack();
+				this.#settle();
 				break;
 		}
 	}
@@ -228,12 +231,22 @@ export class ProviderSide {
 			if (call.kind === "served") call.abort.abort(reason);
 		}
 		if (hold.kind === "served") this.unbind(hold);
+		this.#settle();
 	}
 
 	/** A call ended with `reply` (a result or an error): its slot is free; nothing is sent for one already gone. */
 	reply(id: number, reply: Extract<OriginMessage, { readonly kind: "result" | "error" }>): void {
 		if (!this.#calls.delete(id)) return;
 		this.send(reply);
+		this.#settle();
+	}
+
+	/**
+	 * Drops this side from its link once it holds nothing: no holds, no calls, nothing in flight. Its origin's next hold
+	 * makes a new one (origins are never reused), so a long-lived link keeps records only for live work.
+	 */
+	#settle(): void {
+		if (this.#entries.size === 0 && this.#calls.size === 0 && this.#sent.length === 0) this.link.drop(this);
 	}
 
 	/** A hold's object is live: its `bound` goes now when a slot is free, else with the next free slot's bindings. */

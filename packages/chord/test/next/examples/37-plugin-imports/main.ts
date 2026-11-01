@@ -29,17 +29,18 @@ for (const dir of ["plugins", "app", "deps"]) {
 }
 const root = join(copy, "plugins");
 
-// 1. The component. Its host packages: Chord, the app's ES module and a CommonJS module of the app. Its npm command
-//    (here a stand-in): what `installDependencies` runs in a plugin's directory.
+// 1. The component. Its host packages: Chord, the app's ES module and a CommonJS module of the app (their names kept
+//    external in the server kind's builds, the modules given at load). Its npm command (here a stand-in): what
+//    `installDependencies` runs in a plugin's directory.
+const modules = {
+	"@earendil-works/chord/next": chordNext,
+	"@example/app": app,
+	"@example/legacy": createRequire(import.meta.url)("./app/legacy.cjs"),
+};
 const plugins = createPlugins(
 	{
 		roots: [root],
-		kinds: ["server"],
-		hostPackages: {
-			"@earendil-works/chord/next": chordNext,
-			"@example/app": app,
-			"@example/legacy": createRequire(import.meta.url)("./app/legacy.cjs"),
-		},
+		kinds: { server: { platform: "node", hostPackages: Object.keys(modules) } },
 		install: { npmCommand: [process.execPath, fileURLToPath(new URL("./fake-npm.mjs", import.meta.url))] },
 		onError: (error) => console.log("plugins:", error.kind),
 	},
@@ -49,7 +50,7 @@ const plugins = createPlugins(
 // 2. Startup: every plugin whose build fails is left out with its errors (one per line: file, line, column, why). The
 //    report plugin's dependency is not installed yet.
 const host = createHost({ onError: () => {} });
-const loaded = await plugins.load(host, { kind: "server", core: [] }, context);
+const loaded = await plugins.load(host, { kind: "server", core: [], modules }, context);
 console.log("1. left out at startup:");
 for (const { plugin, error } of loaded.failed) {
 	const [first, ...errors] = (error as Error).message.split("\n");
@@ -67,7 +68,9 @@ for (const facet of built.facets) {
 	console.log(`   built ${facet.plugin}/${facet.facet}: read ${files.join(", ")}; copied ${facet.copied.length} file`);
 }
 const report = await plugins.reload(host, built, context);
-console.log("   reload:", JSON.stringify(report.plugins), "failed", report.failed.length);
+// The reload passes the complete set: the refused plugins fail again and stay out.
+const stillRefused = report.failed.map(({ plugin }) => plugin).join(", ");
+console.log("   reload:", JSON.stringify(report.plugins), "| still refused:", stillRefused);
 const text = (await host.get(Report, {}, context)).text.value;
 console.log("3. the report:", text);
 

@@ -9,7 +9,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { Script } from "node:vm";
 import type { Principal } from "../../next/data/index.ts";
 import type { Facet } from "../../next/host/index.ts";
-import { type BuiltFacet, PLUGINS_SPECIFIER, packageName } from "./build.ts";
+import type { BuiltFacet } from "./build.ts";
 import type { Plugin } from "./discover.ts";
 import { registerScript } from "./stack.ts";
 
@@ -66,6 +66,9 @@ export function pluginFile(path: string): string {
 	throw new Error(`pluginFile("${path}"): only a plugin's facet script, evaluated by the plugins component, has one`);
 }
 
+/** The one specifier of this component a script imports (`pluginFile`): external always, answered per facet. */
+export const PLUGINS_SPECIFIER = "@earendil-works/chord/next/plugins";
+
 /** The `require` a facet script of `plugin` takes (`where` names the facet in its errors). */
 function requireFor(plugin: Plugin, hostPackages: HostPackages, where: string): (specifier: string) => unknown {
 	let fromPlugin: NodeJS.Require | undefined;
@@ -84,6 +87,12 @@ function requireFor(plugin: Plugin, hostPackages: HostPackages, where: string): 
 			`${where}: "${specifier}" is not a host package, a Node builtin or one of its chord.external packages`,
 		);
 	};
+}
+
+/** The package a bare specifier names: `@scope/name` or `name`, without a subpath. */
+export function packageName(specifier: string): string {
+	const parts = specifier.split("/");
+	return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
 }
 
 /** The absolute path of `path` inside `plugin`'s directory; one out of it is refused. */

@@ -55,7 +55,7 @@ import { type Presence, References } from "./presence.ts";
 import { Binding, type CheckedParams, type Held, type Reference, type Target } from "./reference.ts";
 import { RevocationKeys, type RevokedBy } from "./revocation.ts";
 import { type RootOptions, RootScopes } from "./root.ts";
-import { Route, type RouteOptions } from "./route.ts";
+import { Route, type RouteHandle, type RouteOptions } from "./route.ts";
 import {
 	addStaged,
 	emptyStaged,
@@ -263,15 +263,16 @@ export interface Host<P extends Principal = Principal, R extends JsonValue = Jso
 	connect(link: Link, options: LinkOptions<P>, context: Context): void;
 	/**
 	 * How this host reaches hosts of `Kind` (called before `load`, once per kind): `authorize` admits every hold routed
-	 * over it, `resolve` makes the link of an address. Holds for an address wait while it resolves and again after its
-	 * link drops (a backoff per address, 1 s doubling to 60 s), while they exist. `context` is the parent of the route's
-	 * work (its `resolve`s, the holds and calls on its links), aborted for it when this host closes.
+	 * over it, `resolve` makes the link of an address, for a new hold, on `retry`, or once after a link that completed
+	 * its handshake dropped while held (no timer). A rejected `resolve`, or a link closed before its handshake, fails the
+	 * address's holders `failed { waiting }` (they stay on its path). `context` is the parent of the route's work (its
+	 * `resolve`s, the holds and calls on its links), aborted for it when this host closes. Returns the address controls.
 	 */
 	route<N extends string, Q extends Params>(
 		Kind: HostKind<N, Q>,
 		options: RouteOptions<P, HostKind<N, Q>>,
 		context: Context,
-	): void;
+	): RouteHandle<HostKind<N, Q>>;
 	/**
 	 * Revokes `revocation` (§4, R10, R11), synchronously: every remote object whose principal it revokes (`revokedBy`)
 	 * ends at once, whatever references remain (holders get `forbidden`, running calls are aborted, an activation is
@@ -300,7 +301,7 @@ export interface Host<P extends Principal = Principal, R extends JsonValue = Jso
 	registry<C, V>(R: Registry<C, V>, context: Context, options?: GetOptions): Promise<RegistryValue<V>>;
 	/**
 	 * Runs `fn` with a call context for code outside objects (a Durable tool, a CLI): the host's principal (or
-	 * `options.principal`), this host's incarnation, `context`'s telemetry and signal, `ctx.get`. When `fn` settles or
+	 * `options.principal`; an explicit `undefined` runs anonymous), this host's incarnation, `context`'s telemetry and signal, `ctx.get`. When `fn` settles or
 	 * `context` aborts, the context is sealed: its signal aborted, `ctx.get` refused `released`, every reference it took
 	 * released; an abort rejects at once. `host.close` seals the open ones; after it, `root` rejects `released`.
 	 */
@@ -862,7 +863,7 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 		Kind: HostKind<N, Q>,
 		options: RouteOptions<P, HostKind<N, Q>>,
 		context: Context,
-	): void {
+	): RouteHandle<HostKind<N, Q>> {
 		this.#assertOpen();
 		if (this.#state !== "new") throw new Error("route: routes are declared before load");
 		if (this.#routes.has(Kind.kind)) throw new Error(`route: ${Kind.kind} is routed already`);
@@ -876,6 +877,10 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 			routing,
 		);
 		this.#routes.set(Kind.kind, route);
+		return {
+			retry: (address) => route.retry(address.key),
+			suspend: (address) => route.suspend(address.key),
+		};
 	}
 
 	revoke(revocation: R, context: Context): void {
@@ -958,8 +963,10 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 	async root<T>(fn: (ctx: Ctx<P>) => Promise<T>, context: Context, options: RootOptions<P> = {}): Promise<T> {
 		this.batch.assertOutside("root");
 		this.#assertOpen();
-		// The scope's ctx acts as `principal`, a `P`.
-		return this.#roots.run(fn as (ctx: Ctx) => Promise<T>, options.principal ?? this.principal, context);
+		// The scope's ctx acts as `principal`, a `P`: an explicit `undefined` runs anonymous (an HTTP request nobody
+		// authenticated), only an omitted one takes the host's.
+		const principal = "principal" in options ? options.principal : this.principal;
+		return this.#roots.run(fn as (ctx: Ctx) => Promise<T>, principal, context);
 	}
 
 	/** The record of registry `name` on this host, made by its first use. */
@@ -1098,6 +1105,14 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 			this.#wait(binding, Type.name, unbound, () => this.#place(binding, Type, params, context));
 			return undefined;
 		}
+		// An anonymous scope (an HTTP request nobody authenticated) is no principal a remote type's factory can serve
+		// (Opus's build review F5): refused, never bound as the host.
+		if (served!.kind !== "local" && principal === undefined) {
+			throw new ChordError({
+				code: "forbidden",
+				message: `${Type.name}: an anonymous caller gets no remote object`,
+			});
+		}
 		// Checked above: served here at the caller's version.
 		const object = this.#object(served!, params, principal, context, NO_CHAIN, binding.dependent);
 		binding.bind(object);
@@ -1169,7 +1184,7 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 		return this.#link(link, "route", options, context);
 	}
 
-	/** A link completed its handshake: a route's resets its address's backoff. */
+	/** A link completed its handshake: a route's address resolves again once if it drops. */
 	linkOpened(link: HostLink): void {
 		if (link.role !== "route") return;
 		for (const route of this.#routes.values()) route.opened(link);
@@ -1353,7 +1368,6 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 		const closed = this.#closedError();
 		// Code outside objects stops at its next use of Chord: an `fn` waiting in `sleep(ms, ctx)` ends.
 		this.#roots.close(closed);
-		for (const route of this.#routes.values()) route.close();
 		for (const holder of this.#pathHolders()) if (holder.kind === "remote") holder.lost(closed);
 		// At the fence too: requests still waiting for a publication or a provider end as the others did, and gets
 		// waiting for a publication that will not come fail now, not after the slow closes below (fix round 1).

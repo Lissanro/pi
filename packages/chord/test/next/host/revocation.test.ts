@@ -536,6 +536,11 @@ describe("revocation of this host's own requests over its paths (fix round 1)", 
 
 	it("ends a guest's reference over a route link that dropped, and nothing holds it on the next one", async () => {
 		const routed: RawPeer[] = [];
+		// The drop resolves again at once (slice 10 R2); the next link comes only after the revocation.
+		let next: () => void = () => {};
+		const revoked = new Promise<void>((resolve) => {
+			next = resolve;
+		});
 		const host = createHost<Guest, string>({
 			principal: { kind: "owner" },
 			revokedBy: guestRevokedBy,
@@ -546,6 +551,7 @@ describe("revocation of this host's own requests over its paths (fix round 1)", 
 			{
 				authorize: () => true,
 				resolve: async () => {
+					if (routed.length > 0) await revoked;
 					const [a, b] = memoryLinkPair();
 					routed.push(new RawPeer(b));
 					return { link: a, principal: { kind: "owner" }, codec: testCodec() };
@@ -569,6 +575,7 @@ describe("revocation of this host's own requests over its paths (fix round 1)", 
 		first.close();
 		await transported();
 		host.revoke("g", context);
+		next();
 		await transported();
 		expect(states).toEqual(["app.remote: revoked"]);
 		expect(routed.flatMap((peer, i) => (i === 0 ? [] : peer.received.filter(({ kind }) => kind === "hold")))).toEqual(

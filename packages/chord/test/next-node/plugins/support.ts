@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach } from "vitest";
 import * as chordNext from "../../../src/next/index.ts";
-import type { HostPackages } from "../../../src/next-node/plugins/index.ts";
+import type { HostPackages, KindDefinition } from "../../../src/next-node/plugins/index.ts";
 
 /** The fixture plugins' directory. */
 export const FIXTURES = fileURLToPath(new URL("../fixtures/plugins/", import.meta.url));
@@ -17,6 +17,16 @@ export const HOST_PACKAGES: HostPackages = { "@earendil-works/chord/next": chord
 
 /** The facet kinds of the fixtures' app. */
 export const KINDS = ["server", "worker", "web"] as const;
+
+/** The fixtures' app's kinds as the component takes them: Node servers and workers, a browser web, `modules`' names. */
+export function kindsOf(modules: HostPackages): Readonly<Record<string, KindDefinition>> {
+	const hostPackages = Object.keys(modules);
+	return {
+		server: { platform: "node", hostPackages },
+		worker: { platform: "node", hostPackages },
+		web: { platform: "browser", hostPackages },
+	};
+}
 
 const made: string[] = [];
 

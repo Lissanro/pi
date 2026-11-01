@@ -5,17 +5,20 @@ facet built into a script by esbuild and evaluated on Node, loaded and reloaded 
 Chord app modifies itself (the owner or an agent edits a plugin while it runs), so this is core machinery, no dev mode.
 Node-only (`fs`, esbuild, `vm`); the kernel in `src/next` stays portable and takes facets however they were made.
 esbuild is an optional peer dependency of `@earendil-works/chord`, imported only here. Exported as
-`@earendil-works/chord/next/plugins` once v2 has its entry point.
+`@earendil-works/chord/next/plugins` once v2 has its entry point; the plugin runtime alone (no esbuild, no watcher:
+what a worker evaluates with) as `@earendil-works/chord/next/plugins/runtime`.
 
 ## For apps (`index.ts`)
 
 ```ts
-const plugins = createPlugins({ roots: ["./plugins", join(dataDir, "plugins")], kinds: ["server", "worker", "web", "tui"],
-  browserKinds: ["web"], hostPackages: HOST, base: ["./src"], onError }, ctx);
-await plugins.load(server, { kind: "server", core: [{ name: "@app/core", facet: coreServerFacet }] }, ctx);
+const HOST = ["@earendil-works/chord/next", "@app/core"];
+const plugins = createPlugins({ roots: ["./plugins", join(dataDir, "plugins")], base: ["./src"], onError,
+  kinds: { server: { platform: "node", hostPackages: HOST }, worker: { platform: "node", hostPackages: HOST },
+           web: { platform: "browser", hostPackages: [...HOST, "react"] } } }, ctx);
+await plugins.load(server, { kind: "server", core: [{ name: "@app/core", facet: coreServerFacet }], modules }, ctx);
 plugins.state                                         // { dirty, install, set, base }, a JSON watchable
 const built = await plugins.build(plugins.state.value.dirty, ctx);
-await plugins.rollout([plugins.step("server", server), ...workerSteps], built, ctx);   // the app's order
+await plugins.rollout([plugins.step("server", server), workers.step("workers")], built, ctx);   // the app's order
 ```
 
 - **A plugin** is a directory with a `package.json`: its `name` (npm style) is the plugin's name, `dependencies` are
@@ -27,9 +30,12 @@ await plugins.rollout([plugins.step("server", server), ...workerSteps], built, c
   symlinks to real paths; the first root wins a duplicate name. `{ plugins, problems }`: a directory without a valid
   `package.json` or name, with two files of one kind, or a later duplicate is a problem, not a plugin.
 - `buildFacet(plugin, kind, { hostPackages, platform, plugins?, publicPath? }, ctx)`: one esbuild build from cold.
-  Inlined: the plugin's own files, files of other discovered plugins (copies, listed in `copied`; they may import only
-  host packages and files of their own plugin: contracts and side-effect-free modules), packages of its
-  `dependencies`. External: host packages, `@earendil-works/chord/next/plugins`, `chord.external` packages and Node
+  Inlined: the plugin's own files, files of other discovered plugins imported by name (`import { Notes } from
+  "@app/notes/contract"`: the discovered plugin `@app/notes`, its `contract.ts`, wherever its directory is; copies,
+  listed in `copied`; they may import only host packages and files of their own plugin: contracts and side-effect-free
+  modules; decision "Plugins import each other by name"), packages of its `dependencies`. A relative path into another
+  plugin's directory is refused, and an import naming no host package, dependency or discovered plugin is a build
+  error naming it. External: host packages, `@earendil-works/chord/next/plugins`, `chord.external` packages and Node
   builtins (Node builds; a browser build refuses both). Browser builds collect CSS into one stylesheet (`css`) and
   assets (`import url from "./icon.svg?url"`, `.wasm`) into content-hashed files (`assets`) under `publicPath`.
   Refused, with the file and line: `import.meta`, `__dirname`, `__filename` (each use, found through the script's
@@ -50,24 +56,36 @@ await plugins.rollout([plugins.step("server", server), ...workerSteps], built, c
   lives (its facet, on any host, or the error its evaluation threw).
 - `installDependencies(plugin, ctx, { npmCommand? })`: `npm install --omit=dev --legacy-peer-deps --ignore-scripts
   --no-audit --no-fund` in the plugin's real directory.
-- `createPlugins(options, ctx)`: turns V8's compilation cache off (once per process) and starts the watcher.
-  - `load(host, { kind, core }, ctx)`: discovers (once), builds and evaluates the `kind` facet of every plugin and
-    calls `host.load([...core, ...facets])`; a plugin whose build or evaluation fails is left out, reported in the
-    report's `failed` beside the host's own.
+- `createPluginRuntime()` (`runtime.ts`, slice 10 D11): loads and reloads hosts with shipped scripts, never builds.
+  Per host it keeps each plugin's loaded facet; `load(host, { kind, core, scripts, modules }, ctx)` evaluates the
+  complete set `scripts` (`PluginScript`: `{ plugin, built }`, plain data) with `modules` (the host packages, this
+  process's instances, kept for the host's reloads) and calls `host.load([...core, ...facets])`; a plugin whose build
+  or evaluation fails is left out, reported in the report's `failed` beside the host's own. `reload(host, scripts,
+  ctx)`, one after another per host, passes the complete set: core facets and unchanged plugins (same digest) as the
+  same objects, new scripts evaluated, loaded plugins not in `scripts` left out; a plugin whose build or evaluation
+  failed is passed as its loaded facet (an added one left out) and named to `host.reload`'s `failed` option, so the
+  host's closure rule sees it and its report lists it. What the host committed becomes the loaded set, also when the
+  reload rejects `aborted` after its commit (`details.committed`). Turns V8's compilation cache off (once per process).
+- `createPlugins(options, ctx)`: `kinds` defines each facet kind: its builds' `platform` (`node`, `browser`) and the
+  host packages they keep external (by specifier; the modules are given where scripts are evaluated). It starts the
+  watcher and uses a plugin runtime.
+  - `scripts(kind, ctx)`: the kind's complete current set, every discovered plugin's facet of it built at first use,
+    then updated only by what ships the kind (a rollout step of that kind, a direct `reload`): what a worker starts
+    with. `build` never changes it.
+  - `load(host, { kind, core, modules }, ctx)`: `kind`'s current set loaded with the runtime.
   - `build(names, ctx)`: discovers again when the plugin set or a plugin's `package.json` changed, builds every facet
     of `names` and of plugins discovered since: `{ facets, plugins, removed }`, plain data (`plugins`: the built
     plugins as discovered, by name; a clone reloads the same).
-  - `reload(host, built, ctx)`, one after another per host: the complete set for the host's kind (the plugins it
-    loaded and those `built` brings): core facets and unchanged plugins (same digest) as the same objects, new scripts
-    evaluated, the plugins `built` removed or rebuilt without a facet of the host's kind left out (its own
-    discovery's, never a later one's); a plugin whose build or evaluation failed is
-    passed as its loaded facet (an added one left out) and named to `host.reload`'s `failed` option, so the host's
-    closure rule sees it and its report lists it. What the host committed becomes the loaded set, also when the
-    reload rejects `aborted` after its commit (`details.committed`).
-  - `step(name, host)`: an in-process rollout step; `rollout(steps, built, ctx)` runs steps in order and stops at one
-    that rejects (`stopped`); failed plugins do not stop it. It clears the dirty marks of the built plugins applied on
-    every step and unchanged since the build; a plugin failed on any step stays dirty. Given a copy of a build (not the
-    object `build` returned), it clears no marks.
+  - `reload(host, built, ctx)`: applies `built` to the current set of the host's kind (its removed plugins and those
+    rebuilt without a facet of the kind leave it, its facets replace theirs; applied and read in one step, so two
+    reloads started together each pass their own) and reloads the host with that complete set.
+  - `step(name, host)`: an in-process rollout step, one host named `name`. A step's `reload(built, ctx)` returns
+    `{ hosts: [{ host, report } | { host, stopped: true } | { host, error }] }` (D12). `rollout(steps, built, ctx)`
+    applies `built` to the current set of each step's kinds right before that step, runs the steps in order and stops
+    at one that rejects (`stopped`); failed plugins and hosts do not stop it. It clears the dirty marks of the built
+    plugins applied on every host of every step and unchanged since the build: a plugin failed on any host, or of a
+    step's kinds on a host listed with an error, or with a built kind no step shipped, stays dirty. Given a copy of a
+    build (not the object `build` returned), it clears no marks.
   - `installDependencies(name, ctx)` (the install mark clears, the plugin turns dirty), `close()` (the watcher stops).
 - **The watcher** (`fs.watch` on every directory of the roots, the base code and plugin directories linked from
   outside the roots, never on `node_modules` or `.git`; a directory appearing later under a watched one gets its watch,
@@ -85,11 +103,13 @@ Each a folder in `test/next/examples/` with its hosts in `main.ts` and real plug
 `35-plugins` (load, edit, mark, build, roll out), `36-plugin-failures` (per plugin failures at startup and reload, the
 closure rule, an abort after the commit), `37-plugin-imports` (what a facet may import, installs, the refusals),
 `38-watch-and-rollout` (every mark, added, removed and dropped facets, stopped rollouts) and `39-browser-build` (a
-browser build: stylesheet, assets by URL, plain data).
+browser build: stylesheet, assets by URL, plain data); with workers, `43-rollout` (a rollout over the server and its
+running workers).
 
 ## Inside the directory
 
 `discover.ts` (discovery), `build.ts` (one build, its import rules and input capture), `evaluate.ts` (evaluation, the
 `require` a script gets, `pluginFile`), `stack.ts` (the source maps of evaluated scripts while their facets live,
-`mapStack`), `install.ts`, `watcher.ts` (the watcher and its marks, a JSON watchable), `plugins.ts` (the component:
-per-host loaded facets, `build`, `load`, `reload`, `step`, `rollout`).
+`mapStack`), `install.ts`, `watcher.ts` (the watcher and its marks, a JSON watchable), `runtime.ts` (per-host loaded
+facets, complete-set loads and reloads, no esbuild), `plugins.ts` (the component: kinds, current sets, `build`,
+`load`, `reload`, `step`, `rollout`).

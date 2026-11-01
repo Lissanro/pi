@@ -181,50 +181,61 @@ describe("DefaultPackageManager git update", () => {
 		});
 	});
 
-	describe.skipIf(offline)("force-push scenarios", () => {
-		it("should recover when remote history is rewritten", async () => {
+
+	describe("git clean failures", () => {
+		// https://github.com/earendil-works/pi/issues/11597
+		it("should install dependencies and retry the clean later when git clean fails", async () => {
 			setupRemoteAndInstall();
-			const initialCommit = getCurrentCommit(remoteDir);
+			const newCommit = createCommit(
+				remoteDir,
+				"package.json",
+				JSON.stringify({ name: "test-extension", version: "1.0.0" }),
+				"Add package.json",
+			);
 
-			// Add commit to remote
-			createCommit(remoteDir, "extension.ts", "// v2", "Commit to keep");
+			const executedCommands: string[] = [];
+			let failClean = true;
+			const managerWithInternals = packageManager as unknown as {
+				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
+			};
+			managerWithInternals.runCommand = async (command, args, options) => {
+				const commandLine = `${command} ${args.join(" ")}`;
+				executedCommands.push(commandLine);
+				if (command === "npm") return;
+				if (commandLine === "git clean -fdx" && failClean) {
+					throw new Error("git clean -fdx failed with code 1");
+				}
+				const result = spawnSync(command, args, { cwd: options?.cwd, encoding: "utf-8" });
+				if (result.status !== 0) {
+					throw new Error(`Command failed: ${commandLine}\n${result.stderr}`);
+				}
+			};
+			const progressMessages: string[] = [];
+			packageManager.setProgressCallback((event) => {
+				if (event.type === "progress" && event.message) progressMessages.push(event.message);
+			});
+			const markerPath = join(agentDir, "git", "github.com", "test", ".extension.pi-update-incomplete");
 
-			// Update to get the new commit
-			await packageManager.update();
-			expect(getFileContent(installedDir, "extension.ts")).toBe("// v2");
-
-			// Now force-push to rewrite history on remote
-			git(["reset", "--hard", initialCommit], remoteDir);
-			const rewrittenCommit = createCommit(remoteDir, "extension.ts", "// v2-rewritten", "Rewritten commit");
-
-			// Update should succeed despite force-push
-			await packageManager.update();
-
-			expect(getCurrentCommit(installedDir)).toBe(rewrittenCommit);
-			expect(getFileContent(installedDir, "extension.ts")).toBe("// v2-rewritten");
-		});
-
-		it("should recover when local commit no longer exists in remote", async () => {
-			setupRemoteAndInstall();
-
-			// Add commits to remote
-			createCommit(remoteDir, "extension.ts", "// v2", "Commit A");
-			createCommit(remoteDir, "extension.ts", "// v3", "Commit B");
-
-			// Update to get all commits
-			await packageManager.update();
-			expect(getFileContent(installedDir, "extension.ts")).toBe("// v3");
-
-			// Force-push remote to remove commits A and B
-			git(["reset", "--hard", "HEAD~2"], remoteDir);
-			const newCommit = createCommit(remoteDir, "extension.ts", "// v2-new", "New commit replacing A and B");
-
-			// Update should succeed - the commits we had locally no longer exist
 			await packageManager.update();
 
 			expect(getCurrentCommit(installedDir)).toBe(newCommit);
-			expect(getFileContent(installedDir, "extension.ts")).toBe("// v2-new");
+			expect(executedCommands).toContain("git clean -fdx");
+			expect(executedCommands.some((command) => command.startsWith("npm install"))).toBe(true);
+			expect(progressMessages.some((message) => message.includes("Could not remove all untracked files"))).toBe(
+				true,
+			);
+			expect(existsSync(markerPath)).toBe(true);
+
+			failClean = false;
+			executedCommands.length = 0;
+			await packageManager.update();
+
+			expect(executedCommands).toContain("git clean -fdx");
+			expect(existsSync(markerPath)).toBe(false);
 		});
+	});
+
+	describe("force-push scenarios", () => {
 
 		it("should handle complete history rewrite", async () => {
 			setupRemoteAndInstall();

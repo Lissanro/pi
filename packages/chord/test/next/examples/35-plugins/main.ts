@@ -29,13 +29,15 @@ async function until(ready: () => boolean): Promise<void> {
 	while (!ready()) await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-// 1. The component: the roots, the facet kinds, and the host packages every script gets (this process's Chord: a
-//    plugin's `import { defineFacet } from "@earendil-works/chord/next"` is the app's own instance).
+// 1. The component: the roots, and the facet kinds, each built for Node with Chord as a host package (kept external in
+//    the builds). The hosts give the modules themselves when they load (this process's Chord: a plugin's
+//    `import { defineFacet } from "@earendil-works/chord/next"` is the app's own instance).
+const modules = { "@earendil-works/chord/next": chordNext };
+const node = { platform: "node", hostPackages: Object.keys(modules) } as const;
 const plugins = createPlugins(
 	{
 		roots: [root],
-		kinds: ["server", "worker"],
-		hostPackages: { "@earendil-works/chord/next": chordNext },
+		kinds: { server: node, worker: node },
 		onError: (error) => console.log("plugins:", error.kind),
 	},
 	context,
@@ -52,8 +54,8 @@ server.route(
 	{ authorize: () => true, resolve: async () => ({ link: down, principal: { kind: "worker" } }) },
 	context,
 );
-const workerLoad = await plugins.load(worker, { kind: "worker", core: [] }, context);
-const serverLoad = await plugins.load(server, { kind: "server", core: [] }, context);
+const workerLoad = await plugins.load(worker, { kind: "worker", core: [], modules }, context);
+const serverLoad = await plugins.load(server, { kind: "server", core: [], modules }, context);
 console.log(
 	"1. discovered:",
 	plugins.discovery.plugins.map(({ name, facets }) => `${name} [${Object.keys(facets)}]`).join(", "),
@@ -84,8 +86,17 @@ console.log(
 	built.facets.map(({ plugin, facet, kind }) => `${plugin}/${facet}: ${kind}`),
 );
 const rolled = await plugins.rollout(steps, built, context);
-for (const { name, report } of rolled.steps) {
-	console.log(`   ${name}:`, JSON.stringify(report.plugins), "objects", JSON.stringify(report.objects));
+for (const { name, hosts } of rolled.steps) {
+	for (const host of hosts) {
+		if ("report" in host) {
+			console.log(
+				`   ${name}:`,
+				JSON.stringify(host.report.plugins),
+				"objects",
+				JSON.stringify(host.report.objects),
+			);
+		}
+	}
 }
 await until(() => notes.label.value === "v2");
 console.log("4. notes:", notes.label.value, "count", notes.count.value, "| index:", index.label.value);

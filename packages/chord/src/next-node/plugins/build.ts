@@ -1,15 +1,17 @@
 // Building (slice 7c §2): one facet of one plugin as one script, by esbuild from cold. Its own files, files of other
-// discovered plugins (copies) and its npm `dependencies` are inlined; host packages, this component, `chord.external`
+// discovered plugins imported by name (`@app/notes/contract`: copies; decision "Plugins import each other by name") and
+// its npm `dependencies` are inlined; host packages, this component, `chord.external`
 // packages and Node builtins stay external, answered at evaluation by the `require` the script takes. The result is
 // plain data, the same value a worker or a page evaluates where it runs; a failed build is a result, never a throw.
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
-import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type BuildFailure, build, type Plugin as EsbuildPlugin, type Loader, type Message } from "esbuild";
 import type { Context } from "../../context/index.ts";
 import type { Plugin } from "./discover.ts";
+import { PLUGINS_SPECIFIER, packageName } from "./evaluate.ts";
 import { inlineSourceMap } from "./stack.ts";
 
 /** What `buildFacet` takes besides the plugin and the kind. */
@@ -47,9 +49,6 @@ export type BuiltFacet =
 			readonly assets: readonly { readonly name: string; readonly bytes: Uint8Array }[];
 	  }
 	| { readonly kind: "failed"; readonly plugin: string; readonly facet: string; readonly errors: readonly string[] };
-
-/** The one specifier of this component a script imports (`pluginFile`): external always, answered per facet. */
-export const PLUGINS_SPECIFIER = "@earendil-works/chord/next/plugins";
 
 /** What a free `__dirname` and `__filename` become in a build: names no script has, found again by `freeGlobals`. */
 const GLOBAL_MARKERS = { __dirname: "__chord_plugin_dirname", __filename: "__chord_plugin_filename" };
@@ -239,7 +238,7 @@ class ImportRules {
 					if (options.platform === "node" && BROWSER_ONLY.has(extname(found.path))) {
 						return { errors: [{ text: `"${args.path}": stylesheets and assets are for browser builds` }] };
 					}
-					const checked = this.#checkFile(found.path, args.importer, args.path);
+					const checked = this.#checkFile(found.path, args.importer, args.path, resolved.named);
 					if (checked !== undefined) return { errors: [{ text: checked }] };
 					return { path: found.path, pluginData: resolved.asset ? ASSET : undefined };
 				});
@@ -277,7 +276,13 @@ class ImportRules {
 	): Promise<
 		| { readonly kind: "external" }
 		| { readonly kind: "default" }
-		| { readonly kind: "path"; readonly path: string; readonly asset: boolean }
+		| {
+				readonly kind: "path";
+				readonly path: string;
+				readonly asset: boolean;
+				/** The plugin an import by name named (`@app/notes/contract`). */
+				readonly named?: Plugin;
+		  }
 		| { readonly kind: "error"; readonly text: string }
 	> {
 		const browser = this.#options.platform === "browser";
@@ -299,10 +304,12 @@ class ImportRules {
 		const from = this.#place(importer);
 		if (from.kind === "package") return { kind: "default" };
 		if (specifier.startsWith(".") || isAbsolute(specifier)) return { kind: "path", path: specifier, asset: false };
+		const name = packageName(specifier);
+		const named = name === this.#own.name ? this.#own : this.#others.find((each) => each.name === name);
+		if (named !== undefined) return this.#byName(specifier, named, from);
 		if (from.kind === "copied") {
 			return { kind: "error", text: `"${specifier}": ${copiedRule(from.plugin)}` };
 		}
-		const name = packageName(specifier);
 		if (this.#own.external.includes(name)) {
 			if (!browser) return { kind: "external" };
 			return { kind: "error", text: `"${specifier}": chord.external packages are for Node builds` };
@@ -310,24 +317,51 @@ class ImportRules {
 		if (this.#own.dependencies.includes(name)) return { kind: "default" };
 		return {
 			kind: "error",
-			text: `"${specifier}": neither a host package nor in the dependencies of plugin "${this.#own.name}"`,
+			text: `"${specifier}": neither a host package, in the dependencies of plugin "${this.#own.name}" nor a discovered plugin "${name}"`,
 		};
 	}
 
 	/**
-	 * Why the file `path` (resolved from a relative import in `importer`) may not be inlined: outside the plugin and
-	 * every other discovered plugin, or, from a copied file, outside that file's own plugin; `undefined` when it may (a
-	 * file of another plugin is recorded as copied).
+	 * An import by name of a file of plugin `named` (`@app/notes/contract`, decision "Plugins import each other by name"):
+	 * its path in that plugin's directory, wherever that is; from a copied file only its own plugin's.
 	 */
-	#checkFile(path: string, importer: string, specifier: string): string | undefined {
+	#byName(
+		specifier: string,
+		named: Plugin,
+		from: Place,
+	):
+		| { readonly kind: "path"; readonly path: string; readonly asset: false; readonly named: Plugin }
+		| { readonly kind: "error"; readonly text: string } {
+		const file = specifier.slice(named.name.length + 1);
+		if (file === "") {
+			return {
+				kind: "error",
+				text: `"${specifier}": names plugin "${named.name}", not a file of it ("${named.name}/contract")`,
+			};
+		}
+		if (from.kind === "copied" && from.plugin !== named) {
+			return { kind: "error", text: `"${specifier}": ${copiedRule(from.plugin)}` };
+		}
+		return { kind: "path", path: join(named.dir, file), asset: false, named };
+	}
+
+	/**
+	 * Why the file `path` (resolved from `importer`'s import of `specifier`, by name of plugin `named` or a relative path)
+	 * may not be inlined: a relative path into another plugin's directory, outside every discovered plugin, or, from a
+	 * copied file, outside that file's own plugin; `undefined` when it may (another plugin's file is recorded as copied).
+	 */
+	#checkFile(path: string, importer: string, specifier: string, named: Plugin | undefined): string | undefined {
 		const from = this.#place(importer);
 		const to = this.#place(path);
 		if (to.kind === "own" && from.kind === "own") return undefined;
-		if (to.kind === "copied" && (from.kind === "own" || (from.kind === "copied" && from.plugin === to.plugin))) {
+		if (to.kind === "copied" && (to.plugin === named || (from.kind === "copied" && from.plugin === to.plugin))) {
 			this.#copied.add(path);
 			return undefined;
 		}
 		if (from.kind === "copied") return `"${specifier}": ${copiedRule(from.plugin)}`;
+		if (to.kind === "copied") {
+			return `"${specifier}": a relative path into plugin "${to.plugin.name}" (import its files by name: "${to.plugin.name}/…")`;
+		}
 		return `"${specifier}": outside the plugin (base code is reached through a host package, packages through dependencies)`;
 	}
 
@@ -349,12 +383,6 @@ function copiedRule(plugin: Plugin): string {
 export function inside(dir: string, path: string): boolean {
 	const rest = relative(dir, path);
 	return rest !== "" && !rest.startsWith("..") && !isAbsolute(rest);
-}
-
-/** The package a bare specifier names: `@scope/name` or `name`, without a subpath. */
-export function packageName(specifier: string): string {
-	const parts = specifier.split("/");
-	return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
 }
 
 /** One build error as `file:line:column: text`, its file relative to the plugin, with the hint where it applies. */

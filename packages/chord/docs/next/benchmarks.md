@@ -914,3 +914,46 @@ derive commit 10.34-10.36 → 10.43-10.49 µs (14,899 → 14,901 B), activation 
 0.026-0.030 → 0.028-0.033 ms (pinned 0.030-0.035 → 0.030-0.032 ms); retained per hold equal (one binary hold 176.2 →
 170.1 KiB). `reload.ts`: swap of 50 / 1,000 objects 1.44-1.73 / 30.83-32.71 → 1.52-1.53 / 30.55-33.25 ms, restart
 1.01-1.05 / 15.54-16.87 → 0.95-0.99 / 15.90-16.02 ms until the reload resolves.
+
+## Slice 10: HTTP and workers (2026-10-31)
+
+`test/next/bench/http.ts` and `test/next/bench/workers.ts`, Node 24.4.1, CPU 6 (the forked workers inherit the pin).
+
+| Measurement | Result |
+| --- | --- |
+| keep-alive round trip, a JSON body: plain Node handler / a route (same process as the client) | build: 42.0-42.5 / 46.4-47.0 µs: +4.2-4.9 µs (9.9-11.7%); fix round 1: 42.5-42.9 / 62.8-64.4 µs: +20.3-21.5 µs |
+| the same after 30,000 warm-up requests (fix round 1) | 30.9-31.3 / 43.4-44.0 µs: +12.1-12.9 µs; with an authenticator reading `request.headers`: +15.9 µs |
+| the same, server and client in two processes (CPU 6 and 8; build) | 36.4-37.0 / 41.7-42.4 µs: +5 µs |
+| 100 MiB file: `pipeline` of a read stream / `fileResponse` | build (64 KiB reads): 602-618 / 487-565 MiB/s; fix round 1 (256 KiB, pulled): 477-751 / 560-611 MiB/s |
+| a worker's cold start with one shipped script: fork to `started` / to `ready` (median of 7) | 531-532 / 538-539 ms |
+| the server's heap per idle worker (20 workers, one reference each) | 49.5 KiB |
+
+A request's overhead was 16 µs at first: `host.root` cost about 7 µs of it per request (a linked abort signal, a
+`Promise.race` and an `awaitWithContext` per scope). Root scopes now take the caller's signal with one listener and
+settle one promise (`root.ts`; behaviour and tests unchanged): 4.2-4.9 µs, about the bar of 10% of a round trip. The
+rest is the request's scope (its abort controller, `CallContext`), admission and the response's header merge. The cold
+start is mostly Node's startup stripping the types of the source tree it imports; the start timer (60 s) is far from
+it.
+
+**Fix round 1** (the `fetch` core, the security baseline, Chord's listener as a native object). A route's overhead in
+the standard run grew from +4.5 µs to +20-21 µs (+41 µs before the Node fast path: the listener reads Node's parsed
+headers and makes a Web `Request` only when something reads `request.headers` or the body or a relay verifies; whole
+bodies are written as strings, in one write with the head). Warmed, +12-13 µs; a CPU profile of the warmed route path
+(per request, `test/next/bench/http.ts`'s route): the listener's request function 13.6 µs inclusive against the plain
+handler's 8.9 µs, of which writing the answer 8.3 µs (the plain handler's `writeHead` and `end`: 9.1 µs); `serve` 4.2
+µs (the root scope 2.1, the URL parse 0.9, default headers 0.6, admission and routing 1.1, the answer 0.7); the root
+scope's seal in a later microtask 0.9 µs. The baseline's extra headers cost 0.4 µs (a plain handler sending them).
+The rest, about 5 µs, sits in no function of the component: Node's tick and microtask machinery (33 µs inclusive
+against 18 µs for the plain handler). Opus's two trims are in (`lookup` decodes only segments with `%`; one abort
+controller per request: the Node side's own is gone). Kernel rows, HEAD `bc9a20f84` → fix round 1, CPU 6, alternating:
+binary 1 MiB call median 0.182-0.220 → 0.196 ms; reconnect of 1 / 100 references 1.02-1.10 / 79.1-80.3 → 1.04-1.05 /
+81.3-81.5 ms; watched `writable.set` 0.836-0.868 → 0.861-0.863 µs; watched derive commit 10.42-10.58 → 10.36-10.60 µs;
+activation churn 58.9-60.5 → 59.1-60.8 µs.
+
+**Kernel hot paths** (routes without a timer, `RouteHandle`, `Path` events, root scopes), HEAD `bc9a20f84` → build at
+paths of equal length, CPU 6, alternating runs. `calls.ts`: local call 2.70-2.83 → 2.70-2.83 µs (6,660 B both),
+watched derive commit 10.36-10.60 → 10.34-10.79 µs, activation churn 59.43-61.30 → 59.48-60.72 µs. `links.ts`: commit
+to frame and encode/decode alike; reconnect of 1 / 100 references 0.94-1.15 / 80.8-84.0 → 0.94-1.15 / 80.6-86.5 ms;
+1,000 parked calls 24.4-25.2 → 24.3-24.6 ms. `reload.ts`: swap of 50 / 1,000 objects 1.44-1.55 / 30.78-31.42 →
+1.32-1.56 / 31.20-31.83 ms, restart 0.96-0.98 / 15.75-16.34 → 0.95-1.10 / 15.91-15.94 ms until the reload resolves.
+`registries.ts` alike (one of 100 contributions set 1.47-2.45 → 1.48-3.41 µs, run to run).

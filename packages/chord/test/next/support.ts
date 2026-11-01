@@ -40,6 +40,7 @@ import {
 	type HostError,
 	type PluginFailure,
 	type RefState,
+	type RouteHandle,
 	type Self,
 	type StoreSelf,
 } from "../../src/next/host/index.ts";
@@ -770,6 +771,8 @@ export type Resolved = {
 export type Relayed = {
 	readonly tab: Host<TestPrincipal>;
 	readonly server: Host<TestPrincipal>;
+	/** The server's route to `Session`'s addresses. */
+	readonly route: RouteHandle<typeof Session>;
 	/** The worker of each resolved session address, the latest one per key. */
 	readonly workers: Map<string, Host<TestPrincipal>>;
 	/** The server's end of each resolved route link, in order. */
@@ -851,7 +854,7 @@ export async function relayed(
 		return { link: a, principal, trusted: options.trusted, codec };
 	};
 	const resolve = options.resolve ?? (async (_address, made) => made());
-	server.route(
+	const route = server.route(
 		Session,
 		{
 			authorize: options.authorize ?? (() => true),
@@ -870,7 +873,7 @@ export async function relayed(
 	const accepted = { principal: options.tab ?? { kind: "owner" }, codec: tabCodec, limits: options.limits } as const;
 	server.accept(a, accepted, context);
 	tab.connect(b, { principal: { kind: "server" }, codec: tabCodec }, context);
-	return { tab, server, workers, routeLinks, tabLink: a, resolves, errors };
+	return { tab, server, route, workers, routeLinks, tabLink: a, resolves, errors };
 }
 
 /**

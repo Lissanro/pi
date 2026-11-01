@@ -25,6 +25,7 @@ const RELOADS = 100;
 const gc = (globalThis as { gc?: () => void }).gc!;
 const HOST_PACKAGES = { "@earendil-works/chord/next": chordNext };
 const KINDS = ["server", "worker"];
+const NODE = { platform: "node", hostPackages: Object.keys(HOST_PACKAGES) } as const;
 
 /** A plugin's worker facet: a store over a document, a derive, a method, a helper module and the shared contract. */
 function worker(index: number, label: string): string {
@@ -111,12 +112,9 @@ for (let run = 0; run < RUNS; run++) {
 console.log(`evaluation per facet: ${median(evaluations).toFixed(2)} ms (median of ${RUNS})`);
 
 // The heap after 100 reloads of one plugin on a host, against after a warm-up (two builds alternating).
-const component = createPlugins(
-	{ roots: [root], kinds: KINDS, hostPackages: HOST_PACKAGES, onError: () => {} },
-	context,
-);
+const component = createPlugins({ roots: [root], kinds: { server: NODE, worker: NODE }, onError: () => {} }, context);
 const host = createHost({ onError: () => {} });
-await component.load(host, { kind: "worker", core: [] }, context);
+await component.load(host, { kind: "worker", core: [], modules: HOST_PACKAGES }, context);
 await writeFile(join(root, "p0", "worker.ts"), worker(0, "a"));
 const first = await component.build(["@bench/p0"], context);
 await writeFile(join(root, "p0", "worker.ts"), worker(0, "b"));

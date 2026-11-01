@@ -153,6 +153,16 @@ export class RemoteObject implements Target {
 		this.#hold = { side: link.consumer, id: link.consumer.attach(this, chain) };
 	}
 
+	/**
+	 * Its path's address cannot be reached for now (a route's `resolve` failed, a suspension): `failed { waiting }` with
+	 * `error`, still on the path, bound by its next link.
+	 */
+	unreachable(error: ChordError): void {
+		this.#lastFailure = error;
+		if (this.#state.kind !== "ended")
+			this.#move({ kind: "failed", cause: { kind: "waiting", error }, retryAt: undefined });
+	}
+
 	/** The link dropped: loading until a new link's hold is bound (`#startOver`). */
 	dropped(_error: ChordError): void {
 		this.#hold = undefined;

@@ -2,7 +2,7 @@
 // contract declares.
 
 import { defineFacet, local, str } from "@earendil-works/chord/next";
-import { Price } from "../prices/contract.ts";
+import { Price } from "@example/prices/contract";
 
 const Summary = local("example.summary", { version: 1, params: {}, members: { text: str() } });
 

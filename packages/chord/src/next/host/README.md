@@ -196,7 +196,7 @@ server.accept(webSocketLink(ws), { principal, limits: { part: 16 * MiB, decoded:
   waited), `close_timeout` (`object`, `native`: a close still running at its `closeTimeout`, a possible leak), `drain_timeout` (`object`: calls still running at `closeTimeout`; their natives close anyway),
   `listener_error` (a throwing watch listener), `delivery_failed` (a frame delivery or a link's flush that threw) and
   `protocol_error` (`error`: what closed a link, see `link/`) and `resolve_failed` (`address`: its key, `error`: a
-  route's `resolve` rejected; the address waits its backoff), `routine_failed` (`object`, `routine`: its position,
+  route's `resolve` rejected; the address's holders fail `waiting` with it), `routine_failed` (`object`, `routine`: its position,
   `error`: a routine call threw, or its watch could not be taken; a source's failure calls never reach a routine), `job_failed` (`object`, `job`,
   `id`, `error`: a run threw, not after an abort), `job_finish_failed` (the same: a `finish` threw; it is retried) and
   `job_dropped` (`object`, `job`, `id`: a blocked run dropped without `finish`, by `abort` or its object's end),
@@ -233,8 +233,8 @@ server.accept(webSocketLink(ws), { principal, limits: { part: 16 * MiB, decoded:
   live is ignored; failure calls wake nothing; a composition made by the object's own contributions leaving (it
   failed live) does not wake it. There is no backoff between wakes: wake an object on sources that change rarely
   (models, a harness), not on every event (a writable set per message retries a failing object per message).
-- `host.root(fn, ctx, { principal? })` (slice 8 D3): `fn(ctx)` with a handler's `Ctx<P>`: the host's principal or the
-  given one, this host's incarnation, `ctx`'s telemetry, a signal linked to `ctx`'s, `ctx.get`. When `fn` settles,
+- `host.root(fn, ctx, { principal? })` (slice 8 D3): `fn(ctx)` with a handler's `Ctx<P>`: the host's principal (an
+  omitted `principal`) or the given one (an explicit `undefined`: anonymous, slice 10), this host's incarnation, `ctx`'s telemetry, a signal linked to `ctx`'s, `ctx.get`. When `fn` settles,
   `ctx` aborts or the host closes, the scope is sealed: its references released (their calls reject `released`), a
   waiting `ctx.get` gives up, a later one is refused `released/settled`, its signal aborted. An abort rejects
   `host.root` at once (an uncooperative `fn` runs on and fails at its next use of Chord); an aborted `ctx` runs no
@@ -327,12 +327,15 @@ server.accept(webSocketLink(ws), { principal, limits: { part: 16 * MiB, decoded:
   starts (`false`: broken `forbidden`; a throw: broken with that error). `resolve(address, context)` returns `{ link,
   principal, trusted?, codec? }`, the address's link (role `route`); it runs at most once at a time per address, later
   holds wait for it, and `context` is aborted only when the host closes (a link it returns later is closed at once). A
-  `resolve` whose holds were all released meanwhile finishes and its link is kept. A rejection (`resolve_failed`), a
-  link closed already, or the address's link closing while holds over it exist starts the address's backoff (1 s
-  doubling to 60 s, separate from objects' identities); the holds stay `loading` and resolve again after it while they
-  exist. Only a link that completed its handshake resets the backoff. A `resolve` returns the link before the worker
-  loaded (the worker connects first): waiting for its `load` could deadlock. Chord never closes a route link except
-  at `host.close`. When this host holds over a route link it sends whom each hold acts for (the table in `remote/`):
+  `resolve` whose holds were all released meanwhile finishes and its link is kept. A route has no timer (slice 10
+  R2): a rejection (`resolve_failed`), a link closed already, or a link closing before its handshake fails the
+  address's holders `failed { waiting }` with that error (they stay on its path: its next link binds them); the
+  address resolves again only for a new hold, on `retry`, or once after a link that completed its handshake dropped
+  while held. It returns a `RouteHandle`: `retry(address)` ends the address's failure and suspension and resolves it
+  now if held; `suspend(address)` resolves nothing for it while it has holders (they fail `waiting`,
+  "<key>: suspended", once its link is gone), forgotten with its last holder. A `resolve` returns the link before the
+  worker loaded (the worker connects first): waiting for its `load` could deadlock. Chord closes a route link itself
+  only at `host.close`, on the heartbeat and on a protocol error. When this host holds over a route link it sends whom each hold acts for (the table in `remote/`):
   a guest's handler that `ctx.get`s a worker type reaches the worker as the guest.
 - `host.close(ctx)`: aborts every route's `resolve`, closes its links first, children, routes, then the parent (no
   `gone` goes out), ends every remote reference (`released/closed`, parked calls rejected with it), every request
@@ -568,7 +571,7 @@ path or leaves it waiting, `acquire` gets one for a caller), `UnboundIndex` (req
 `checkDependencies` and `ParkedLong` (what a parked attempt's dependencies say; the `parked_long` report),
 `Destination` (where a reference or an arriving hold goes, by address: here, a route's path or the parent's; whether
 a hold served here is placed here), `Route` (one per routed kind: per address its `Path`, at most one running
-`resolve`, the backoff per address; an address is kept while it has holders, a link or a running `resolve`),
+`resolve`, its failure and suspension; an address is kept while it has holders, a link or a running `resolve`),
 `ChordObject` (one per identity: its state across attempts (what a parked attempt shows), its first outcome, holders,
 retries passed on while parked, cycle checks with its instance id and the chain it was created for, lingering, ending and revocation, the count of its running and finishing job runs,
 which keeps it like a reference: `countRuns`, its contributions while live and its wake signals), `RetryWakes` (an

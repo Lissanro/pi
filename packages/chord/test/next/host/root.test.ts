@@ -1,7 +1,7 @@
 import { getEventListeners } from "node:events";
 import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT as context, withAbortSignal, withCancel } from "../../../src/context/index.ts";
-import { int, local, method } from "../../../src/next/contracts/index.ts";
+import { hostKind, int, local, method, remote, str } from "../../../src/next/contracts/index.ts";
 import { type Ctx, createHost, defineFacet, sleep } from "../../../src/next/host/index.ts";
 import { constant } from "../../../src/next/state/index.ts";
 import { expectCollected, flushed, loaded, rejection, type TestPrincipal } from "../support.ts";
@@ -30,6 +30,39 @@ describe("host.root", () => {
 		expect(seen).toMatchObject({ principal: { kind: "server" }, id: 7 });
 		const owner = { kind: "owner", access: "local" } as const;
 		expect(await host.root(async (ctx) => ctx.principal, context, { principal: owner })).toEqual(owner);
+		await host.close(context);
+	});
+
+	it("runs anonymous with an explicit undefined principal; only an omitted one takes the host's (slice 10 §6)", async () => {
+		const host = createHost<TestPrincipal>({ principal: { kind: "server" }, onError: () => {} });
+		await host.load([], context);
+		expect(await host.root(async (ctx) => ctx.principal, context, { principal: undefined })).toBeUndefined();
+		expect(await host.root(async (ctx) => ctx.principal, context, {})).toEqual({ kind: "server" });
+		await host.close(context);
+	});
+
+	// Opus's build review F5: an anonymous scope's `ctx.get` of a remote type served here failed on a WeakMap key.
+	it("refuses an anonymous scope a remote type served here (forbidden); a local one it gets", async () => {
+		const Server = hostKind("server");
+		const Secrets = remote("app.secrets", {
+			version: 1,
+			params: {},
+			hostAddress: () => Server(),
+			variants: { main: { methods: { read: method(undefined, str()) } } },
+		});
+		const host = createHost<TestPrincipal>({ address: Server(), principal: { kind: "server" }, onError: () => {} });
+		const facet = defineFacet<TestPrincipal>((h) => {
+			serveInfo(h);
+			h.serve(Secrets, () => ({ variant: "main", members: { read: async () => "secret" } }));
+		});
+		await host.load([{ name: "@app/secrets", facet }], context);
+		const anonymous = { principal: undefined };
+		const refused = await rejection(host.root(async (ctx) => ctx.get(Secrets, {}), context, anonymous));
+		expect(refused).toMatchObject({
+			code: "forbidden",
+			message: "app.secrets: an anonymous caller gets no remote object",
+		});
+		expect(await host.root(async (ctx) => (await ctx.get(Info, { id: 3 })).id.value, context, anonymous)).toBe(3);
 		await host.close(context);
 	});
 

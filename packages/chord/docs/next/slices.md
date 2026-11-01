@@ -32,6 +32,11 @@ slice spec's section citations are for orientation, not a reading limit (owner, 
   (Durable's 35-37); benchmarks in `benchmarks.md`.
 - **Slice 7b** (built 2026-10-29, `slice-7b.md`): `host.reload`, staging (`host/staging.ts`), fates, adapted members
   (`host/adapted.ts`), references, jobs and registries across a reload; examples 33-34; `test/next/bench/reload.ts`.
+- **Slice 7c** (committed 2026-10-30, `slice-7c.md`): `src/next-node/plugins/` (discovery, builds, evaluation,
+  `pluginFile`, `mapStack`, `installDependencies`, the watcher, `rollout`), per-plugin `load` and `reload`; examples 35-39.
+- **Slice 10** (built 2026-10-31, `slice-10.md`): `src/next-node/http/` (a `fetch` core with the security baseline,
+  Chord's Node listener, `nodeRequest`, plugin sockets, links), `src/next-node/workers/`, `createPluginRuntime`, kinds,
+  the kernel's `RouteHandle` and anonymous `host.root`, origins only from relays; examples 40-48.
 - **Chord's shared code** (upstream pi): `src/watch.ts` (`Watch`, `NativeWatch`, `WatchHandle`, `WatchEnd`,
   `NativeWatchable`), Delta (`track`, `diffRevisions`, `applyImmutable`, encoders, `PendingOps`, `appendText`),
   context, JSON, output, SQLite drivers.

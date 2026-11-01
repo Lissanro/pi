@@ -49,6 +49,7 @@ describe("buildSystemPrompt", () => {
 			});
 
 			expect(defaultPrompt.startsWith("Pi agent harness runtime environment.")).toBe(true);
+
 			expect(customPrompt.startsWith("You are Exact.\n\n<cwd>")).toBe(true);
 		});
 
@@ -122,6 +123,7 @@ describe("buildSystemPrompt", () => {
 			);
 			expect(prompt).toContain("- Environment variables: docs/environment-variables.md");
 			expect(prompt).toContain("- MCP servers: docs/mcp.md");
+
 		});
 	});
 
@@ -195,6 +197,9 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("<available_skills>");
 			expect(prompt).toContain("<name>test-skill</name>");
 			expect(prompt).toContain("Use bash to load a skill's file");
+			expect(prompt).toContain(
+				"Resolve relative paths against the skill's directory (parent of SKILL.md). Use absolute paths in tool calls.",
+			);
 		});
 
 		test("omits skills without read or bash", () => {

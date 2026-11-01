@@ -27,7 +27,7 @@ export type { RefState } from "./ref-state.ts";
 export type { Held, Reference, RefIn } from "./reference.ts";
 export type { RevokedBy } from "./revocation.ts";
 export type { RootOptions } from "./root.ts";
-export type { RouteOptions } from "./route.ts";
+export type { RouteHandle, RouteOptions } from "./route.ts";
 export type { OnHandler, OnLiveHandler, OnNativeHandler, RoutineDeclarations } from "./routines.ts";
 export { sleep, untilAborted } from "./sleep.ts";
 export type { PluginFacet } from "./staging.ts";

@@ -222,7 +222,7 @@ describe("building a facet: the import table", () => {
 		});
 		await writeFiles(root, { "base.ts": "export const base = 1;" });
 		await writePlugin(root, "copier", "@test/copier", {
-			"worker.ts": 'import { y } from "../shared/shared.ts";\nexport default { setup: () => y };',
+			"worker.ts": 'import { y } from "@test/shared/shared";\nexport default { setup: () => y };',
 		});
 		await writePlugin(root, "shared", "@test/shared", {
 			"shared.ts": 'import y from "some-package";\nexport { y };',
@@ -231,11 +231,48 @@ describe("building a facet: the import table", () => {
 		const out = plugins.find(({ name }) => name === "@test/out")!;
 		expect(errors(await buildFacet(out, "worker", { ...NODE, plugins }, context))).toEqual([
 			'worker.ts:1:22: "../base.ts": outside the plugin (base code is reached through a host package, packages through dependencies)',
-			'worker.ts:2:15: "left-out": neither a host package nor in the dependencies of plugin "@test/out"',
+			'worker.ts:2:15: "left-out": neither a host package, in the dependencies of plugin "@test/out" nor a discovered plugin "left-out"',
 		]);
 		const copier = plugins.find(({ name }) => name === "@test/copier")!;
 		expect(errors(await buildFacet(copier, "worker", { ...NODE, plugins }, context))).toEqual([
 			'../shared/shared.ts:1:15: "some-package": a file copied from plugin "@test/shared" may import only host packages and files of its own plugin',
+		]);
+	});
+
+	it("imports another plugin's file by name from any root; refuses relative paths into it, names a missing plugin", async () => {
+		const first = await tempRoot();
+		const second = await tempRoot();
+		await writePlugin(second, "elsewhere", "@test/contracts", {
+			"contract.ts": 'export const name = "contract";',
+			"other.ts": 'import { name } from "./contract.ts";\nexport const other = name;',
+		});
+		await writePlugin(first, "user", "@test/user", {
+			"worker.ts": [
+				'import { name } from "@test/contracts/contract";',
+				'import { other } from "@test/contracts/other";',
+				"export default { setup: () => [name, other] };",
+			].join("\n"),
+		});
+		await writePlugin(first, "relative", "@test/relative", {
+			"worker.ts": 'import { name } from "../user/worker.ts";\nexport default { setup: () => name };',
+		});
+		await writePlugin(first, "missing", "@test/missing", {
+			"worker.ts": 'import { name } from "@test/absent/contract";\nexport default { setup: () => name };',
+		});
+		const { plugins } = await discoverPlugins([first, second], { kinds: KINDS }, context);
+		const build = (name: string) =>
+			buildFacet(plugins.find((each) => each.name === name)!, "worker", { ...NODE, plugins }, context);
+		const user = await build("@test/user");
+		if (user.kind === "failed") throw new Error(user.errors.join("\n"));
+		expect(user.copied.map((file) => file.slice(second.length + 1)).sort()).toEqual([
+			"elsewhere/contract.ts",
+			"elsewhere/other.ts",
+		]);
+		expect(errors(await build("@test/relative"))).toEqual([
+			'worker.ts:1:22: "../user/worker.ts": a relative path into plugin "@test/user" (import its files by name: "@test/user/…")',
+		]);
+		expect(errors(await build("@test/missing"))).toEqual([
+			'worker.ts:1:22: "@test/absent/contract": neither a host package, in the dependencies of plugin "@test/missing" nor a discovered plugin "@test/absent"',
 		]);
 	});
 
