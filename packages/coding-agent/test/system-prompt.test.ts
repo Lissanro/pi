@@ -123,7 +123,6 @@ describe("buildSystemPrompt", () => {
 			);
 			expect(prompt).toContain("- Environment variables: docs/environment-variables.md");
 			expect(prompt).toContain("- MCP servers: docs/mcp.md");
-
 		});
 	});
 

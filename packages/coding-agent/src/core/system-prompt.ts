@@ -159,7 +159,6 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		promptSections.tools = `${tools}\n\nCustom tools may also be registered by extensions.`;
 		promptSections.rules = buildRules(declaredTools, toolGuidelines, promptGuidelines);
 		promptSections.docs = `Pi documentation:\n- README: ${getReadmePath()}\n- Docs directory: ${getDocsPath()}\n- Examples directory: ${getExamplesPath()}\n\nPi doc file locations:\n- Extensions: docs/extensions.md\n- Themes: docs/themes.md\n- Skills: docs/skills.md\n- Prompt templates: docs/prompt-templates.md\n- TUI components: docs/tui.md\n- Keybindings: docs/keybindings.md\n- SDK integrations: docs/sdk.md\n- Custom providers: docs/custom-provider.md\n- Adding models: docs/models.md\n- Pi packages: docs/packages.md\n- Environment variables: docs/environment-variables.md\n- MCP servers: docs/mcp.md\n\nWhen resolving relative doc paths, use ${getDocsPath()} as the docs root and ${getExamplesPath()} as the examples root.`;
-
 	}
 
 	if (appendSystemPrompt) promptSections.addendum = appendSystemPrompt;

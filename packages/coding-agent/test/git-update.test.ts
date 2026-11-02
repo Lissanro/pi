@@ -181,7 +181,6 @@ describe("DefaultPackageManager git update", () => {
 		});
 	});
 
-
 	describe("git clean failures", () => {
 		// https://github.com/earendil-works/pi/issues/11597
 		it("should install dependencies and retry the clean later when git clean fails", async () => {
@@ -236,7 +235,6 @@ describe("DefaultPackageManager git update", () => {
 	});
 
 	describe("force-push scenarios", () => {
-
 		it("should handle complete history rewrite", async () => {
 			setupRemoteAndInstall();
 
