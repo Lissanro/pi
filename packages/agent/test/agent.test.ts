@@ -10,7 +10,7 @@ import {
 	toToolDeclaration,
 	type UserMessage,
 } from "@earendil-works/pi-ai/compat";
-import { obj } from "@earendil-works/pi-schema";
+import { obj, str } from "@earendil-works/pi-schema";
 import { describe, expect, it } from "vitest";
 import {
 	Agent,
@@ -1263,7 +1263,7 @@ describe("Agent", () => {
 		it("continues an assistant message with a tool call via prefill and executes the echoed call", async () => {
 			let capturedContext: Context | undefined;
 			let capturedOptions: SimpleStreamOptions | undefined;
-			const toolSchema = Type.Object({ command: Type.String() });
+			const toolSchema = obj({ command: str() });
 			const bashTool: AgentTool<typeof toolSchema> = {
 				name: "bash",
 				label: "Bash",
@@ -1318,7 +1318,7 @@ describe("Agent", () => {
 		});
 
 		it("produces an error when the tool-call echo does not match", async () => {
-			const toolSchema = Type.Object({ command: Type.String() });
+			const toolSchema = obj({ command: str() });
 			const bashTool: AgentTool<typeof toolSchema> = {
 				name: "bash",
 				label: "Bash",
