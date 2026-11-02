@@ -1,4 +1,7 @@
+import { fileURLToPath } from "node:url";
 import { defaultExclude, defineConfig } from 'vitest/config';
+
+const telemetrySrcIndex = fileURLToPath(new URL("../telemetry/src/index.ts", import.meta.url));
 
 // Cloud e2e tests (*-e2e.test.ts) hit real provider APIs and activate on
 // endpoint/auth env vars. They are excluded by default so stray API keys in
@@ -13,13 +16,19 @@ if (process.env.PI_DISABLE_CLOUD_PROVIDERS === undefined) {
 }
 
 export default defineConfig({
-  test: {
-    globals: true,
-    environment: 'node',
-    testTimeout: 30000, // 30 seconds for API calls
-    reporters: process.env.GITHUB_ACTIONS ? ['dot', 'github-actions'] : ['dot'],
-    silent: 'passed-only',
-    exclude: [...defaultExclude, ...e2eExclude],
-    setupFiles: ['test/setup-e2e-guard.ts'],
-  }
+	test: {
+		globals: true,
+		environment: "node",
+		testTimeout: 30000, // 30 seconds for API calls
+		reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
+		silent: "passed-only",
+		exclude: [...defaultExclude, ...e2eExclude],
+		setupFiles: ["test/setup-e2e-guard.ts"],
+	},
+	resolve: {
+		alias: [{ find: /^@earendil-works\/pi-telemetry$/, replacement: telemetrySrcIndex }],
+		// Workspace packages without a build (pi-schema) resolve to their source.
+		conditions: ["source"],
+	},
+	ssr: { resolve: { conditions: ["source"] } },
 });
