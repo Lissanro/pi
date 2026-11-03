@@ -136,6 +136,7 @@ describe("generateSummary reasoning options", () => {
 			// chat carries it (the compaction replaces only the tail being cut).
 			messagesToSummarize: [createCompactionSummaryMessage("previous checkpoint", 100, "2024-01-01T00:00:00.000Z")],
 			turnPrefixMessages: messages,
+			keptMessages: [],
 			isSplitTurn: true,
 			tokensBefore: 100,
 			previousSummary: "previous checkpoint",
@@ -236,6 +237,7 @@ describe("generateSummary reasoning options", () => {
 			firstKeptEntryId: "entry-keep",
 			messagesToSummarize: messages,
 			turnPrefixMessages: messages,
+			keptMessages: [],
 			isSplitTurn: true,
 			tokensBefore: 600000,
 			fileOps: { read: new Set(), written: new Set(), edited: new Set() },

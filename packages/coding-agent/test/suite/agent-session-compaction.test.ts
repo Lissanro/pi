@@ -4,8 +4,6 @@ import {
 	createAssistantMessageEventStream,
 	fauxAssistantMessage,
 	fauxToolCall,
-	getCurrentSystemPrompt,
-	getCurrentTools,
 	type Model,
 	type SimpleStreamOptions,
 	type TranscriptContext,
@@ -353,18 +351,146 @@ describe("AgentSession compaction characterization", () => {
 
 		await harness.session.compact();
 
-		// Cache-valid summarization reuses the agent's transformContext, system
-		// prompt, and tools so the request byte-matches a normal chat turn (the
-		// summarization only appends its instruction at the end).
+		// Cache-valid summarization reuses the agent's context pipeline so the
+		// request is the live chat context with the preserved tail replaced by the
+		// instruction: nothing is injected or rebuilt before the transcript.
 		expect(transformContext).toHaveBeenCalled();
-		expect(getCurrentSystemPrompt(requestContext?.messages ?? [])).toBe(harness.session.agent.state.systemPrompt);
-		expect(getCurrentTools(requestContext?.messages ?? [])).toEqual(harness.session.agent.state.tools);
-		// The replaced tail (the user message) stays in the request prefix byte-identical to the chat.
-		expect(JSON.stringify(requestContext?.messages)).toContain("message to compact");
+		const messages = requestContext?.messages ?? [];
+		const first = messages[0];
+		expect(first?.role).toBe("user");
+		expect(JSON.stringify(first?.content)).toContain("message to compact");
+		const last = messages.at(-1);
+		expect(last?.role).toBe("user");
+		expect(JSON.stringify(last?.content)).toContain("structured summary");
 		// The one-off summary still avoids cache writes and uses fresh routing.
 		expect(requestOptions).toMatchObject({ cacheRetention: "none" });
 		expect(requestOptions?.sessionId).not.toBe("active-routing-session");
 		expect(requestOptions?.transport).toBe(harness.session.agent.transport);
+	});
+
+	it("summarizes with the live chat request: preserved tail replaced by the instruction only", async () => {
+		const harness = await createHarness({ settings: { compaction: { keepRecentTokens: 1 } } });
+		harnesses.push(harness);
+
+		const now = Date.now();
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "question one" }],
+			timestamp: now - 4000,
+		});
+		const withTool = createAssistant(harness, { stopReason: "toolUse", totalTokens: 50, timestamp: now - 3000 });
+		withTool.content = [fauxToolCall("bash", { command: "ls" }, { id: "tc-1" })];
+		harness.sessionManager.appendMessage(withTool);
+		harness.sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: "tc-1",
+			toolName: "bash",
+			content: [{ type: "text", text: "file listing" }],
+			isError: false,
+			timestamp: now - 2000,
+		});
+		const firstAnswer = createAssistant(harness, { stopReason: "stop", totalTokens: 60, timestamp: now - 1000 });
+		firstAnswer.content = [{ type: "text", text: "first answer" }];
+		harness.sessionManager.appendMessage(firstAnswer);
+
+		// Capture the exact context a normal chat request sends.
+		let normalContext: TranscriptContext | undefined;
+		harness.session.agent.streamFunction = (model, context, _options) => {
+			normalContext = context;
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: {
+						...fauxAssistantMessage("second answer"),
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: createUsage(10),
+					},
+				});
+			});
+			return stream;
+		};
+		await harness.session.prompt("question two");
+		expect(normalContext).toBeDefined();
+
+		let summaryContext: TranscriptContext | undefined;
+		useSummaryStreamFn(harness, "the summary", (context) => {
+			summaryContext = context;
+		});
+
+		await harness.session.compact();
+
+		expect(normalContext).toBeDefined();
+		expect(summaryContext).toBeDefined();
+		const summaryMessages = summaryContext!.messages;
+		const instruction = summaryMessages.at(-1);
+		expect(instruction?.role).toBe("user");
+		expect(JSON.stringify(instruction?.content)).toContain("structured summary");
+		// Everything before the instruction is the live chat request itself: with
+		// keepRecentTokens 1 the preserved tail is the trailing answer only, so the
+		// head must equal the captured normal request exactly.
+		expect(summaryMessages.slice(0, -1)).toEqual(normalContext!.messages);
+	});
+
+	it("keeps a transcript system message byte-identical through the summarization head", async () => {
+		const harness = await createHarness({ settings: { compaction: { keepRecentTokens: 1 } } });
+		harnesses.push(harness);
+
+		const now = Date.now();
+		// A real session records its prompt as a system message entry; the head must
+		// carry it exactly as the chat request does.
+		harness.sessionManager.appendMessage({
+			role: "system",
+			content: "the system prompt",
+			timestamp: now - 5000,
+		});
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "question one" }],
+			timestamp: now - 4000,
+		});
+		const answer = createAssistant(harness, { stopReason: "stop", totalTokens: 60, timestamp: now - 3000 });
+		answer.content = [{ type: "text", text: "first answer" }];
+		harness.sessionManager.appendMessage(answer);
+
+		let normalContext: TranscriptContext | undefined;
+		harness.session.agent.streamFunction = (model, context, _options) => {
+			normalContext = context;
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: {
+						...fauxAssistantMessage("second answer"),
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: createUsage(10),
+					},
+				});
+			});
+			return stream;
+		};
+		await harness.session.prompt("question two");
+		expect(normalContext).toBeDefined();
+		expect(normalContext!.messages[0]?.role).toBe("system");
+
+		let summaryContext: TranscriptContext | undefined;
+		useSummaryStreamFn(harness, "the summary", (context) => {
+			summaryContext = context;
+		});
+
+		await harness.session.compact();
+
+		expect(summaryContext).toBeDefined();
+		const summaryMessages = summaryContext!.messages;
+		// The transcript's system message leads both requests, unchanged.
+		expect(summaryMessages[0]?.role).toBe("system");
+		expect(summaryMessages.slice(0, -1)).toEqual(normalContext!.messages);
 	});
 
 	it("persists usage from pi-generated manual compaction", async () => {

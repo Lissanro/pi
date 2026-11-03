@@ -555,6 +555,33 @@ describe("prepareCompaction", () => {
 		expect(preparation?.messagesToSummarize).toEqual([]);
 		expect(preparation?.turnPrefixMessages).toEqual([user.message]);
 	});
+
+	it("keeps enough at the tail for the summarization request to fit the summary window", async () => {
+		// 40 entries counted at 5000 tokens each: 200k total. Zero usage on the
+		// assistant messages so the total cannot anchor on a (fake) server count
+		// and has to come from the token counter.
+		const entries: SessionEntry[] = [];
+		for (let i = 0; i < 20; i++) {
+			entries.push(createMessageEntry(createUserMessage(`user message ${i}`)));
+			entries.push(createMessageEntry(createAssistantMessage(`assistant message ${i}`, createMockUsage(0, 0))));
+		}
+		const tokenCounter = async () => 5000;
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 10000,
+		};
+		// Head budget = 96384 - 16384 - 8192 = 71808, so the tail must keep at
+		// least 200000 - 71808 = 128192 tokens: 26 entries, far more than the
+		// keepRecent budget would retain.
+		const window = { contextWindow: 96384, maxSummaryTokens: 16384 };
+		const preparation = await prepareCompaction(entries, settings, undefined, tokenCounter, window);
+
+		expect(preparation).toBeDefined();
+		expect(preparation?.keptMessages).toHaveLength(26);
+		expect(preparation?.firstKeptEntryId).toBe(entries[14]?.id);
+		// Everything before the cut (14 entries, 70k tokens) fits the head budget.
+		expect(preparation?.messagesToSummarize).toHaveLength(14);
+	});
 });
 
 describe("prepareCompaction with previous compaction", () => {

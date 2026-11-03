@@ -81,10 +81,11 @@ import type { CacheWarmer, CacheWarmingStatus } from "./cache-warmer.ts";
 import {
 	type CompactionPreparation,
 	type CompactionResult,
+	type CompactionSettings,
+	type CompactionWindow,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
-	ESTIMATED_IMAGE_CHARS,
 	estimateContextTokens,
 	estimateProjectedContextTokens,
 	estimateTokens,
@@ -191,6 +192,13 @@ import {
  * the runtime would take them as an explicit API key instead of the stored OAuth login (#11520).
  */
 const runtimeStreamFunctions = new WeakMap<StreamFn, ModelRuntime>();
+
+/**
+ * Upper bound on the token cost of a single image for compaction token counting.
+ * Images cannot be counted by /tokenize, and under-counting them makes the cut
+ * under-reserve window space, so the count uses a safe ceiling.
+ */
+const COMPACTION_IMAGE_TOKENS = 4096;
 
 /** Mark `streamFn` as resolving auth through `modelRuntime` on its own. */
 export function markRuntimeStreamFunction(streamFn: StreamFn, modelRuntime: ModelRuntime): void {
@@ -4261,6 +4269,9 @@ export class AgentSession {
 	): Promise<CompactionResult> {
 		// Resolve the request only when Pi summarizes itself: routing may call models or fail.
 		const request = await this._getSummarizationRequestAuth(model, signal);
+		// The summarization request is the live chat request with the preserved tail
+		// replaced by the instruction: token-identical prefix, provider KV cache reused.
+		const headMessages = await this._buildSummarizationHead(preparation.keptMessages, signal);
 		return compact(
 			preparation,
 			request.model,
@@ -4276,6 +4287,7 @@ export class AgentSession {
 			undefined, // sessionId
 			this.agent.state.systemPrompt,
 			this.agent,
+			headMessages,
 		);
 	}
 
@@ -4392,6 +4404,14 @@ export class AgentSession {
 				const serialized = contentToTokenizeText(m.content);
 				text += serialized.text;
 				imageCount += serialized.imageCount;
+				if (m.role === "system") {
+					// Prompt sections and tool declarations ride the request but are not
+					// message content, so the raw text above misses them.
+					for (const section of Object.values(m.sections ?? {})) {
+						if (section) text += section;
+					}
+					if (m.toolsAdded) text += JSON.stringify(m.toolsAdded);
+				}
 			}
 			try {
 				const count = await countTokens(auth.model, {
@@ -4401,8 +4421,9 @@ export class AgentSession {
 					env: auth.env,
 					signal,
 				});
-				// Images are not text and cannot be counted by /tokenize; add the estimate.
-				if (count !== undefined) return count + Math.ceil((imageCount * ESTIMATED_IMAGE_CHARS) / 4);
+				// Images are not text and cannot be counted by /tokenize; use a safe upper
+				// bound per image so the compaction cut never under-reserves window space.
+				if (count !== undefined) return count + imageCount * COMPACTION_IMAGE_TOKENS;
 				return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
 			} catch {
 				// A transient /tokenize failure must not break the compaction; fall back
@@ -4410,6 +4431,30 @@ export class AgentSession {
 				return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
 			}
 		};
+	}
+
+	/**
+	 * Build the exact LLM context a normal chat request would send (the same
+	 * projection, transform, and conversion as the per-request pipeline), cut at
+	 * the tail that compaction preserves. The result is token-identical to a
+	 * normal request up to the cut point, so the provider's KV cache is reused
+	 * for the summarization call.
+	 */
+	private async _buildSummarizationHead(keptMessages: AgentMessage[], signal: AbortSignal): Promise<Message[]> {
+		const projection = this.sessionManager.buildSessionProjection();
+		const messages = this._projectedMessages(this.agent.state.messages, projection);
+		const head = messages.slice(0, Math.max(0, messages.length - keptMessages.length));
+		const transformed = this.agent.transformContext ? await this.agent.transformContext(head, signal) : head;
+		return await this.agent.convertToLlm(transformed);
+	}
+
+	/** Window the summarization request must fit, from the model generating it. */
+	private _createSummaryWindow(requestModel: Model<any>, settings: CompactionSettings): CompactionWindow {
+		const maxSummaryTokens = Math.min(
+			Math.floor(0.8 * settings.reserveTokens),
+			requestModel.maxTokens > 0 ? requestModel.maxTokens : Number.POSITIVE_INFINITY,
+		);
+		return { contextWindow: requestModel.contextWindow, maxSummaryTokens };
 	}
 
 	/**
@@ -4528,6 +4573,7 @@ export class AgentSession {
 					{ model: requestModel, apiKey, headers, env },
 					this._compactionAbortController.signal,
 				),
+				this._createSummaryWindow(requestModel, settings),
 			);
 			if (!preparation) {
 				// Check why we can't compact. A soft-deleted compaction is absent and
@@ -4887,6 +4933,7 @@ export class AgentSession {
 				settings,
 				undefined,
 				this._createCompactionTokenCounter({ model: requestModel, apiKey, headers, env }, abortController.signal),
+				this._createSummaryWindow(requestModel, settings),
 			);
 			if (!preparation) {
 				// Session needs migration: the tail could not be mapped to kept entries.

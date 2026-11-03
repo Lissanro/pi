@@ -20,7 +20,6 @@ import type {
 	Model,
 	SimpleStreamOptions,
 	SystemMessage,
-	Tool,
 	TranscriptContext,
 	Usage,
 } from "@earendil-works/pi-ai/compat";
@@ -600,18 +599,16 @@ export function getSummarizationFailure(response: AssistantMessage, label: strin
 }
 
 /**
- * Build a summarization context that mirrors a normal agent turn as closely as
- * possible. When an agent is supplied, use its transformContext/convertToLlm
- * pipeline and the saved chat-log system message (with tools, skills, and any
- * toolsAdded/toolsRemoved deltas) so the summarization prefix is byte-identical
- * to a normal chat turn and the provider KV cache is reused.
+ * Fallback summarization context for callers without the live request pipeline
+ * (branch summaries, tests): the agent's transformContext/convertToLlm applied
+ * to the messages being summarized, led by the replayed chat-log system message.
  */
 async function buildAgentSummarizationContext(
 	agent: Agent | undefined,
 	messages: AgentMessage[],
 	signal: AbortSignal | undefined,
 	fallbackSystemPrompt: string | undefined,
-): Promise<{ systemMessage: SystemMessage; messages: Message[]; tools: Tool[] | undefined }> {
+): Promise<{ systemMessage: SystemMessage; messages: Message[] }> {
 	if (!agent) {
 		return {
 			systemMessage: {
@@ -620,7 +617,6 @@ async function buildAgentSummarizationContext(
 				timestamp: 0,
 			},
 			messages: convertToLlm(messages),
-			tools: undefined,
 		};
 	}
 
@@ -642,7 +638,7 @@ async function buildAgentSummarizationContext(
 				toolsAdded: agent.state.tools.slice(),
 				timestamp: 0,
 			};
-	return { systemMessage, messages: llmMessages, tools: agent.state.tools.slice() };
+	return { systemMessage, messages: llmMessages };
 }
 
 function createSummarizationOptions(
@@ -721,6 +717,7 @@ export async function generateSummary(
 	sessionId?: string,
 	systemPrompt?: string,
 	agent?: Agent,
+	headMessages?: Message[],
 ): Promise<string> {
 	return (
 		await generateSummaryWithUsage(
@@ -740,6 +737,7 @@ export async function generateSummary(
 			sessionId,
 			systemPrompt,
 			agent,
+			headMessages,
 		)
 	).text;
 }
@@ -763,6 +761,13 @@ export async function generateSummaryWithUsage(
 	sessionId?: string,
 	systemPrompt?: string,
 	agent?: Agent,
+	/**
+	 * The live request context minus the preserved tail, built through the
+	 * normal chat request pipeline. When present, the summarization request is
+	 * exactly this head plus the instruction, token-identical to a chat request
+	 * up to the cut point.
+	 */
+	headMessages?: Message[],
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
@@ -783,22 +788,28 @@ export async function generateSummaryWithUsage(
 		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
 	}
 
-	// Reuse the same context pipeline as a normal turn so provider prompt caches
-	// stay valid. When an agent is provided, apply its transformContext and
-	// convertToLlm exactly as a normal request would. The summarization
-	// instruction is appended as a final user message so nothing is inserted
-	// before the existing prefix.
-	const { systemMessage: effectiveSystemMessage, messages: llmMessages } = await buildAgentSummarizationContext(
-		agent,
-		currentMessages,
-		signal,
-		systemPrompt,
-	);
+	// The summarization request is the live chat request with the preserved tail
+	// replaced by this instruction, so the prefix stays token-identical to the
+	// chat and the provider KV cache is reused. Live callers pass headMessages,
+	// built through the exact normal-request pipeline; fallback callers rebuild
+	// the context from the messages being summarized.
+	let head: Message[];
+	if (headMessages) {
+		head = headMessages;
+	} else {
+		const { systemMessage: effectiveSystemMessage, messages: llmMessages } = await buildAgentSummarizationContext(
+			agent,
+			currentMessages,
+			signal,
+			systemPrompt,
+		);
+		head = [effectiveSystemMessage, ...llmMessages];
+	}
 
 	const instructionText = `Do not continue the conversation above. Output only the structured summary requested below.\n\n${basePrompt}`;
 
 	const summarizationMessages: Message[] = [
-		...llmMessages,
+		...head,
 		{
 			role: "user" as const,
 			content: [{ type: "text" as const, text: instructionText }],
@@ -820,7 +831,7 @@ export async function generateSummaryWithUsage(
 
 	const response = await completeSummarization(
 		model,
-		{ messages: [effectiveSystemMessage, ...summarizationMessages] } as TranscriptContext,
+		{ messages: summarizationMessages } as TranscriptContext,
 		completionOptions,
 		streamFn,
 		retry,
@@ -851,6 +862,8 @@ export interface CompactionPreparation {
 	messagesToSummarize: AgentMessage[];
 	/** Messages that will be turned into turn prefix summary (if splitting) */
 	turnPrefixMessages: AgentMessage[];
+	/** Messages kept verbatim after compaction (the tail the cut preserves) */
+	keptMessages: AgentMessage[];
 	/** Whether this is a split turn (cut point in middle of turn) */
 	isSplitTurn: boolean;
 	tokensBefore: number;
@@ -865,6 +878,74 @@ export interface CompactionPreparation {
 export interface CompactionOverrides {
 	keepRecentTokens?: number;
 	keepRecentMessages?: number;
+}
+
+/** Window the summarization request must fit, from the model generating the summary. */
+export interface CompactionWindow {
+	contextWindow: number;
+	maxSummaryTokens: number;
+}
+
+/**
+ * Headroom kept between the summarization request and the context window. The
+ * token counter sees raw text: chat-template framing, role markers, and image
+ * tokens are only partly accounted for, so the cut reserves extra space.
+ */
+export const SUMMARY_WINDOW_MARGIN = 8192;
+
+/** Count one projected entry's messages with the token counter or the chars/4 estimate. */
+async function countProjectedEntryMessages(
+	entry: ProjectedSessionEntry,
+	tokenCounter: TokenCounter | undefined,
+): Promise<number> {
+	if (entry.messages.length === 0) return 0;
+	return tokenCounter
+		? tokenCounter(entry.messages)
+		: entry.messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+}
+
+/**
+ * Total tokens of the visible session (the summarization request's whole
+ * universe). Anchors on the last valid assistant usage (the server's exact
+ * count) and counts only the trailing messages; counts every entry when no
+ * valid usage remains.
+ */
+async function estimateVisibleTotalTokens(
+	entries: ProjectedSessionEntry[],
+	tokenCounter: TokenCounter | undefined,
+): Promise<number> {
+	const messages = entries.flatMap((entry) => entry.messages);
+	const usageInfo = getLastAssistantUsageInfo(messages);
+	if (usageInfo) {
+		let messageIndex = 0;
+		let usageEntryIndex = -1;
+		for (let i = 0; i < entries.length; i++) {
+			const next = messageIndex + entries[i].messages.length;
+			if (usageInfo.index < next) {
+				usageEntryIndex = i;
+				break;
+			}
+			messageIndex = next;
+		}
+		let latestInvalidatingIndex = -1;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const type = entries[i].sourceEntry.type;
+			if (type === "context_edit" || type === "compaction") {
+				latestInvalidatingIndex = i;
+				break;
+			}
+		}
+		if (usageEntryIndex > latestInvalidatingIndex) {
+			let trailing = 0;
+			for (let i = usageEntryIndex + 1; i < entries.length; i++) {
+				trailing += await countProjectedEntryMessages(entries[i], tokenCounter);
+			}
+			return calculateContextTokens(usageInfo.usage) + trailing;
+		}
+	}
+	let total = 0;
+	for (const entry of entries) total += await countProjectedEntryMessages(entry, tokenCounter);
+	return total;
 }
 
 function isProjectedTurnStart(entry: ProjectedSessionEntry): boolean {
@@ -886,6 +967,7 @@ async function findProjectedCutPoint(
 	keepRecentTokens: number | undefined,
 	keepRecentMessages: number | undefined,
 	tokenCounter?: TokenCounter,
+	minKeptTokens = 0,
 ): Promise<CutPointResult> {
 	const cutPoints: number[] = [];
 	for (let i = startIndex; i < endIndex; i++) {
@@ -927,10 +1009,7 @@ async function findProjectedCutPoint(
 		let accumulatedTokens = 0;
 		let tokenCut = keepAllIndex;
 		for (let i = endIndex - 1; i >= startIndex; i--) {
-			const contextMessages = entries[i].messages;
-			const messageTokens = tokenCounter
-				? await tokenCounter(contextMessages)
-				: contextMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+			const messageTokens = await countProjectedEntryMessages(entries[i], tokenCounter);
 			if (messageTokens === 0) continue;
 			if (accumulatedTokens + messageTokens > keepRecentTokens) {
 				exceededBudget = true;
@@ -945,6 +1024,28 @@ async function findProjectedCutPoint(
 	// When both budgets are given, the one that keeps fewer messages wins
 	// ("shortest wins"), i.e. the larger firstKeptEntryIndex (more discarded).
 	let cutIndex = candidates.length > 0 ? Math.max(...candidates) : keepAllIndex;
+
+	// The summarization request carries everything before the cut point, so the
+	// retained tail must also be large enough for that request plus the summary
+	// output to fit the summary model's context window.
+	if (minKeptTokens > 0 && minKeptTokens > (keepRecentTokens ?? 0)) {
+		let floorAccumulated = 0;
+		for (let i = endIndex - 1; i >= startIndex; i--) {
+			const messageTokens = await countProjectedEntryMessages(entries[i], tokenCounter);
+			if (messageTokens === 0) continue;
+			floorAccumulated += messageTokens;
+			if (floorAccumulated >= minKeptTokens) {
+				// The newest valid cut point at or before this entry still keeps enough.
+				for (let c = cutPoints.length - 1; c >= 0; c--) {
+					if (cutPoints[c] <= i) {
+						cutIndex = Math.min(cutIndex, cutPoints[c]);
+						break;
+					}
+				}
+				break;
+			}
+		}
+	}
 
 	// A recovery attempt and its omission edits are context-invisible after the last
 	// visible input. Advance only for a closed suffix containing an omitted assistant
@@ -992,6 +1093,7 @@ export async function prepareCompaction(
 	settings: CompactionSettings,
 	overrides?: CompactionOverrides,
 	tokenCounter?: TokenCounter,
+	summaryWindow?: CompactionWindow,
 ): Promise<CompactionPreparation | undefined> {
 	const lastEntry = pathEntries[pathEntries.length - 1];
 	// A soft-deleted compaction is treated as absent: it un-compacts its range and
@@ -1029,6 +1131,16 @@ export async function prepareCompaction(
 	const keepRecentTokens =
 		overrides?.keepRecentTokens ??
 		(overrides?.keepRecentMessages === undefined ? settings.keepRecentTokens : undefined);
+	// The summarization request carries everything before the cut point. Keep
+	// enough at the tail for that request plus the summary output to fit the
+	// summary model's context window, even where token counting underestimates.
+	let minKeptTokens = 0;
+	if (summaryWindow) {
+		const totalTokens = await estimateVisibleTotalTokens(projectedEntries, tokenCounter);
+		const headBudget = summaryWindow.contextWindow - summaryWindow.maxSummaryTokens - SUMMARY_WINDOW_MARGIN;
+		minKeptTokens = Math.max(0, totalTokens - headBudget);
+	}
+
 	const cutPoint = await findProjectedCutPoint(
 		projectedEntries,
 		boundaryStart,
@@ -1036,6 +1148,7 @@ export async function prepareCompaction(
 		keepRecentTokens,
 		keepRecentMessages,
 		tokenCounter,
+		minKeptTokens,
 	);
 
 	const firstKeptEntry = projectedEntries[cutPoint.firstKeptEntryIndex]?.sourceEntry;
@@ -1086,10 +1199,13 @@ export async function prepareCompaction(
 		}
 	}
 
+	const keptMessages = projectedEntries.slice(cutPoint.firstKeptEntryIndex).flatMap((entry) => entry.messages);
+
 	return {
 		firstKeptEntryId,
 		messagesToSummarize,
 		turnPrefixMessages,
+		keptMessages,
 		isSplitTurn: cutPoint.isSplitTurn,
 		tokensBefore,
 		previousSummary,
@@ -1125,6 +1241,7 @@ export async function compact(
 	sessionId?: string,
 	systemPrompt?: string,
 	agent?: Agent,
+	headMessages?: Message[],
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -1138,11 +1255,13 @@ export async function compact(
 	} = preparation;
 
 	// Summarize exactly the chat messages being replaced (previous summaries + history + turn
-	// prefix) in a single call. The request is byte-identical to a normal chat request up to the
-	// cut point (only the summarization instruction is appended at the end), so the provider KV
-	// cache is reused. A split turn is NOT split into separate history/turn-prefix calls: the
-	// turn prefix must stay in the same request as the history, otherwise the request head
-	// diverges from the chat and the cache drops everything after the divergence.
+	// prefix) in a single call. The request is token-identical to a normal chat request up to
+	// the cut point (only the summarization instruction is appended at the end), so the provider
+	// KV cache is reused: headMessages is the live request context minus the preserved tail,
+	// built through the normal chat request pipeline. A split turn is NOT split into separate
+	// history/turn-prefix calls: the turn prefix must stay in the same request as the history,
+	// otherwise the request head diverges from the chat and the cache drops everything after the
+	// divergence.
 	const allMessages =
 		isSplitTurn && turnPrefixMessages.length > 0
 			? [...messagesToSummarize, ...turnPrefixMessages]
@@ -1164,6 +1283,7 @@ export async function compact(
 		sessionId,
 		systemPrompt,
 		agent,
+		headMessages,
 	);
 	let summary = result.text;
 	const summaryUsage = result.usage;

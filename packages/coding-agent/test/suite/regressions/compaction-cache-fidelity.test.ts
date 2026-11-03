@@ -108,10 +108,9 @@ describe("compaction cache fidelity", () => {
 		await harness.session.compact({ keepRecentMessages: 1 });
 
 		expect(captured).toBeDefined();
-		// The system prompt is folded into a leading system message by the shared
-		// normalizeContext pipeline. The first CONTENT message of the request MUST be
-		// the prior compactionSummary (so it byte-matches the cached normal-chat prefix).
-		// Skipping it is the 22K divergence.
+		// The first CONTENT message of the request MUST be the prior compactionSummary
+		// (so it byte-matches the cached normal-chat prefix). Skipping it is the 22K
+		// divergence.
 		const capturedContent = captured!.messages.filter((message) => message.role !== "system");
 		expect(capturedContent[0]).toEqual(expectedFirst);
 	});
@@ -140,12 +139,10 @@ describe("compaction cache fidelity", () => {
 
 		expect(captured).toBeDefined();
 
-		// The system prompt is folded into a leading system message by the shared
-		// normalizeContext pipeline; verify it is present so the prefix starts with it.
-		expect(captured!.messages[0]?.role).toBe("system");
-		// Drop the leading system message and the trailing summarize instruction; the
-		// rest must be a PREFIX of the normal chat content (nothing injected before the
-		// head, nothing skipped).
+		// Drop any leading system message (the transcript's, sent exactly as the chat
+		// sends it) and the trailing summarize instruction; the rest must be a PREFIX
+		// of the normal chat content (nothing injected before the head, nothing
+		// skipped).
 		const capturedHead = captured!.messages.filter((message) => message.role !== "system").slice(0, -1);
 		const expectedContent = expectedLlm.filter((message) => message.role !== "system");
 		expect(capturedHead).toEqual(expectedContent.slice(0, capturedHead.length));
