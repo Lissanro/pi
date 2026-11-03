@@ -54,7 +54,7 @@ describe("message edit XML format", () => {
 	it("formats an assistant message with reasoning and text", () => {
 		const message = fauxAssistantMessage([fauxThinking("think"), fauxText("answer")], { timestamp: 1 });
 		expect(formatMessageForEdit(0, message)).toBe(
-			'<pi_edit id="0" role="assistant"><pi_reasoning_content>think</pi_reasoning_content><pi_content>answer</pi_content></pi_edit>',
+			'<pi_edit id="0" role="assistant" aborted="false"><pi_reasoning_content>think</pi_reasoning_content><pi_content>answer</pi_content></pi_edit>',
 		);
 	});
 
@@ -64,7 +64,14 @@ describe("message edit XML format", () => {
 		});
 		const xml = formatMessageForEdit(0, message);
 		expect(xml).toBe(
-			'<pi_edit id="0" role="assistant"><pi_content>ok</pi_content><pi_tool_call id="call_1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>',
+			'<pi_edit id="0" role="assistant" aborted="false"><pi_content>ok</pi_content><pi_tool_call id="call_1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>',
+		);
+	});
+
+	it("formats an aborted assistant message with aborted=true", () => {
+		const message = fauxAssistantMessage([fauxText("partial")], { timestamp: 1, stopReason: "aborted" });
+		expect(formatMessageForEdit(0, message)).toBe(
+			'<pi_edit id="0" role="assistant" aborted="true"><pi_content>partial</pi_content></pi_edit>',
 		);
 	});
 
@@ -409,9 +416,9 @@ describe("AgentSession.applyMessageEdits", () => {
 			{ type: "text", text: "ok" },
 			{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "/foo" } },
 		]);
-		// The edited message is trailing and its tool call has no result, so it
-		// is marked aborted: /continue can resume it via prefill continuation.
-		expect((assistantMessage as { stopReason?: string }).stopReason).toBe("aborted");
+		// The edited message keeps its original completed status; the aborted state
+		// is only set explicitly via the aborted attribute on the edit tag.
+		expect((assistantMessage as { stopReason?: string }).stopReason).toBe("stop");
 	});
 
 	it("preserves harness messages when editing earlier messages", async () => {
@@ -543,7 +550,7 @@ describe("AgentSession.applyMessageEdits", () => {
 		);
 	});
 
-	it("marks a trailing edited assistant message without tool calls aborted", async () => {
+	it("keeps the original completed status on a trailing edited assistant message without tool calls", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
@@ -555,11 +562,11 @@ describe("AgentSession.applyMessageEdits", () => {
 		);
 		const edited = harness.session.messages.filter((m) => m.role === "assistant").at(-1) as AssistantMessage;
 		expect(getMessageText(edited)).toBe("edited answer");
-		// Trailing and interrupted: /continue resumes it via prefill continuation.
-		expect(edited.stopReason).toBe("aborted");
+		// The original was completed; editing must not flip it to aborted.
+		expect(edited.stopReason).toBe("stop");
 	});
 
-	it("marks an edited assistant message with an unanswered tool call aborted", async () => {
+	it("keeps the original completed status on an edited assistant message with an unanswered tool call", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
@@ -570,10 +577,72 @@ describe("AgentSession.applyMessageEdits", () => {
 			'<pi_edit id="0" role="assistant"><pi_content>edited</pi_content><pi_tool_call id="tc1" name="read">{"path":"/a"}</pi_tool_call></pi_edit>',
 		);
 		const edited = harness.session.messages.filter((m) => m.role === "assistant").at(-1) as AssistantMessage;
+		expect(edited.stopReason).toBe("stop");
+	});
+
+	it("marks an edited assistant message aborted when the edit tag sets aborted=true", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("original answer")]);
+		await harness.session.prompt("question");
+
+		harness.session.applyMessageEdits(
+			'<pi_edit id="0" role="assistant" aborted="true"><pi_content>edited answer</pi_content></pi_edit>',
+		);
+		const edited = harness.session.messages.filter((m) => m.role === "assistant").at(-1) as AssistantMessage;
+		expect(getMessageText(edited)).toBe("edited answer");
 		expect(edited.stopReason).toBe("aborted");
 	});
 
-	it("keeps toolUse on a swipe-edited assistant version whose last tool call has a result", async () => {
+	it("marks an edited assistant message aborted when the edit tag sets aborted=1", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("original answer")]);
+		await harness.session.prompt("question");
+
+		harness.session.applyMessageEdits(
+			'<pi_edit id="0" role="assistant" aborted="1"><pi_content>edited answer</pi_content></pi_edit>',
+		);
+		const edited = harness.session.messages.filter((m) => m.role === "assistant").at(-1) as AssistantMessage;
+		expect(edited.stopReason).toBe("aborted");
+	});
+
+	it("copies a trailing assistant message's tool results onto a new id=0 swipe version", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		await harness.session.prompt("user", { expandPromptTemplates: false });
+		harness.sessionManager.appendMessage(
+			fauxAssistantMessage([fauxToolCall("read", { path: "/foo" }, { id: "tc1" })], {
+				stopReason: "toolUse",
+			}) as Message,
+		);
+		harness.sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: "tc1",
+			toolName: "read",
+			content: [{ type: "text", text: "file contents" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		harness.session.agent.state.messages = harness.session.sessionManager.buildSessionContext().messages;
+
+		harness.session.applyMessageEdits(
+			'<pi_edit id="0" role="assistant"><pi_tool_call id="tc1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>',
+		);
+
+		// The new swipe version keeps its own copy of the tool result.
+		const resultAfter = harness.session.messages.filter((m) => m.role === "toolResult");
+		expect(resultAfter).toHaveLength(1);
+		expect((resultAfter[0] as { toolCallId?: string }).toolCallId).toBe("tc1");
+		expect(getMessageText(resultAfter[0])).toBe("file contents");
+		// Both the original and the new version are present as a swipe group.
+		expect(harness.session.getSwipeGroup()!.versions).toHaveLength(2);
+	});
+
+	it("keeps the original status on a swipe-edited assistant version whose last tool call has a result", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
@@ -599,7 +668,7 @@ describe("AgentSession.applyMessageEdits", () => {
 		expect(result.swiped).toBe(1);
 		expect(result.versioned).toBe(0);
 		const edited = harness.session.messages.filter((m) => m.role === "assistant").at(-1) as AssistantMessage;
-		expect(edited.stopReason).toBe("toolUse");
+		expect(edited.stopReason).toBe("stop");
 		expect(getMessageText(edited)).toBe("edited");
 		expect(harness.session.getSwipeGroup()!.versions).toHaveLength(1);
 	});
@@ -724,7 +793,7 @@ describe("AgentSession.getEditableMessagesContaining", () => {
 		await harness.session.prompt("user");
 
 		const pasted =
-			'<pi_edit id="0" role="assistant"><pi_reasoning_content>secret plan</pi_reasoning_content><pi_content>answer</pi_content><pi_tool_call id="call_1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>';
+			'<pi_edit id="0" role="assistant" aborted="false"><pi_reasoning_content>secret plan</pi_reasoning_content><pi_content>answer</pi_content><pi_tool_call id="call_1" name="read">{"path":"/foo"}</pi_tool_call></pi_edit>';
 		const matches = harness.session.getEditableMessagesContaining(pasted);
 		expect(matches).toHaveLength(1);
 		expect(matches[0].index).toBe(0);

@@ -2584,6 +2584,7 @@ export class AgentSession {
 					replacement.stopReason = this._editedAssistantStopReason(
 						block,
 						this._messagesAfterEntry(target.entryId),
+						(baseAssistant as AssistantMessage | undefined)?.stopReason,
 					);
 				}
 				replacements.push({ entryId: target.entryId, message: replacement });
@@ -2663,15 +2664,29 @@ export class AgentSession {
 		const baseAssistant = target.message.role === "assistant" ? (target.message as AssistantMessage) : undefined;
 		const message = editBlockToMessage(block, baseAssistant);
 		if (message.role === "assistant") {
-			message.stopReason = this._editedAssistantStopReason(block, []);
+			message.stopReason = this._editedAssistantStopReason(block, [], baseAssistant?.stopReason);
 		}
 		if (!targetEntry || targetEntry.parentId === null) {
 			// No anchor for a swipe group: replace in place.
 			this.sessionManager.replaceMessages([{ entryId: target.entryId, message }]);
 			return;
 		}
+		// Messages that followed the target on the current branch (its tool results
+		// and trailing harness messages) are attached to the original version. A new
+		// swipe version gets its own copies so the trailing context matches without
+		// sharing entries; editing one version never affects the other's content.
+		const branch = this.sessionManager.getBranch();
+		const targetIndex = branch.findIndex((entry) => entry.id === target.entryId);
+		const followerMessages = branch
+			.slice(targetIndex + 1)
+			.filter((entry): entry is SessionMessageEntry => entry.type === "message")
+			.map((entry) => entry.message as Message | CustomMessage | BashExecutionMessage);
+
 		this.sessionManager.branch(targetEntry.parentId);
 		this.sessionManager.appendMessage(message);
+		for (const followerMessage of followerMessages) {
+			this.sessionManager.appendMessage(followerMessage);
+		}
 	}
 
 	/**
@@ -2693,23 +2708,43 @@ export class AgentSession {
 		const baseAssistant = block.role === "assistant" ? (versionEntry.message as AssistantMessage) : undefined;
 		const message = editBlockToMessage(block, baseAssistant);
 		if (message.role === "assistant") {
-			message.stopReason = this._editedAssistantStopReason(block, this._messagesAfterEntry(versionEntry.id));
+			message.stopReason = this._editedAssistantStopReason(
+				block,
+				this._messagesAfterEntry(versionEntry.id),
+				baseAssistant?.stopReason,
+			);
 		}
 		this.sessionManager.replaceMessages([{ entryId: versionEntry.id, message }]);
 	}
 
 	/**
-	 * Stop reason for an assistant message produced by /edit. An edited message
-	 * is complete only when its last tool call already has a tool result later
-	 * in the visible context (toolUse), or when more messages follow it (stop).
-	 * A trailing edited message - mid-thought, mid-text, or with an unanswered
-	 * tool call - is marked aborted so /continue picks it up as a prefill
-	 * continuation candidate and resumes it from the edit point.
+	 * Stop reason for an assistant message produced by /edit. The aborted state
+	 * is carried explicitly on the edit tag (`aborted="true"`/`"false"`), so the
+	 * original status is preserved by default and only overridden when the edit
+	 * block explicitly changes it. An explicit `aborted="false"` on a message
+	 * whose original was aborted falls back to the completed reason (toolUse for
+	 * a tool-call message, stop otherwise). A new message with no original uses
+	 * the previous derivation: a trailing message is aborted so /continue resumes
+	 * it as a prefill continuation candidate.
 	 */
 	private _editedAssistantStopReason(
 		block: ParsedEditBlock | ParsedSwipeBlock,
 		after: AgentMessage[],
+		originalStopReason?: AssistantMessage["stopReason"],
 	): AssistantMessage["stopReason"] {
+		const aborted = block.aborted;
+		if (aborted === "true") return "aborted";
+		if (aborted === "false") {
+			// Explicitly non-aborted: keep the original completed reason, or derive
+			// the completed reason when the original was aborted or absent.
+			if (originalStopReason && originalStopReason !== "aborted" && originalStopReason !== "error") {
+				return originalStopReason;
+			}
+			return this._completedAssistantStopReason(block);
+		}
+		// No explicit aborted attribute: preserve the original status directly.
+		if (originalStopReason) return originalStopReason;
+		// New message without an original: derive the previous behavior.
 		const toolCalls = block.content.filter((c): c is ToolCall => c.type === "toolCall");
 		if (toolCalls.length > 0) {
 			const lastToolCallId = toolCalls[toolCalls.length - 1].id;
@@ -2719,6 +2754,11 @@ export class AgentSession {
 			return hasResult ? "toolUse" : "aborted";
 		}
 		return after.length === 0 ? "aborted" : "stop";
+	}
+
+	/** Completed stop reason for an edited assistant message: toolUse if it has tool calls, stop otherwise. */
+	private _completedAssistantStopReason(block: ParsedEditBlock | ParsedSwipeBlock): AssistantMessage["stopReason"] {
+		return block.content.some((c) => c.type === "toolCall") ? "toolUse" : "stop";
 	}
 
 	private getEditableMessageEntries(): Array<{ entryId: string; message: AgentMessage }> {

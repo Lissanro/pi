@@ -23,6 +23,8 @@ import type {
 export interface ParsedEditBlock {
 	id: number;
 	role: "user" | "assistant";
+	/** Explicit aborted state from the `<pi_edit>` tag; undefined when not present. */
+	aborted?: "true" | "false";
 	content: (TextContent | ThinkingContent | ToolCall | ImageContent)[];
 }
 
@@ -35,6 +37,8 @@ export interface ParsedEditBlock {
 export interface ParsedSwipeBlock {
 	timestamp: string;
 	role: "user" | "assistant";
+	/** Explicit aborted state from the `<pi_swipe>` tag; undefined when not present. */
+	aborted?: "true" | "false";
 	content: (TextContent | ThinkingContent | ToolCall | ImageContent)[];
 }
 
@@ -48,6 +52,13 @@ interface TagMatch {
 
 function escapeXmlAttr(text: string): string {
 	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** Normalize an `aborted` attribute value (true/false or 1/0) to a canonical boolean string. */
+function parseAbortedAttr(value: string | undefined): "true" | "false" | undefined {
+	if (value === "true" || value === "1") return "true";
+	if (value === "false" || value === "0") return "false";
+	return undefined;
 }
 
 function parseTag(tagText: string): { name: string; attributes: Record<string, string>; isClosing: boolean } {
@@ -196,14 +207,15 @@ export function parseMessageEditsAndSwipes(text: string): { edits: ParsedEditBlo
 
 		const content = trimmed.slice(openTag.end, close.start);
 		const parsedContent = parseInnerContent(content, role);
+		const aborted = parseAbortedAttr(openTag.attributes.aborted);
 		if (openTag.name === "pi_edit") {
 			const id = Number.parseInt(openTag.attributes.id ?? "", 10);
 			if (Number.isNaN(id)) return empty;
-			result.edits.push({ id, role, content: parsedContent });
+			result.edits.push({ id, role, aborted, content: parsedContent });
 		} else {
 			const timestamp = openTag.attributes.timestamp ?? "";
 			if (timestamp === "") return empty;
-			result.swipes.push({ timestamp, role, content: parsedContent });
+			result.swipes.push({ timestamp, role, aborted, content: parsedContent });
 		}
 
 		pos = close.end;
@@ -431,7 +443,12 @@ export function formatMessageForEdit(id: number, message: AgentMessage): string 
 	const content = formatMessageContent(message);
 	if (content === null) return null;
 	const role = message.role === "user" ? "user" : "assistant";
-	return `<pi_edit id="${id}" role="${role}">${content}</pi_edit>`;
+	let attrs = ` id="${id}" role="${role}"`;
+	if (message.role === "assistant") {
+		const aborted = (message as AssistantMessage).stopReason === "aborted";
+		attrs += ` aborted="${aborted ? "true" : "false"}"`;
+	}
+	return `<pi_edit${attrs}>${content}</pi_edit>`;
 }
 
 /**
@@ -443,7 +460,12 @@ export function formatMessageForSwipe(timestamp: string, message: AgentMessage):
 	const content = formatMessageContent(message);
 	if (content === null) return null;
 	const role = message.role === "user" ? "user" : "assistant";
-	return `<pi_swipe timestamp="${escapeXmlAttr(timestamp)}" role="${role}">${content}</pi_swipe>`;
+	let attrs = ` timestamp="${escapeXmlAttr(timestamp)}" role="${role}"`;
+	if (message.role === "assistant") {
+		const aborted = (message as AssistantMessage).stopReason === "aborted";
+		attrs += ` aborted="${aborted ? "true" : "false"}"`;
+	}
+	return `<pi_swipe${attrs}>${content}</pi_swipe>`;
 }
 
 function formatUserMessageContent(message: UserMessage): string {

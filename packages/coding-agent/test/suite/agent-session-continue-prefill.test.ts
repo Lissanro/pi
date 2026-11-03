@@ -286,10 +286,10 @@ describe("AgentSession continue with prefill", () => {
 		harness.setResponses([fauxAssistantMessage("original answer")]);
 		await harness.session.prompt("question");
 
-		// A trailing edited message is marked aborted, so /continue resumes it
+		// A trailing edited message marked aborted=true via the edit tag is resumed
 		// from the edit point via prefill continuation instead of regenerating.
 		harness.session.applyMessageEdits(
-			'<pi_edit id="0" role="assistant"><pi_content>edited answer</pi_content></pi_edit>',
+			'<pi_edit id="0" role="assistant" aborted="true"><pi_content>edited answer</pi_content></pi_edit>',
 		);
 
 		setOpenaiCompletions(harness);
