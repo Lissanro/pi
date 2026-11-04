@@ -17,6 +17,7 @@ import type {
 	TextContent,
 	ThinkingContent,
 	ToolCall,
+	ToolResultMessage,
 	UserMessage,
 } from "@earendil-works/pi-ai/compat";
 
@@ -26,6 +27,8 @@ export interface ParsedEditBlock {
 	/** Explicit aborted state from the `<pi_edit>` tag; undefined when not present. */
 	aborted?: "true" | "false";
 	content: (TextContent | ThinkingContent | ToolCall | ImageContent)[];
+	/** Tool results carried with their tool calls; undefined when the block has none. */
+	toolResults?: ParsedToolResult[];
 }
 
 /**
@@ -40,6 +43,20 @@ export interface ParsedSwipeBlock {
 	/** Explicit aborted state from the `<pi_swipe>` tag; undefined when not present. */
 	aborted?: "true" | "false";
 	content: (TextContent | ThinkingContent | ToolCall | ImageContent)[];
+	/** Tool results carried with their tool calls; undefined when the block has none. */
+	toolResults?: ParsedToolResult[];
+}
+
+/**
+ * A tool result carried by an edit block next to its tool call, so the call
+ * and its result are offered and applied as one unit.
+ */
+export interface ParsedToolResult {
+	/** The tool call id the result answers. */
+	id: string;
+	content: (TextContent | ImageContent)[];
+	/** True when the result is an error result. */
+	isError: boolean;
 }
 
 interface TagMatch {
@@ -206,16 +223,20 @@ export function parseMessageEditsAndSwipes(text: string): { edits: ParsedEditBlo
 		if (!close) return empty;
 
 		const content = trimmed.slice(openTag.end, close.start);
-		const parsedContent = parseInnerContent(content, role);
+		const parsed = parseInnerContent(content, role);
 		const aborted = parseAbortedAttr(openTag.attributes.aborted);
 		if (openTag.name === "pi_edit") {
 			const id = Number.parseInt(openTag.attributes.id ?? "", 10);
 			if (Number.isNaN(id)) return empty;
-			result.edits.push({ id, role, aborted, content: parsedContent });
+			const block: ParsedEditBlock = { id, role, aborted, content: parsed.content };
+			if (parsed.toolResults.length > 0) block.toolResults = parsed.toolResults;
+			result.edits.push(block);
 		} else {
 			const timestamp = openTag.attributes.timestamp ?? "";
 			if (timestamp === "") return empty;
-			result.swipes.push({ timestamp, role, aborted, content: parsedContent });
+			const block: ParsedSwipeBlock = { timestamp, role, aborted, content: parsed.content };
+			if (parsed.toolResults.length > 0) block.toolResults = parsed.toolResults;
+			result.swipes.push(block);
 		}
 
 		pos = close.end;
@@ -236,7 +257,7 @@ export function parseMessageEdits(text: string): ParsedEditBlock[] {
 function parseInnerContent(
 	content: string,
 	role: "user" | "assistant",
-): (TextContent | ThinkingContent | ToolCall | ImageContent)[] {
+): { content: (TextContent | ThinkingContent | ToolCall | ImageContent)[]; toolResults: ParsedToolResult[] } {
 	const blocks: (TextContent | ThinkingContent | ToolCall | ImageContent)[] = [];
 	let rest = content;
 
@@ -276,8 +297,6 @@ function parseInnerContent(
 		}
 	}
 
-	const specialTagName = role === "assistant" ? "pi_tool_call" : "pi_image";
-
 	// Main content section. Current format wraps it in `<pi_content>...</pi_content>`;
 	// older messages used bare text followed by trailing special blocks, which is
 	// still supported below as a fallback.
@@ -288,26 +307,189 @@ function parseInnerContent(
 		const openEnd = openStart + contentOpenMatch[0].length;
 		const firstClose = findFirstClosingTag(rest, openEnd, "pi_content");
 		if (firstClose) {
-			const specialOpen = findFirstOpeningTag(rest, firstClose.end, specialTagName);
+			const specialOpen =
+				role === "assistant"
+					? findFirstSpecialTagOpen(rest, firstClose.end, ["pi_tool_call", "pi_tool_result"])
+					: findFirstOpeningTag(rest, firstClose.end, "pi_image");
 			const boundary = specialOpen?.start ?? rest.length;
 			const contentClose = findLastClosingTagBefore(rest, openEnd, boundary, "pi_content") ?? firstClose;
 			const text = rest.slice(openEnd, contentClose.start);
 			if (text.trim().length > 0) blocks.push({ type: "text", text });
-			blocks.push(...parseSpecialBlocksForward(rest.slice(contentClose.end), specialTagName, role));
-		} else {
-			// No closing `<pi_content>`: treat everything as raw text.
-			const text = rest.slice(openEnd);
-			if (text.trim().length > 0) blocks.push({ type: "text", text });
+			if (role === "assistant") {
+				const parsed = parseAssistantSpecialBlocks(rest.slice(contentClose.end));
+				blocks.push(...parsed.toolCalls);
+				return { content: blocks, toolResults: parsed.toolResults };
+			}
+			blocks.push(...parseSpecialBlocksForward(rest.slice(contentClose.end), "pi_image", role));
+			return { content: blocks, toolResults: [] };
 		}
-	} else {
-		// Legacy bare-text format: text runs up to the trailing special blocks.
-		const { specialBlocks, textEnd } = parseTrailingSpecialBlocks(rest, specialTagName, role);
-		const text = rest.slice(0, textEnd);
+		// No closing `<pi_content>`: treat everything as raw text.
+		const text = rest.slice(openEnd);
 		if (text.trim().length > 0) blocks.push({ type: "text", text });
-		blocks.push(...specialBlocks);
+		return { content: blocks, toolResults: [] };
 	}
 
+	// Legacy bare-text format: text runs up to the trailing special blocks.
+	if (role === "assistant") {
+		const { toolCalls, toolResults, textEnd } = parseTrailingAssistantSpecialBlocks(rest);
+		const text = rest.slice(0, textEnd);
+		if (text.trim().length > 0) blocks.push({ type: "text", text });
+		blocks.push(...toolCalls);
+		return { content: blocks, toolResults };
+	}
+	const { specialBlocks, textEnd } = parseTrailingSpecialBlocks(rest, "pi_image", role);
+	const text = rest.slice(0, textEnd);
+	if (text.trim().length > 0) blocks.push({ type: "text", text });
+	blocks.push(...specialBlocks);
+	return { content: blocks, toolResults: [] };
+}
+
+/** Find the first opening tag of one of the given tag names at or after `pos`. */
+function findFirstSpecialTagOpen(text: string, pos: number, tagNames: string[]): TagMatch | undefined {
+	let p = pos;
+	while (p < text.length) {
+		const tag = findNextTag(text, p);
+		if (!tag) return undefined;
+		if (!tag.isClosing && tagNames.includes(tag.name)) return tag;
+		p = tag.end;
+	}
+	return undefined;
+}
+
+/**
+ * Parse the assistant special-block region (everything after the
+ * `<pi_content>` wrapper): `<pi_tool_call>` blocks, each optionally followed
+ * by its `<pi_tool_result>`, in document order. Each block's closing tag is
+ * the furthest closing still before the next block opening, so stray closing
+ * tags inside a block body (e.g. in tool call JSON or result text) are
+ * ignored.
+ */
+function parseAssistantSpecialBlocks(region: string): { toolCalls: ToolCall[]; toolResults: ParsedToolResult[] } {
+	const toolCalls: ToolCall[] = [];
+	const toolResults: ParsedToolResult[] = [];
+	let pos = 0;
+	while (pos < region.length) {
+		const open = findNextTag(region, pos);
+		if (!open) break;
+		if (open.isClosing || (open.name !== "pi_tool_call" && open.name !== "pi_tool_result")) {
+			pos = open.end;
+			continue;
+		}
+		const firstClose = findFirstClosingTag(region, open.end, open.name);
+		if (!firstClose) break;
+		const nextBlockOpen = findFirstSpecialTagOpen(region, firstClose.end, ["pi_tool_call", "pi_tool_result"]);
+		const boundary = nextBlockOpen?.start ?? region.length;
+		const close = findLastClosingTagBefore(region, open.end, boundary, open.name) ?? firstClose;
+		const inner = region.slice(open.end, close.start);
+		if (open.name === "pi_tool_call") {
+			let args: JsonObject = {};
+			try {
+				args = JSON.parse(inner) as JsonObject;
+			} catch {
+				args = {};
+			}
+			const toolCall: ToolCall = {
+				type: "toolCall",
+				id: open.attributes.id ?? "",
+				name: open.attributes.name ?? "",
+				arguments: args,
+			};
+			if (open.attributes.thoughtSignature) toolCall.thoughtSignature = open.attributes.thoughtSignature;
+			toolCalls.push(toolCall);
+		} else {
+			toolResults.push({
+				id: open.attributes.id ?? "",
+				content: parseToolResultContent(inner),
+				isError: open.attributes.isError === "true",
+			});
+		}
+		pos = close.end;
+	}
+	return { toolCalls, toolResults };
+}
+
+/**
+ * Parse the text and `<pi_image>` blocks of a `<pi_tool_result>` body, in
+ * document order.
+ */
+function parseToolResultContent(inner: string): (TextContent | ImageContent)[] {
+	const blocks: (TextContent | ImageContent)[] = [];
+	let textStart = 0;
+	let pos = 0;
+	while (pos < inner.length) {
+		const open = findNextTag(inner, pos);
+		if (!open || open.isClosing || open.name !== "pi_image") break;
+		const text = inner.slice(textStart, open.start);
+		if (text.trim().length > 0) blocks.push({ type: "text", text });
+		const firstClose = findFirstClosingTag(inner, open.end, "pi_image");
+		if (!firstClose) break;
+		const nextOpen = findFirstOpeningTag(inner, firstClose.end, "pi_image");
+		const boundary = nextOpen?.start ?? inner.length;
+		const close = findLastClosingTagBefore(inner, open.end, boundary, "pi_image") ?? firstClose;
+		blocks.push({
+			type: "image",
+			data: inner.slice(open.end, close.start),
+			mimeType: open.attributes.mimeType || open.attributes.mime_type || "image/png",
+		});
+		pos = close.end;
+		textStart = pos;
+	}
+	const text = inner.slice(textStart);
+	if (text.trim().length > 0) blocks.push({ type: "text", text });
 	return blocks;
+}
+
+/**
+ * Parse the trailing assistant special blocks (legacy bare-text format):
+ * `<pi_tool_call>` and `<pi_tool_result>` blocks at the end of the content.
+ * Returns their text end and the blocks oldest-first.
+ */
+function parseTrailingAssistantSpecialBlocks(content: string): {
+	toolCalls: ToolCall[];
+	toolResults: ParsedToolResult[];
+	textEnd: number;
+} {
+	const toolCalls: ToolCall[] = [];
+	const toolResults: ParsedToolResult[] = [];
+	let end = content.length;
+	while (true) {
+		while (end > 0 && /\s/.test(content[end - 1])) end--;
+		const tagName =
+			end >= 15 && content.slice(end - 15, end) === "</pi_tool_call>"
+				? ("pi_tool_call" as const)
+				: end >= 17 && content.slice(end - 17, end) === "</pi_tool_result>"
+					? ("pi_tool_result" as const)
+					: undefined;
+		if (!tagName) break;
+		const closeStart = end - `</${tagName}>`.length;
+		const open = findPreviousOpeningTag(content, closeStart, tagName);
+		if (!open) break;
+		const inner = content.slice(open.end, closeStart);
+		if (tagName === "pi_tool_call") {
+			let args: JsonObject = {};
+			try {
+				args = JSON.parse(inner) as JsonObject;
+			} catch {
+				args = {};
+			}
+			const toolCall: ToolCall = {
+				type: "toolCall",
+				id: open.attributes.id ?? "",
+				name: open.attributes.name ?? "",
+				arguments: args,
+			};
+			if (open.attributes.thoughtSignature) toolCall.thoughtSignature = open.attributes.thoughtSignature;
+			toolCalls.unshift(toolCall);
+		} else {
+			toolResults.unshift({
+				id: open.attributes.id ?? "",
+				content: parseToolResultContent(inner),
+				isError: open.attributes.isError === "true",
+			});
+		}
+		end = open.start;
+	}
+	return { toolCalls, toolResults, textEnd: end };
 }
 
 /**
@@ -421,26 +603,37 @@ function findPreviousOpeningTag(
 }
 
 /**
- * Format the inner content of a message as XML (without the `<pi_edit>` wrapper).
- * Returns `null` for roles that are not directly editable (e.g. toolResult).
+ * Format the inner content of a message as XML (without the `<pi_edit>`
+ * wrapper). For assistant messages, the tool results from `toolResults`
+ * (keyed by tool call id) are emitted after their tool call. Returns `null`
+ * for roles that are not directly editable (e.g. toolResult).
  */
-export function formatMessageContent(message: AgentMessage): string | null {
+export function formatMessageContent(
+	message: AgentMessage,
+	toolResults?: ReadonlyMap<string, ToolResultMessage>,
+): string | null {
 	switch (message.role) {
 		case "user":
 			return formatUserMessageContent(message as UserMessage);
 		case "assistant":
-			return formatAssistantMessageContent(message as AssistantMessage);
+			return formatAssistantMessageContent(message as AssistantMessage, toolResults);
 		default:
 			return null;
 	}
 }
 
 /**
- * Format an existing message as an edit XML block with the given id.
- * Returns `null` for roles that are not directly editable (e.g. toolResult).
+ * Format an existing message as an edit XML block with the given id. Tool
+ * results from `toolResults` are included so the message and its results are
+ * edited as one unit. Returns `null` for roles that are not directly
+ * editable (e.g. toolResult).
  */
-export function formatMessageForEdit(id: number, message: AgentMessage): string | null {
-	const content = formatMessageContent(message);
+export function formatMessageForEdit(
+	id: number,
+	message: AgentMessage,
+	toolResults?: ReadonlyMap<string, ToolResultMessage>,
+): string | null {
+	const content = formatMessageContent(message, toolResults);
 	if (content === null) return null;
 	const role = message.role === "user" ? "user" : "assistant";
 	let attrs = ` id="${id}" role="${role}"`;
@@ -454,10 +647,15 @@ export function formatMessageForEdit(id: number, message: AgentMessage): string 
 /**
  * Format an existing message as a `<pi_swipe>` block for in-place editing of
  * one swipe version. The timestamp identifies the version on apply and keeps
- * its position stable. Returns `null` for roles that are not editable.
+ * its position stable. Tool results from `toolResults` are included. Returns
+ * `null` for roles that are not editable.
  */
-export function formatMessageForSwipe(timestamp: string, message: AgentMessage): string | null {
-	const content = formatMessageContent(message);
+export function formatMessageForSwipe(
+	timestamp: string,
+	message: AgentMessage,
+	toolResults?: ReadonlyMap<string, ToolResultMessage>,
+): string | null {
+	const content = formatMessageContent(message, toolResults);
 	if (content === null) return null;
 	const role = message.role === "user" ? "user" : "assistant";
 	let attrs = ` timestamp="${escapeXmlAttr(timestamp)}" role="${role}"`;
@@ -482,7 +680,10 @@ function formatUserMessageContent(message: UserMessage): string {
 	return inner;
 }
 
-function formatAssistantMessageContent(message: AssistantMessage): string {
+function formatAssistantMessageContent(
+	message: AssistantMessage,
+	toolResults?: ReadonlyMap<string, ToolResultMessage>,
+): string {
 	let inner = "";
 	let textBuffer = "";
 	for (const block of message.content) {
@@ -501,12 +702,32 @@ function formatAssistantMessageContent(message: AssistantMessage): string {
 			let attrs = ` id="${escapeXmlAttr(block.id)}" name="${escapeXmlAttr(block.name)}"`;
 			if (block.thoughtSignature) attrs += ` thoughtSignature="${escapeXmlAttr(block.thoughtSignature)}"`;
 			inner += `<pi_tool_call${attrs}>${JSON.stringify(block.arguments)}</pi_tool_call>`;
+			const result = toolResults?.get(block.id);
+			if (result) inner += formatToolResultBlock(result);
 		}
 	}
 	if (textBuffer.length > 0) {
 		inner += `<pi_content>${textBuffer}</pi_content>`;
 	}
 	return inner;
+}
+
+/**
+ * Format a tool result as a `<pi_tool_result>` block. The id attributes the
+ * result to its tool call; isError is present only for error results.
+ */
+function formatToolResultBlock(result: ToolResultMessage): string {
+	let inner = "";
+	for (const block of result.content) {
+		if (block.type === "text") {
+			inner += block.text;
+		} else {
+			inner += `<pi_image mimeType="${escapeXmlAttr(block.mimeType)}">${block.data}</pi_image>`;
+		}
+	}
+	let attrs = ` id="${escapeXmlAttr(result.toolCallId)}"`;
+	if (result.isError) attrs += ` isError="true"`;
+	return `<pi_tool_result${attrs}>${inner}</pi_tool_result>`;
 }
 
 /**

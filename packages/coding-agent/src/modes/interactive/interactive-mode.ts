@@ -109,12 +109,7 @@ import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import type { McpHttpServerConfig } from "../../core/mcp-servers.ts";
-import {
-	formatMessageContent,
-	formatMessageForEdit,
-	formatMessageForSwipe,
-	isMessageEdit,
-} from "../../core/message-edit.ts";
+import { formatMessageContent, formatMessageForEdit, isMessageEdit } from "../../core/message-edit.ts";
 import { createCompactionSummaryMessage, createCustomMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
@@ -7504,8 +7499,11 @@ export class InteractiveMode {
 	 * Populate the editor with XML edit blocks for the target message(s).
 	 * A numeric argument selects a single message: 0 is the latest editable
 	 * message, 1 is the message before it, etc. A substring argument selects
-	 * every editable message whose text contains it, producing one edit block
-	 * per match. Harness messages are skipped and do not count.
+	 * every editable message whose text, thinking, tool call arguments, or
+	 * tool results contain it, producing one edit block per match. Blocks for
+	 * assistant messages include the tool results of their tool calls as
+	 * `<pi_tool_result>` sections, so the message and its results are edited
+	 * as one unit. Harness messages are skipped and do not count.
 	 *
 	 * `/edit` blocks (<pi_edit>) create a new swipe version when applied to the
 	 * latest message. The unquoted `swipe` subcommand instead populates
@@ -7535,7 +7533,7 @@ export class InteractiveMode {
 			const blocks: string[] = [];
 			for (const index of indices) {
 				const version = group.versions[index - 1];
-				const xml = formatMessageForSwipe(version.timestamp, version.message);
+				const xml = this.session.formatSwipeMessageForEdit(version.id);
 				if (xml !== null) {
 					blocks.push(xml);
 				}
@@ -7556,7 +7554,7 @@ export class InteractiveMode {
 			}
 			const blocks: string[] = [];
 			for (const match of matches) {
-				const xml = formatMessageForEdit(match.index, match.message);
+				const xml = this.session.formatEditableMessageForEdit(match.index);
 				if (xml !== null) {
 					blocks.push(xml);
 				}
@@ -7573,12 +7571,11 @@ export class InteractiveMode {
 			this.showStatus("Usage: /edit [index|substring]");
 			return;
 		}
-		const target = this.session.getEditableMessage(index);
-		if (!target) {
+		if (this.session.getEditableMessage(index) === undefined) {
 			this.showStatus("No message to edit");
 			return;
 		}
-		const xml = formatMessageForEdit(index, target.message);
+		const xml = this.session.formatEditableMessageForEdit(index);
 		if (xml === null) {
 			this.showStatus("Selected message cannot be edited");
 			return;

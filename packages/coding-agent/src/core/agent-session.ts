@@ -135,6 +135,7 @@ import {
 	editBlockToMessage,
 	formatMessageContent,
 	formatMessageForEdit,
+	formatMessageForSwipe,
 	type ParsedEditBlock,
 	type ParsedSwipeBlock,
 	parseMessageEditsAndSwipes,
@@ -2505,13 +2506,40 @@ export class AgentSession {
 	}
 
 	/**
+	 * Format the editable message at the given 0-based index (0 = latest) as
+	 * an /edit XML block, including the tool results of its tool calls as
+	 * `<pi_tool_result>` blocks so the message and its results are offered as
+	 * one unit. Returns null when there is no editable message at that index.
+	 */
+	formatEditableMessageForEdit(index: number): string | null {
+		const target = this.getEditableMessage(index);
+		if (!target) return null;
+		const toolResults = target.message.role === "assistant" ? this._toolResultsForEntry(target.entryId) : undefined;
+		return formatMessageForEdit(index, target.message, toolResults);
+	}
+
+	/**
+	 * Format a swipe version as a `<pi_swipe>` XML block, including the tool
+	 * results of its tool calls. Returns null when no version of the current
+	 * swipe group has the given entry id.
+	 */
+	formatSwipeMessageForEdit(versionId: string): string | null {
+		const version = this.getSwipeGroup()?.versions.find((entry) => entry.id === versionId);
+		if (!version) return null;
+		const toolResults = version.message.role === "assistant" ? this._toolResultsForEntry(version.id) : undefined;
+		return formatMessageForSwipe(version.timestamp, version.message, toolResults);
+	}
+
+	/**
 	 * Find editable messages (user/assistant, skipping harness messages) whose
 	 * search haystack contains the given substring (case-sensitive plain
 	 * match). The haystack covers the plain text, thinking blocks, tool call
-	 * arguments, and the /edit XML form, so pasted /copy or /edit output
-	 * matches as well as plain text. Each match carries its index counting
-	 * backwards from the latest editable message (0 = latest), matching the
-	 * numbering used by getEditableMessage(). Matches are chronological.
+	 * arguments, the tool results of the message's tool calls, and the /edit
+	 * XML form, so pasted /copy or /edit output matches as well as plain text
+	 * or text that only appears in a tool result. Each match carries its
+	 * index counting backwards from the latest editable message (0 = latest),
+	 * matching the numbering used by getEditableMessage(). Matches are
+	 * chronological.
 	 */
 	getEditableMessagesContaining(substring: string): Array<{ index: number; entryId: string; message: AgentMessage }> {
 		const editable = this.getEditableMessageEntries();
@@ -2519,7 +2547,8 @@ export class AgentSession {
 		for (let i = 0; i < editable.length; i++) {
 			const { entryId, message } = editable[i];
 			const index = editable.length - 1 - i;
-			const haystack = this._messageSearchHaystack(message, index);
+			const toolResults = message.role === "assistant" ? this._toolResultsForEntry(entryId) : undefined;
+			const haystack = this._messageSearchHaystack(message, index, toolResults);
 			if (haystack?.includes(substring)) {
 				matches.push({ index, entryId, message });
 			}
@@ -2565,7 +2594,8 @@ export class AgentSession {
 
 		const editableEntries = this.getEditableMessageEntries();
 		const replacements: Array<{ entryId: string; message: Message }> = [];
-		const newMessages: Message[] = [];
+		const resultReplacements: Array<{ entryId: string; message: Message }> = [];
+		const newMessages: Array<{ message: Message; block: ParsedEditBlock }> = [];
 		const versionTargets: Array<{ block: ParsedEditBlock; target: { entryId: string; message: AgentMessage } }> = [];
 
 		for (const block of edits) {
@@ -2596,6 +2626,8 @@ export class AgentSession {
 					);
 				}
 				replacements.push({ entryId: target.entryId, message: replacement });
+				// Tool results edited with the message are replaced in place too.
+				this._collectResultEdits(block, target.entryId, resultReplacements);
 			} else {
 				const baseAssistant = this._createBaseAssistantMessage();
 				const message = editBlockToMessage(block, baseAssistant);
@@ -2604,7 +2636,7 @@ export class AgentSession {
 				if (message.role === "assistant") {
 					message.stopReason = this._editedAssistantStopReason(block, []);
 				}
-				newMessages.push(message);
+				newMessages.push({ message, block });
 			}
 		}
 
@@ -2616,12 +2648,16 @@ export class AgentSession {
 			versioned++;
 		}
 
-		if (replacements.length > 0) {
-			this.sessionManager.replaceMessages(replacements);
+		if (replacements.length > 0 || resultReplacements.length > 0) {
+			this.sessionManager.replaceMessages([...replacements, ...resultReplacements]);
 		}
 
-		for (const message of newMessages) {
+		for (const { message, block } of newMessages) {
 			this.sessionManager.appendMessage(message);
+			// Tool results offered with a new message are appended right after it.
+			for (const result of this._toolResultMessagesForBlock(block)) {
+				this.sessionManager.appendMessage(result);
+			}
 		}
 
 		let swiped = 0;
@@ -2657,6 +2693,42 @@ export class AgentSession {
 	}
 
 	/**
+	 * Message entries that follow the given entry on its own child chain (its
+	 * tool results, possibly interleaved with harness messages), up to but
+	 * excluding the next user or assistant message. A child-chain walk (rather
+	 * than the current branch) so it also works for entries off the current
+	 * path, such as non-current swipe versions.
+	 */
+	private _messagesFollowingEntry(entryId: string): Array<{ entryId: string; message: AgentMessage }> {
+		const following: Array<{ entryId: string; message: AgentMessage }> = [];
+		let currentId: string | null = entryId;
+		while (currentId) {
+			const child: SessionEntry | undefined = this.sessionManager
+				.getChildren(currentId)
+				.find((entry) => entry.type === "message");
+			if (!child) break;
+			if (child.message.role === "user" || child.message.role === "assistant") break;
+			following.push({ entryId: child.id, message: child.message as AgentMessage });
+			currentId = child.id;
+		}
+		return following;
+	}
+
+	/**
+	 * Tool results following the given entry, keyed by tool call id. Expected
+	 * to be the results answering the entry's own tool calls.
+	 */
+	private _toolResultsForEntry(entryId: string): Map<string, ToolResultMessage> {
+		const results = new Map<string, ToolResultMessage>();
+		for (const { message } of this._messagesFollowingEntry(entryId)) {
+			if (message.role === "toolResult") {
+				results.set((message as ToolResultMessage).toolCallId, message as ToolResultMessage);
+			}
+		}
+		return results;
+	}
+
+	/**
 	 * Append a `<pi_edit id="0">` block as a new swipe version of the latest
 	 * editable message: the session branches at the message's parent (the
 	 * swipe-group anchor) and the edited message is appended as a fresh child,
@@ -2683,18 +2755,107 @@ export class AgentSession {
 		// and trailing harness messages) are attached to the original version. A new
 		// swipe version gets its own copies so the trailing context matches without
 		// sharing entries; editing one version never affects the other's content.
+		// Tool results carried by the edit block override the copies, and results
+		// whose tool call the edited message no longer makes stay on the original
+		// version.
 		const branch = this.sessionManager.getBranch();
 		const targetIndex = branch.findIndex((entry) => entry.id === target.entryId);
 		const followerMessages = branch
 			.slice(targetIndex + 1)
 			.filter((entry): entry is SessionMessageEntry => entry.type === "message")
 			.map((entry) => entry.message as Message | CustomMessage | BashExecutionMessage);
+		const overrideById = new Map((block.toolResults ?? []).map((result) => [result.id, result]));
+		const blockCallIds = new Set(block.content.filter((c) => c.type === "toolCall").map((c) => c.id));
 
 		this.sessionManager.branch(targetEntry.parentId);
 		this.sessionManager.appendMessage(message);
 		for (const followerMessage of followerMessages) {
+			if (followerMessage.role === "toolResult") {
+				const toolCallId = (followerMessage as ToolResultMessage).toolCallId;
+				if (!blockCallIds.has(toolCallId) && !overrideById.has(toolCallId)) continue;
+				const override = overrideById.get(toolCallId);
+				if (override) {
+					const base = followerMessage as ToolResultMessage;
+					this.sessionManager.appendMessage({
+						...base,
+						content: override.content,
+						isError: override.isError,
+					});
+					overrideById.delete(toolCallId);
+				} else {
+					this.sessionManager.appendMessage(followerMessage);
+				}
+				continue;
+			}
 			this.sessionManager.appendMessage(followerMessage);
 		}
+		// Results for tool calls the edited message has but the original version
+		// did not are appended after the copied followers.
+		for (const result of overrideById.values()) {
+			const call = block.content.find((c): c is ToolCall => c.type === "toolCall" && c.id === result.id);
+			this.sessionManager.appendMessage({
+				role: "toolResult",
+				toolCallId: result.id,
+				toolName: call?.name ?? "unknown",
+				content: result.content,
+				isError: result.isError,
+				timestamp: Date.now(),
+			});
+		}
+	}
+
+	/**
+	 * Collect in-place replacements for the tool results a block edits, given
+	 * the message entry they follow. Results for tool calls without an
+	 * existing entry are ignored: there is no mid-transcript insertion.
+	 */
+	private _collectResultEdits(
+		block: ParsedEditBlock | ParsedSwipeBlock,
+		entryId: string,
+		replacements: Array<{ entryId: string; message: Message }>,
+	): void {
+		const overrides = block.toolResults;
+		if (!overrides || overrides.length === 0) return;
+		const existing = new Map<string, { entryId: string; message: ToolResultMessage }>();
+		for (const following of this._messagesFollowingEntry(entryId)) {
+			if (following.message.role === "toolResult") {
+				existing.set((following.message as ToolResultMessage).toolCallId, {
+					entryId: following.entryId,
+					message: following.message as ToolResultMessage,
+				});
+			}
+		}
+		for (const override of overrides) {
+			const match = existing.get(override.id);
+			if (match) {
+				replacements.push({
+					entryId: match.entryId,
+					message: { ...match.message, content: override.content, isError: override.isError },
+				});
+			}
+		}
+	}
+
+	/**
+	 * New tool result messages to append right after a newly added message,
+	 * built from the block's tool result edits.
+	 */
+	private _toolResultMessagesForBlock(block: ParsedEditBlock | ParsedSwipeBlock): ToolResultMessage[] {
+		const overrides = block.toolResults;
+		if (!overrides || overrides.length === 0) return [];
+		const results: ToolResultMessage[] = [];
+		for (const override of overrides) {
+			const call = block.content.find((c): c is ToolCall => c.type === "toolCall" && c.id === override.id);
+			results.push({
+				role: "toolResult",
+				toolCallId: override.id,
+				toolName: call?.name ?? "unknown",
+				content: override.content,
+				isError: override.isError,
+				timestamp: Date.now(),
+			});
+		}
+		return results;
 	}
 
 	/**
@@ -2722,7 +2883,10 @@ export class AgentSession {
 				baseAssistant?.stopReason,
 			);
 		}
-		this.sessionManager.replaceMessages([{ entryId: versionEntry.id, message }]);
+		const replacements: Array<{ entryId: string; message: Message }> = [{ entryId: versionEntry.id, message }];
+		// Tool results edited with the version are replaced in place too.
+		this._collectResultEdits(block, versionEntry.id, replacements);
+		this.sessionManager.replaceMessages(replacements);
 	}
 
 	/**
@@ -6354,21 +6518,26 @@ export class AgentSession {
 	/**
 	 * Build the search haystack for substring message matching. For user and
 	 * assistant messages it combines the plain text, the /edit inner XML form
-	 * (thinking blocks and tool calls included), and the full <pi_edit> block
-	 * carrying the message's current editable index, so pasted /copy or /edit
-	 * output matches as well as plain text. Other message kinds are searched
-	 * by their copyable text only. Returns undefined when there is no text.
+	 * (thinking blocks, tool calls, and tool results included), and the full
+	 * <pi_edit> block carrying the message's current editable index, so
+	 * pasted /copy or /edit output matches as well as plain text. Other
+	 * message kinds are searched by their copyable text only. Returns
+	 * undefined when there is no text.
 	 */
-	private _messageSearchHaystack(message: AgentMessage, editableIndex: number): string | undefined {
+	private _messageSearchHaystack(
+		message: AgentMessage,
+		editableIndex: number,
+		toolResults?: Map<string, ToolResultMessage>,
+	): string | undefined {
 		if (message.role !== "user" && message.role !== "assistant") {
 			return this.getMessageCopyText(message);
 		}
 		const parts: string[] = [];
 		const text = getMessageTextContent(message);
 		if (text) parts.push(text);
-		const content = formatMessageContent(message);
+		const content = formatMessageContent(message, toolResults);
 		if (content !== null && content !== text) parts.push(content);
-		const xml = formatMessageForEdit(editableIndex, message);
+		const xml = formatMessageForEdit(editableIndex, message, toolResults);
 		if (xml !== null) parts.push(xml);
 		return parts.length > 0 ? parts.join("\n") : undefined;
 	}
@@ -6396,7 +6565,8 @@ export class AgentSession {
 			const message = entry.message as AgentMessage;
 			if (message.role === "assistant" && isHarnessMessage(message)) continue;
 			const editableIndex = indexByEntryId.get(entry.id);
-			const haystack = this._messageSearchHaystack(message, editableIndex ?? 0);
+			const toolResults = message.role === "assistant" ? this._toolResultsForEntry(entry.id) : undefined;
+			const haystack = this._messageSearchHaystack(message, editableIndex ?? 0, toolResults);
 			if (haystack?.includes(substring)) {
 				matches.push({ message, editableIndex });
 			}

@@ -247,10 +247,10 @@ Configure delivery in [settings](docs/settings.md): `steeringMode` and `followUp
 
 - `/edit` edits the latest editable message. For the latest message this creates a **new swipe version** (see [Swipes](#swipes)) instead of replacing in place - the original stays available as the previous version.
 - `/edit N` edits the message N positions back; older messages are edited in place.
-- `/edit substring` edits every editable message whose text contains the substring.
+- `/edit substring` edits every editable message whose text, thinking, tool call arguments, or tool results contain the substring; a match in a tool call or result selects the message that owns the call.
 - `/edit swipe [selector]` edits swipe versions **in place**, preserving their position: bare edits the current swipe, a selector (e.g. `2-3,8`, `-2` for the last two) edits the selected versions. The `<pi_swipe>` blocks carry the version's timestamp; never hand-edit it.
 
-Assistant blocks support `pi_reasoning_content`, `pi_content`, and `pi_tool_call` sections; user blocks support plain text and `pi_image`. Deleting all sections of a block deletes the message.
+Assistant blocks support `pi_reasoning_content`, `pi_content`, `pi_tool_call`, and `pi_tool_result` sections; a tool result follows its tool call and is edited with it as one unit (applying the edit updates the result entries in place, on new swipe versions, or as appended results for new messages). User blocks support plain text and `pi_image`. Deleting all sections of a block deletes the message.
 
 ### Swipes
 
