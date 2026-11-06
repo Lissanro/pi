@@ -31,6 +31,10 @@ const oauthCredential = {
 } as const;
 
 describe("pi auth logout", () => {
+	// These lookups rely on the built-in cloud provider catalog, which is empty when cloud
+	// providers are disabled (local-only mode forces PI_DISABLE_CLOUD_PROVIDERS=1).
+	const cloudDisabled = process.env.PI_DISABLE_CLOUD_PROVIDERS === "1";
+
 	test("requires exactly one provider", async () => {
 		const { errors, run } = await setup({});
 		for (const args of [[], ["--api-key"], ["radius", "extra"]]) {
@@ -40,14 +44,14 @@ describe("pi auth logout", () => {
 		}
 	});
 
-	test("removes a stored account login", async () => {
+	test.skipIf(cloudDisabled)("removes a stored account login", async () => {
 		const { credentials, lines, run } = await setup({ radius: oauthCredential });
 		expect(await run(["radius"])).toBe(0);
 		expect(lines).toEqual(["Logged out of Radius."]);
 		expect(await credentials.read("radius")).toBeUndefined();
 	});
 
-	test("removes a stored API key by provider name and keeps other credentials", async () => {
+	test.skipIf(cloudDisabled)("removes a stored API key by provider name and keeps other credentials", async () => {
 		const { credentials, lines, run } = await setup({
 			openai: { type: "api_key", key: "sk-test" },
 			radius: oauthCredential,
@@ -60,7 +64,7 @@ describe("pi auth logout", () => {
 		expect(await credentials.read("radius")).toMatchObject({ type: "oauth" });
 	});
 
-	test("succeeds when nothing is stored, so it can be repeated", async () => {
+	test.skipIf(cloudDisabled)("succeeds when nothing is stored, so it can be repeated", async () => {
 		const { lines, run } = await setup({});
 		expect(await run(["radius"])).toBe(0);
 		expect(lines).toEqual([
@@ -82,7 +86,7 @@ describe("pi auth logout", () => {
 		expect(errors).toEqual(["Logout failed: storage failed"]);
 	});
 
-	test("reports committed credential removal separately from a failed logout", async () => {
+	test.skipIf(cloudDisabled)("reports committed credential removal separately from a failed logout", async () => {
 		const { modelRuntime, errors, run } = await setup({ radius: oauthCredential });
 		vi.spyOn(modelRuntime, "logout").mockRejectedValue(
 			new CredentialSynchronizationError("radius", "logout", undefined, { cause: new Error("snapshot failed") }),
