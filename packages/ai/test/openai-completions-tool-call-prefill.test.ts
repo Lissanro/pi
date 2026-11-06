@@ -21,6 +21,7 @@ const compat = {
 	maxTokensField: "max_completion_tokens",
 	requiresToolResultName: false,
 	requiresAssistantAfterToolResult: false,
+	requiresNonNullAssistantContent: false,
 	requiresThinkingAsText: false,
 	requiresReasoningContentOnAssistantMessages: false,
 	thinkingFormat: "openai",
@@ -39,9 +40,13 @@ const compat = {
 	vllmPriority: 0,
 	supportsLongCacheRetention: true,
 } satisfies Required<
-	Omit<OpenAICompletionsCompat, "cacheControlFormat" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField">
+	Omit<
+		OpenAICompletionsCompat,
+		"cacheControlFormat" | "supportsThinkingTokenBudget" | "promptCacheKeyMode" | "thinkingTokenBudgetField"
+	>
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
+	promptCacheKeyMode?: OpenAICompletionsCompat["promptCacheKeyMode"];
 	supportsThinkingTokenBudget?: OpenAICompletionsCompat["supportsThinkingTokenBudget"];
 	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
 };
