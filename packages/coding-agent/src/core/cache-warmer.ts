@@ -333,6 +333,8 @@ export class CacheWarmer {
 				.streamSimple(run.model, run.context, {
 					...run.options,
 					maxTokens: 1,
+					// The warm request repeats the last request; it must not replace the conversation's thread state.
+					disableContinuation: true,
 					maxRetries: 0,
 					signal: run.controller.signal,
 				})
@@ -445,9 +447,9 @@ export function formatCacheWarmingStatus(status: CacheWarmingStatus, now = Date.
 	return `${formatCacheWarmingDecisionTime(status.nextWarmAt, now)} (${details})`;
 }
 
-/** One-line transcript text for persisted cache-warming usage. */
-export function formatCacheWarmingUsage(entry: UsageEntry): string {
-	const note = entry.note ? ` (${entry.note})` : "";
-	const cost = entry.usage.cost.total.toFixed(6).replace(/(\.\d{3}\d*?)0+$/, "$1");
-	return `Cache warmed${note}: $${cost}`;
+/** One-line transcript text for the total cost of one or more consecutive cache warms. */
+export function formatCacheWarmingUsage(totalCost: number, note?: string): string {
+	const noteText = note ? ` (${note})` : "";
+	const cost = totalCost.toFixed(6).replace(/(\.\d{3}\d*?)0+$/, "$1");
+	return `Cache warmed${noteText}: $${cost}`;
 }

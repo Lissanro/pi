@@ -518,7 +518,7 @@ const resumed = await root.watch(context, transcript.resume);
 
 Entries never change once committed, so a merge only adds; one that adds nothing returns the same `items` array. See `test/examples/31-transcript.ts`.
 
-Watches are Chord's `WatchHandle` (exported by `@earendil-works/chord`; Durable re-exports it). The listener gets one `WatchCall` per call, tagged by `kind`, and the newest commit's context: `{ kind: "value", value, ops, retired }`. Chord's watches also have `{ kind: "failed", error }` calls for failures a source recovers from; Durable's failures are final, so a Durable watch never sends one and ends instead. A watch ends once, and `closed` (or `stop()`) gives a `WatchEnd` tagged by `kind`: `stopped`, `aborted` (its acquisition context was aborted), `ended` (the Harness closed, or a task document's task ended), `listener_error`, or `failed` (the Harness failed). An ended watch keeps its last value and no longer references the Harness.
+Watches are Chord's `WatchHandle` (exported by `@earendil-works/chord/watch`; Durable re-exports it). The listener gets one `WatchCall` per call, tagged by `kind`, and the newest commit's context: `{ kind: "value", value, ops, retired }`. Chord's watches also have `{ kind: "failed", error }` calls for failures a source recovers from; Durable's failures are final, so a Durable watch never sends one and ends instead. A watch ends once, and `closed` (or `stop()`) gives a `WatchEnd` tagged by `kind`: `stopped`, `aborted` (its acquisition context was aborted), `ended` (the Harness closed, or a task document's task ended), `listener_error`, or `failed` (the Harness failed). An ended watch keeps its last value and no longer references the Harness.
 
 Adapters that must change in the same step as Durable's memory, such as a Chord source over a view, attach a synchronous observer instead of a watch: `harness.observeConversation(id, observer, context)`, `harness.observeTaskGraph(observer, context)`, and `harness.observeDoc(token, ...scope, observer, context)` return the current `value` and `detach()`, and call `observer.advance(call, context)` with every later change as a `WatchCall` (always a `value` call), unfolded, as memory adopts it: inside the storage's commit for a stored commit, at once for a deferred one (before it is stored). A document observer gets one call per change at its address, so a commit that retires and recreates the document gives two; the task graph also advances without a commit when a registry change alters a task's `blocked` reason. A change can arrive before the `observeXXX()` promise resolves; its ops apply from the observation's `value`. `observer.end(end)` comes once with a `WatchEnd`: `ended` when the Harness closes or, for a task document, right after the retirement of the commit that ends its task, `failed` when the Harness fails. `advance` only records the change: no awaits, no Harness calls, no throws, and quick, since every commit waits for it. One that throws (or returns a rejected promise) is reported, detached, and ended `listener_error`. Watches are built on these observers.
 
@@ -636,6 +636,19 @@ settings: {
 ```
 
 The fixed token counts rarely suit a 32k and a 1M context window alike; `modelOverrides` lets one harness serve both. The conversation's current model picks the entry, at the threshold check, after a context overflow, and when a compaction selects what to summarize.
+
+One conversation can have its own compaction settings, of the same shape, stored in its agent like `maxTurns`:
+
+```typescript
+await root.configure({ compaction: { enabled: false } }, context); // no automatic compaction here, on any model
+await research.configure(
+	{ compaction: { keepRecentTokens: 60000, modelOverrides: { "local/small-32k": { keepRecentTokens: 12000 } } } },
+	context,
+);
+await root.configure({ compaction: null }, context); // back to the settings
+```
+
+Each field comes from the first layer that sets it: the conversation's `modelOverrides` entry, the settings' `modelOverrides` entry, the conversation's own fields, then the settings. So a model-specific value beats a general one, and the conversation beats the harness at the same level: above, `research` keeps 60000 tokens on a model without an override anywhere and 12000 on `local/small-32k`; without its own entry it would get the settings' 8000 there. The exception is `enabled: false` on the conversation, which also beats the settings' model overrides. A change replaces the stored settings as a whole; `configure()` throws a `RangeError` for a token count that is not an integer 0 or more. Children and forks inherit it like the rest of the agent.
 
 When a provider rejects a request because the context is too long, generation compacts and retries once. A summary that would cut before the start of the current context settles as `stale` when it is placed, so when several are in flight, the furthest cut stays in effect. Summarization spend counts in `pi.usage`. A `beforeCompact` hook on `CompactionTask` can decline or supply its own summary.
 
