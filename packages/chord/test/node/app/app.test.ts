@@ -4,7 +4,7 @@
 // round-trip; an existing address refused).
 
 import { chmod, mkdir, readdir, stat, symlink, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BACKGROUND_CONTEXT as context } from "../../../src/context/index.ts";
@@ -93,7 +93,10 @@ describe("starting and closing", () => {
 		}
 	});
 
-	it("names the address listened on in the owner link (review L4)", async () => {
+	// The bracketed-URL format only exists for IPv6 hosts, so this test binds an IPv6 loopback.
+	// Systems without an IPv6 loopback (intentionally disabled) skip it.
+	const hasIpv6Loopback = (networkInterfaces().lo ?? []).some((iface) => iface.family === "IPv6");
+	it.skipIf(!hasIpv6Loopback)("names the address listened on in the owner link (review L4)", async () => {
 		const { app } = await testApp({ listen: { host: "::1", port: 0 } });
 		expect(app.ownerLink()).toMatch(/^http:\/\/\[::1\]:\d+\/_chord\/owner#/);
 		await app.close(context);
