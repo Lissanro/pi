@@ -196,6 +196,7 @@ describe("InteractiveMode pending user bash output", () => {
 			ui: { requestRender: vi.fn() },
 			showStatus: vi.fn(),
 			checkShutdownRequested: vi.fn(async () => {}),
+			fireDueScheduledMessages: vi.fn(),
 			getAppKeyDisplay: () => "alt+up",
 		};
 		for (const name of [
