@@ -23,6 +23,7 @@ const compat = {
 	requiresToolResultName: false,
 	requiresAssistantAfterToolResult: false,
 	requiresNonNullAssistantContent: false,
+	requiresToolsWithToolHistory: false,
 	requiresThinkingAsText: false,
 	requiresReasoningContentOnAssistantMessages: false,
 	thinkingFormat: "openai",
