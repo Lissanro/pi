@@ -124,6 +124,7 @@ test(
 		let browser: Browser | undefined;
 		try {
 			browser = await Browser.start();
+			await browser.signIn(fixture.owner);
 			await browser.metrics(390, 844);
 			await browser.open(`http://127.0.0.1:${fixture.server.port}`);
 			await browser.wait("document.querySelector('.app')");
@@ -136,7 +137,7 @@ test(
 			await browser.wait("document.querySelector('[data-testid=activity][data-state=working]')");
 			await browser.click("[data-testid=activity]");
 			await browser.wait("document.querySelector('[data-testid=step] button')");
-			await browser.click("[data-testid=step] button");
+			// The running script is already expanded in the selected block's panel.
 			await browser.click("[data-testid=calls-more]");
 			await browser.wait("document.querySelectorAll('[data-testid=call]').length===10");
 			// The first failed, the ninth was interrupted by a restart (a failure too), the tenth runs.

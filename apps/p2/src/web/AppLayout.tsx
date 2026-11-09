@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, useRef, useState } from "react";
 import { closeLayers, Slot, useCanWrite, useDrawer, useRoute, useUnshownLayers } from "../runtime/web.tsx";
 import { useComposerState } from "./composer-state.tsx";
+import { useDragSize } from "./drag-size.ts";
 import { useDrawerSwipe } from "./drawer-swipe.ts";
 import { OwnerNotices } from "./OwnerNotices.tsx";
 import { useSidebarCollapsed } from "./sidebar.ts";
@@ -14,11 +15,32 @@ export function AppLayout() {
 	const [draggingFiles, setDraggingFiles] = useState(false);
 	const dragDepth = useRef(0);
 	const swipe = useDrawerSwipe();
+	// Docked width (from 900px), dragged at the inline end and remembered per browser; the phone drawer ignores it.
+	const width = useDragSize("pi-sidebar-width", "--sidebar-width");
+	const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+		const element = event.currentTarget.parentElement;
+		if (!element) return;
+		const box = element.getBoundingClientRect();
+		const rtl = getComputedStyle(element).direction === "rtl";
+		width.drag(event, element, (moved) =>
+			Math.min(
+				Math.max(rtl ? box.right - moved.clientX : moved.clientX - box.left, 220),
+				Math.min(560, window.innerWidth * 0.5),
+			),
+		);
+	};
 	useUnshownLayers();
 	return (
 		<div className={`app ${drawer ? "drawer-open" : ""} ${collapsed ? "sidebar-collapsed" : ""}`}>
-			<aside className="drawer" ref={swipe.drawer}>
+			<aside className="drawer" ref={swipe.drawer} style={width.style}>
 				<Slot name="sidebar" />
+				<button
+					type="button"
+					className="sidebar-resize"
+					aria-label="Drag to resize sidebar"
+					tabIndex={-1}
+					onPointerDown={startResize}
+				/>
 			</aside>
 			<button
 				type="button"
@@ -61,6 +83,7 @@ export function AppLayout() {
 				<OwnerNotices />
 				<Slot name="main" fallback={<div className="hero">No chat plugin</div>} />
 			</main>
+			<div id="side-dock" className="side-dock" />
 			<Slot name="workspace-panel" />
 		</div>
 	);

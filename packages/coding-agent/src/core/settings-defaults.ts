@@ -64,7 +64,7 @@ export const SETTINGS_DEFAULTS = {
 		mode: "on",
 		inlineBudget: 3000,
 	},
-	cacheWarming: "streaming",
+	cacheWarming: "idle",
 	tuiMode: "regular",
 	// Crystal defaults to the inline (regular) TUI, which lets the terminal
 	// soft-wrap long lines instead of the fullscreen mode that disables

@@ -57,13 +57,16 @@ P2_FAKE=1 npm start          # http://127.0.0.1:8788, data in ~/.pi/p2
 - **Data report** (`scripts/data-report.ts`, read-only, beside a live server): per session its title, location,
   conversations with their entry counts and newest entry IDs, subagents, share modes, artifacts, uploads and
   downloads, plus environment and forward names; never secrets. `--compare before.json` lists differences (exit 1).
-  `scripts/verify-sessions.ts [url]` checks a running p2 against it as the loopback owner: the session list, and the
+  `scripts/verify-sessions.ts [url]` checks a running p2 against it as the local owner (signed in with the data
+  directory's owner key: `--data`, P2_DATA_DIR or ~/.pi/p2): the session list, and the
   newest entry of every conversation through `Chat` for the 10 newest sessions and all with subagents or shares
   (stopping workers it started). `test/fixtures/v1-data` is a data directory p2 wrote on Chord v1 (generated at
   aee97d3a9; the generator went with v1); `v1-data.test.ts` opens a copy and checks both tools and the contracts.
 - One server per data directory (process lock). To try p2 next to a real setup without touching it, set
   `P2_DATA_DIR` to a temporary directory.
-- Localhost is the device owner. Through an HTTPS tunnel host listed in `P2_ALLOWED_HOSTS` (comma-separated),
+- Loopback alone is nobody: the local owner holds a local session cookie, from a sign-in link opened on the host or
+  a local sign-in with the data directory's owner key (TUI, owner-link, scripts; **Loopback owner** under Devices).
+  Through an HTTPS tunnel host listed in `P2_ALLOWED_HOSTS` (comma-separated),
   the Devices plugin's owner cookie admits an associated remote owner; a share cookie admits only that session's
   guest. Open `/owner` to sign in with a one-time token (see README). Other Host/Origin headers and forwarded
   localhost requests get 403. Radius independently authenticates its owner; proxies never do. Associated cookies
@@ -160,20 +163,21 @@ failure results.
 ## TUI
 
 ```sh
-npm run tui                         # device owner on http://127.0.0.1:$PORT, default 8788
+npm run tui                         # local owner on http://127.0.0.1:$PORT, default 8788
 npm run tui -- https://pi.example    # prompts for an owner link unless its saved cookie is valid
 npm run owner-link -- https://pi.example   # on the server machine, print a private fragment link
 # Paste that link at the TUI prompt, or supply --owner-link '<link>' / P2_TUI_OWNER_LINK.
 ```
 
-Direct HTTP loopback uses the core device-owner path without prompting or sending a cached remote cookie.
-Its owner-only `GET /__p2_dev` preflight also works before a Devices protocol upgrade; a proxy marker refuses the
-path and causes a link prompt. The default is always `http://127.0.0.1:$PORT` (8788 unset), not `P2_PUBLIC_URL`.
+On direct HTTP loopback the launcher first tries a valid saved owner cookie, then signs in as the local owner with
+the owner key of `P2_DATA_DIR` (default `~/.pi/p2`; `src/runtime/local-owner.ts`) and saves nothing. Without a
+readable key, against a server with another data directory, or behind a proxy marker, it prints why and prompts for a
+link. When every owner is signed out while it runs, a local sign-in signs in again with the new key. The default is always `http://127.0.0.1:$PORT` (8788 unset), not `P2_PUBLIC_URL`.
 Remote URLs require HTTPS. `--owner-link <link>` (or `P2_TUI_OWNER_LINK`) redeems only a same-origin `/owner#<token>`
 link through POST and saves the returned cookie. Without a valid saved cookie, the TUI prompts for that link. A share link works too: `--join <https://host/join/token>` (or pasting it at
 the prompt) asks for a display name and redeems it with `POST /join`; the guest cookie is saved per origin beside any
 owner cookie and reused after a `HEAD /__p2_tui` check. If the server stops admitting it (link reset, guest removed,
-session archived) the TUI exits with a notice and forgets it. Loopback stays the device owner unless `--join` is given.
+session archived) the TUI exits with a notice and forgets it. Loopback stays the local owner unless `--join` is given.
 Basic-auth options/environment/passwords are removed. Prefer the prompt to command-line credentials, which can
 appear in shell history/process listings. Only the cookie is saved per origin in `~/.pi/p2-tui/config.json`
 (0600, directory 0700); the consumed invitation is never saved. Local configuration stores only cookies;
@@ -793,7 +797,7 @@ translated phone drawer and intercept chat taps.
     move goes to the target's root (with a notice when the subfolder is missing there). Then `/cd`'s flow (its
     confirmation, `Sessions.relocate`). Tests: `projects.test.ts`, `tui-projects.test.ts`.
 - **Principals** (`src/runtime/principals.ts`, typed: `P2Principal`, with Chord's API typed by it in
-  `src/runtime/chord.ts`): `owner` (trusted loopback `access: "local"`, authenticated Radius `access: "relay"`, or a
+  `src/runtime/chord.ts`): `owner` (a local owner session on loopback `access: "local"`, authenticated Radius `access: "relay"`, or a
   signed owner cookie `access: "device"` with a device ID), `guest`, `worker` (stamped by the server's `session:` route
   with the spawn generation), `server` (the server's own requests as a worker sees them, from the worker's `connect`)
   and `host` (every host's own code, `createHost({ self })`). Object keys: `owner:local`, `owner:relay`,
@@ -842,12 +846,16 @@ translated phone drawer and intercept chat taps.
   writes `app.model-error` entries (they projected unanswered inputs before Durable had `runFailure`); stored ones
   still render.
 - **Sheet swipe** (`src/web/sheet-swipe.ts`, phones only, below 700px where sheets are bottom sheets): a downward
-  drag that starts on a sheet's top edge (a grip above its header, and the header; both `touch-action: none`) moves
+  drag on a sheet's top edge (a grip above its header, and the header; both `touch-action: none`) always moves
   it with the finger and fades its scrim; release closes it on a downward fling (> 0.3 px/ms) or past 30% of its
-  height, else it settles back; the route closes when the slide out ends. Drags in the content stay scrolls; upward
-  pulls give 20%. Both swipes share the drag mechanics (`src/web/drag-gesture.ts`: following one touch, deciding its
-  axis within 35 degrees and owning it with cancelable moves, release velocity, settle timing); each supplies where
-  it may start, which direction it takes, how it paints and what release means.
+  height, else it settles back; the route closes when the slide out ends. Owner decision (as iOS's sheets and Elanor's
+  drawer): a drag down in the content pulls the sheet too when the content is at its top; scrolled, it scrolls the
+  content, and once that reaches its top the same finger pulls the sheet on (`resume` in drag-gesture.ts: a touch left
+  to the page offered again at each move). Fields and `touch-action: none` elements keep their touches; the content
+  has no rubber band at its top (`overscroll-behavior-y: none`). Upward pulls give 20%. Both swipes share the drag
+  mechanics (`src/web/drag-gesture.ts`: following one touch, deciding its axis within 35 degrees and owning it with
+  cancelable moves, release velocity, settle timing); each supplies where it may start, which direction it takes, how
+  it paints and what release means.
 - **Arriving messages** (`useArriving` in `Chat.tsx`): rows appended after the previous last row while the transcript
   grows fade in and rise 8px (0.28 s, 45 ms apart, at most 360 ms of delay; none with reduced motion). Not the first
   rows, older history, rows replaced in place (a streaming answer committed, a sent message the server now shows) or
@@ -1014,7 +1022,8 @@ translated phone drawer and intercept chat taps.
   editors persist in localStorage per conversation; Send/Send all use ordinary attributed Chat input. Integration
   tests cover fake-provider prompts, a temp git repo, bounds, reload/watch lifetime, HTTP streaming/ranges, upload
   cleanup/concurrency and guest revocation; `ui-workspace.test.ts` the browser panel. The web panel docks at 1200 px,
-  remembers its resizable list width, and shows a file beside the list when both chat and file can retain 480 px.
+  remembers its resizable list width (dragged at its left edge from 900 px, as an overlay too), and shows a file beside
+  the list when both chat and file can retain 480 px.
   Read/write/edit cards supply one-step Open in workspace links. Files/commits push; views/search replace; tabs reset
   the trailing workspace run. List/file scroll positions survive Back and reload.
 - **Remote environments** (`plugins/envs`, [guide](remote-envs.md)): owner-only `Envs` lists environments with their
@@ -1125,8 +1134,10 @@ translated phone drawer and intercept chat taps.
   observer (`WorkerModels`). `startServer({ resources: { createModels } })` injects a fixture provider (tests).
   Edit `settings.json` as a file; valid changes hot-reload and in-flight requests keep their configuration.
   Set the default model and thinking level with **Make default for new sessions** in the model picker; there is no Settings editor UI.
-- **Devices** (`plugins/devices`): `npm run owner-link [base-url]` calls the direct device-only loopback token path,
-  then prints a private `/owner#<token>` link. Base defaults to `P2_PUBLIC_URL` or `http://127.0.0.1:$PORT`; invitation
+- **Devices** (`plugins/devices`): `npm run owner-link [base-url]` signs in as the local owner, calls the local-owner
+  `GET /owner-token` (same-origin or no Fetch Metadata only), then prints a private `/owner#<token>` link. At startup the
+  server prints a one-time token for this machine, to paste into the sign-in page (added to the log redactor; only
+  the terminal shows it). Base defaults to `P2_PUBLIC_URL` or `http://127.0.0.1:$PORT`; invitation
   lifetime is ten minutes, single-use. The nonced sign-in page is also the stranger landing page; it immediately
   scrubs the fragment, POSTs it, then redirects to `/`. HTTP/proxy URLs never carry the token. Signed per-device
   cookies are HttpOnly, SameSite=Lax, Secure on a remote origin, with a 30-day browser/server expiry. The private
@@ -1134,18 +1145,26 @@ translated phone drawer and intercept chat taps.
   and revokes live remote-owner objects/links through `Server.revokeOwners`. First signed-cookie startup rotates
   the old exposed raw-key cookie once (`owner-cookie-version`); no legacy raw-cookie compatibility. The web host
   exposes no filesystem paths; it serves only app pages, `public/` files and bundle files. Headless `owner-token.txt`
-  is replaced each startup. Cookie owners are remote (`access: "device"`
-  plus device ID), even when redeemed locally, so they cannot mint invitations. Device bootstrap privileges remain
-  inherent to the machine. Compatible reloads keep invitations; restarts invalidate them but keep cookies/revocations.
+  is replaced each startup. Cookies redeemed on a remote origin are remote owners (`access: "device"` plus device ID)
+  and cannot mint invitations; redeemed on loopback they are local sessions. Compatible reloads keep invitations; restarts invalidate them but keep cookies/revocations.
   Tests use only temporary directories and port 0, with no real provider requests (`devices`, `proxy-marker`, `tui`,
   and the fragment-link browser regression in `ui-parity.test.ts`).
-- **Loopback owner cookie** (Pi Mobile's, `src/runtime/loopback-cookie.ts`): the local owner's browser gets
-  `p2_device_<port>` (HttpOnly, SameSite=Strict, secret in private `<data>/device-cookie`) when it loads an app page
-  (`/`, `/s/…`) on loopback. Cookieless loopback requests stay the device owner (TUI, owner-link, first page load),
-  except on a share's join page: only an owner by cookie or relay skips the form, so a fresh profile/incognito tab
-  opening `http://127.0.0.1:<port>/join/<token>` joins as a guest. A guest cookie wins over the cookieless fallback
-  for every request (pages, WebSocket, files); the loopback owner cookie wins over a guest cookie (the owner's
-  browser stays owner). Checked only on loopback. `loopback-join.test.ts` (HTTP and Chromium with fresh profiles).
+- **Loopback owner** (`plugins/devices`, `src/runtime/local-owner.ts`): loopback alone proves nothing on a shared
+  machine, so the local owner (`access: "local"`) is a signed session cookie, the devices cookie with a `local.` kind
+  (`p2_owner_<port>=local.<id>.<expiry>.<sig>`, HttpOnly, SameSite=Lax, never Secure, accepted only on loopback). A
+  browser gets it by redeeming an owner link on loopback (the startup token pasted into the sign-in page, `npm run owner-link`); clients on the host
+  get it by local sign-in: `POST /owner/local/challenge` (one-time, one minute, in memory), then `POST
+  /owner/local/claim` with HMAC-SHA256(owner-key, `p2-local-owner:<port>:<challenge>`), so the key never leaves the
+  client and a process squatting on the port learns nothing usable at the real one. Each app page load renews the
+  session (same id, 30 more days; `PageCookies`). Sign-out of one local session revokes its id but leaves live local
+  links (one shared principal); sign-out of all devices rotates the key and revokes `{ owners: "local" }` too.
+  Lax, not Strict: a link from another site (or Chrome launching an installed app) must arrive signed in; the server
+  drops every cookie principal of another site's requests except top-level navigations to app pages (Fetch Metadata).
+  A foreign navigation without a cookie gets the sign-in page, which loads itself once more from p2's origin (that
+  load is same-origin, so it cannot loop). Only an owner by cookie or relay skips a share's join form, so a fresh
+  profile opening `http://127.0.0.1:<port>/join/<token>` joins as a guest; an owner cookie wins over a guest cookie.
+  Browsers send cookies to every port of `127.0.0.1` (README: remaining risk). The old `<data>/device-cookie` is
+  unused. Tests: `devices.test.ts`, `loopback-join.test.ts`, `foreign-requests.test.ts`, `tui.test.ts`.
 - **Provider login** (`plugins/login`): `LoginService` (server local) runs its own `Logins` (provider-owned
   api-key and OAuth flows), which keeps the flow's `login` state (status, the pending prompt, notices; never
   credentials or answers); the service follows it, so `start`, `answer`, `dismiss` and `cancel` (which waits for the
@@ -1176,8 +1195,12 @@ translated phone drawer and intercept chat taps.
   and serves the preview with a CSP sandbox (no same-origin privilege, forms, child frames or objects). Only
   previews receive the diagnostics bridge; `download=1` returns the original source. HEAD describes the same
   representation as GET. The chat-content slot supplies the shared transcript card contexts and explicit-click
-  file/artifact viewers; a top-bar counter opens a picker of every version, newest first. The viewer/picker lives in
-  named `Route.layers` (Back and sessionStorage restoration); picking an artifact pushes a viewer above its list.
+  file/artifact viewers; a top-bar counter toggles a list of every version, newest first, in the side panel
+  (`SidePanel`, `Route.panel` "artifacts": docked on the right from 700px like a run's activity, which it replaces and
+  which replaces it; a sheet on phones). Dragging a docked side panel's left edge resizes it; every side panel shares
+  that width, kept per browser (`p2-side-panel-width`; `useDragSize` in `src/web/drag-size.ts`, which the sidebar,
+  workspace and terminal use too). The viewer is a named `Route.layers` entry (Back and sessionStorage restoration);
+  picking an artifact pushes a viewer above the list.
   HTML/SVG use a sandboxed iframe, Markdown/text render safely,
   sent files use the conservative file preview. Nothing opens from a server update. `test/p2/artifacts.test.ts`
   covers fake-provider publication, versions, independent index, reload/restart, CSP, HEAD, guest isolation and
@@ -1274,6 +1297,16 @@ translated phone drawer and intercept chat taps.
   reload during a script, SIGKILL and graceful restarts mid-call (finished calls do not rerun; the interrupted unsafe
   `bash` call returns an error the script catches); the removal mid-script (prompt error, turn ends, the script's thread goes); `codemode-plugin.test.ts` the
   sandbox across reload/removal.
+- **Cache warming** (`plugins/cache-warming`, policy in pi-ai's `cache-warming.ts`, as pi-coding-agent's): a hook-only
+  Durable extension; each `afterResponse` starts the conversation's run, replacing the last one. The request comes from
+  the core: the Harness's `Models` proxy remembers each `streamSimple` request by the message `result()` resolved with
+  (`WeakMap`); `HarnessParts.requestOf(message)` takes it once as a read-only `ModelRequest` (Durable's frozen entry
+  messages; never mutate, copy or freeze it; resending skips `beforeProviderRequest`). `completeSimple` (compaction,
+  the refreshes) is not remembered. Each refresh: no phase while `pi.live.generation` exists, streaming while
+  `pi.live.run` exists, idle only for top-level conversations, none once the model or the context's start changed;
+  usage goes to `pi.usage`. Timers live in the plugin's native (a reload ends them); liveness kind `cacheWarming`.
+  Setting `cacheWarming` (`"idle"`, `"streaming"`, `"off"`). Tests: `cache-warming.test.ts`,
+  `harness-requests.test.ts` (pins that the hook's message is the object `result()` resolved with).
 - **MCP servers** (`plugins/mcp`, plan `docs/mcp-durable.md`, WP6-8): the server's `McpManager` (local,
   host lifetime) owns every MCP process and connection; workers never spawn one or hold a credential. `<P2_DATA_DIR>/mcp.json`
   is the owner's `mcpServers` (pi-mcp's `validateMcpServerConfig`, plus p2's `shared` and `runOn`; invalid entries are
@@ -1323,7 +1356,7 @@ translated phone drawer and intercept chat taps.
 - **MCP sign-in** (`plugins/mcp/sign-in.ts`, `routes.ts`, `probe.ts`, `pages.ts`, `credentials.ts`; as built:
   `docs/mcp-durable.md` section 4.7): HTTP servers without an `Authorization` header use OAuth with pi-mcp's auth
   provider (stored tokens, refreshed, never a browser) and credentials in `<P2_DATA_DIR>/mcp-auth.json` (0600, keyed like
-  pi's). Owners sign in at `GET /mcp/sign-in/<server>` (the web MCP sheet opens it in a new tab): the device owner's
+  pi's). Owners sign in at `GET /mcp/sign-in/<server>` (the web MCP sheet opens it in a new tab): the local owner's
   browser returns to a loopback callback on the p2 host; for a relayed or public owner a probe page first fetches a
   nonce URL from a 127.0.0.1 listener of p2 (CORS for that origin only), and returns to loopback when it answers, else to
   `GET /mcp/callback` on the origin p2 is reached through. Pasting the final redirect URL (web sheet, TUI `/mcp paste`)
@@ -1421,8 +1454,9 @@ translated phone drawer and intercept chat taps.
   reshaped by owner decisions after it). The agent's responses between two people's messages (or markers, failures,
   gaps) are one turn (`chatItems` in `model.ts`). Its thinking blocks and texts stay in the transcript in their order
   ("Thought ›" opens in place; text as prose); each run of consecutive tool calls between them is one **activity row**;
-  the turn's last text is its **answer** (Copy, Branch and Reply; a stop, an error or the length limit below it),
-  followed by its **results** (artifact and sent-file cards, an inline artifact below its card, an opened port's links).
+  the turn's last text is its **answer** (Copy, Branch, Reply and the time it began; a stop, an error or the length
+  limit below it), followed by its **results** (artifact and sent-file cards, an inline artifact below its card, an
+  opened port's links).
   The activity row is a wheel of the run's calls: while the agent works the newest call faces the reader in the present
   tense ("Running npm test") and breathes, a failed one is red, and the run's time counts (until the next response
   begins); when it ends the wheel rolls to a summary ("Read 3 files, ran 2 commands · 6 steps") and the total time. The
@@ -1430,11 +1464,13 @@ translated phone drawer and intercept chat taps.
   runtime's `Sheet`: grip, 52px header with "N steps · 18s" and Close, swipe down to close; a centred dialog from
   700px) as a route layer (`openActivity`, layer `{ kind: "sheet", name: "activity", locator }` with the row's key):
   one 44px row per call (icon, tool name and main argument, ✓ with its time, ✗ with an exit code, ● running,
-  chevron); a row opens the call's detail one layer up (Input, Output: the command and its output as a terminal, a
-  read's numbered lines or image, an edit's diff, a subagent's message and answer with Open, a history tool's entries
-  that reveal their messages), with Back in the header, and a script's call one more. Back (the browser's, Android's,
-  the header's) leads down a layer at a time and finally closes the sheet, like every other sheet; the wheel rolled to
-  a call opens the list and that call's detail over it. The transcript renders the sheet (`ActivityLayer` in
+  under it the clock time it started where the minute changes from the row before, chevron); a row opens the call's
+  detail one layer up (Input, Output: the command and its output as a terminal, a read's numbered lines or image, an
+  edit's diff, a subagent's message and answer with Open, a history tool's entries that reveal their messages), with
+  Back in the header, and a script's call one more. Back (the browser's, Android's, the header's) leads down a layer
+  at a time and finally closes the sheet, like every other sheet; a tap on the wheel opens what
+  faces the reader: a call (rolled there, or the newest while it runs; also thinking and texts on the wheel), the
+  summary or "Working…" the run. The transcript renders the sheet (`ActivityLayer` in
   `Messages`), so it follows a running run live. The last run is live while the transcript says the agent works
   (`working`), or, before the live view arrived (the copy kept on the device), while its entries say it is not over.
   Before the first response a waiting wheel ("Working…") stands for the run. The wheel and a script's timeline are
@@ -1449,8 +1485,16 @@ translated phone drawer and intercept chat taps.
   summaries, grouped calls), `ui-activity.test.ts` (the sheet, its layers and Back, the wide dialog, a mixed turn, a
   long run opening at its end), and the browser tests that open steps (`codemode-card`, `nested-calls`, `ui-agents`,
   `failed-turns`, `ui-mobile-fixes`).
+- **Haptics** (`src/web/haptics.ts`): in p2's iOS app only (p2-ios, Capacitor with its Haptics plugin), through the
+  bridge Capacitor injects into the page; in a browser nothing (owner decision: no `navigator.vibrate` on Android for
+  now). `lightTap` (a light impact) when a message is sent; `tick` at each detent of an activity wheel, whether the
+  reader rolls it (drag, mouse wheel, arrow keys) or a new step rolls in: iOS's selection feedback, as its picker
+  wheels give. The Ticker reports detents through `onTurn`, a p2 addition to the Elanor port. `ui-haptics.test.ts`
+  checks the calls with a stand-in for the app's bridge.
 - **How much of a turn shows: settings.json `detail`** (owner decision: a level in settings.json for now, no app UI;
-  read live from the owner's `Models` resources snapshot, so guests see the default). 1: only the answer and its
+  read live from the owner's `Models` resources snapshot, so guests see the default; each chat holds that anew, so
+  until it arrives the level this device last saw is used, `localStorage` `p2-detail`, and a chat opens laid out as it
+  stays). 1: only the answer and its
   results; the turn's thinking, texts and calls on one wheel per turn (keyed by the item before the run, like the
   waiting wheel), its sheet listing thinking and texts among the calls ("Thought", "Note", each opening its words). The
   turn's last text becomes its answer only once the agent stopped: while it works a text may still turn out to be a
@@ -1491,9 +1535,11 @@ translated phone drawer and intercept chat taps.
   colours; kinds differ only by icon and word. A subagent's header (at least 44px, with a chevron) opens its
   conversation in this session, another session's header that session (owner only); both are navigation steps, so
   Back returns. A guest's has no target. The body is never a link. The owner's messages keep the bubble; inputs
-  without an author (a main agent's task in a subagent's conversation) too. Not done: "Answered: …" under an answered
-  subagent question (no data links a `team` question to the main agent's later `subagent send`). Test:
-  `ui-incoming.test.ts`.
+  without an author (a main agent's task in a subagent's conversation) too. A sent one has its time, Edit and Copy
+  below it (owner decision: timestamps quiet, in the action rows; `src/web/Time.tsx`, absolute: the clock today, the
+  date before it on other days, the full moment as tooltip; no "n minutes ago", which would need a ticking clock).
+  Not done: "Answered: …" under an answered subagent question (no data links a `team` question to the main agent's
+  later `subagent send`). Test: `ui-incoming.test.ts`.
 - **Earlier history while a turn is one row:** a page of a turn's tool calls can add next to no height (they are all
   one activity row), so the transcript loads earlier pages by itself while following the answer at the bottom and
   less than a viewport of history is above it, not only on a scroll up (`#loadEarlier` in `use-chat-scroll.ts`), and
