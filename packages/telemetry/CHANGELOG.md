@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-10
+
+## [1.5.1] - 2026-11-09
+
 ### Added
 
 - `telemetryNow()`, the span clock: wall-clock milliseconds at microsecond resolution from `performance.now()` anchored to `Date.now()`, anchored anew when the two part by more than 10 ms. The in-memory adapter stamps span starts with it (span times rounded to the microsecond), and `renderTrace` prints lengths of time to the microsecond.

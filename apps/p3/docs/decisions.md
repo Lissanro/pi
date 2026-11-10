@@ -94,3 +94,30 @@ and its working rules are in `handoff.md`.
   session stores together) and restore onto a new machine. The **sync format** of Chord's stores stays the one format
   for both backups and exports (a single session's export: its store plus its session metadata entries): it encodes
   every kind of data the core stores hold, plugin data included, and we bet on it.
+- **Session data on the server as host-keyed documents (owner, 2026-11-09, supersedes the typed metadata store of the
+  "Session metadata store" entry):** each plugin keeps its per-session server data in its own server object as Chord
+  documents or table rows keyed by the session's host address (`defineState(..., { keyed: Session })`, table columns
+  `host(Session)`; Chord decision "Documents and table rows can belong to a host"); its worker part follows its own
+  document through its own view (pinned with `at(Session({ id: principal.session }))`). Export of a session = its own
+  store + every server record and row belonging to its address, in the store archive format; import into a non-empty
+  store refuses, replaces explicitly, or copies under a new id; delete retires them. The rule stays: anything needed
+  while the worker is off lives on the server, the rest in the session's store, never both. No central metadata store,
+  no `metadataOf`, no export callbacks.
+- **Efficiency is a requirement (owner, 2026-11-09):** p3 must be extremely efficient: dozens to hundreds of session
+  workers on one reasonably beefy machine, and a super snappy UI. Every design and build step states its memory per
+  worker, its startup cost and its bytes on the wire for common UI actions (switching sessions and conversations),
+  and measures them; findings of p2's perf work (session "fucked up perf", subagent `worker-mem`) feed p3's design.
+  Any Chord change made for performance (for example references sharing or keeping replicas) must keep Chord's
+  correctness guarantees and goes through the full review.
+- **Tests are isolated and deterministic (owner, 2026-11-09, after p2's subagents test race):** each test case gets its
+  own session (and its own subagents, conversations and stores); nothing a case leaves behind is visible to the next.
+  The fake model answers what the test scripted for each request, deterministically, never "whatever came last"; a
+  request it has no script for fails the test. A test waits for an effect it caused (an entry newer than its own input,
+  a result of its own call), never for a pattern that may already be there. A failure under load is a bug until its
+  root cause is known.
+- **A view's frame is a Chord client with a view principal and its own socket (owner, 2026-11-10):** agent-made views
+  run in sandboxed frames that connect to the server with their own link, authenticated by a short-lived token scoped to
+  the view, as a principal `{ kind: "view", session, view, for }` that never gets the viewer's powers; objects serve view
+  variants (the room for real-time collaboration among them). One WebSocket per view, not piggybacked on the page's:
+  a fast view never queues behind the page's traffic; piggybacking (a weaker principal for a relay's origin) waits for
+  a case. Details: `views.md` §4a.

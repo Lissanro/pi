@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-10
+
+## [1.5.1] - 2026-11-09
+
 ### Breaking Changes
 
 - Chord v2 is the package's root: `@earendil-works/chord` exports v2 (was `@earendil-works/chord/next`). Chord v1 moved unchanged to `@earendil-works/chord/old` (was the root) and `@earendil-works/chord/old/node` (was `/node`); it stays until p2 runs on v2. The foundations v1's root re-exported have their own subpaths: `@earendil-works/chord/json` (`JsonValue`, `JsonRepresentation`, `copyJson`, `isJsonValue`) and `@earendil-works/chord/watch` (`Watch`, `NativeWatch` and the watch types), beside `/context` and `/delta`. Migration: imports of `@earendil-works/chord/next` drop `/next`; v1's imports of `@earendil-works/chord` become `@earendil-works/chord/old`, and `/node` becomes `/old/node`; imports of `Context`, `Draft`, `JsonValue`, `copyJson` or the watch types from the root move to `/context`, `/delta`, `/json` and `/watch`. In the repository, v2's `src/next` is now `src`, `src/next-node` is `src/node`, `src/next-web`, `src/next-react` and `src/next-tui` are `src/web`, `src/react` and `src/tui`, v1 is in `src/old`, and tests and docs moved likewise (`test/next` to `test`, `docs/next` to `docs`, v1's to `test/old` and `docs/old`).
@@ -48,6 +52,8 @@
 - Chord v2's heartbeat closed every link after the process had slept (a laptop's sleep) or blocked its event loop, before reading what the peer had sent meanwhile. Time the process did not run no longer counts as silence: after such a pause each open link pings at once and closes only if its peer stays silent for `close - ping` (15 s by default).
 - Chord v2's workers no longer leave an address failed when a running worker loses its link (the heartbeat, a protocol error, the worker closing its own link): the worker is stopped, `worker_link_lost { address, error }` is reported, and its holders get a new worker. A second lost link within a minute of the last recovery still fails the address (public error `worker lost its link`). Crashes, `fatal`s and failed starts still stay failed until `retry` or a rollout.
 - Chord v2's objects no longer answer a call `not_ready` during a reload while the caller sees them `live`: a call over a link to an object whose swap had parked (its new code waiting for a dependency) or whose restart had drained, sent while its hold was still bound to the old instance, got `not_ready: ... not live yet`. Such a call now waits for the object's new attempt (live, failed or ended), bounded by `readyTimeout` (`unavailable/park_timeout`); a parked attempt showing `failed { waiting }` rejects it with that cause; it stays when the hold then leaves the old instance with `loading`.
+- Fixed oversized WebSocket frames sometimes closing with code `1006` instead of `1009`, notably on macOS. Protocol errors now finish their close handshake instead of having the socket terminated before the close frame reaches the peer.
+- Fixed terminal sandbox startup when the temporary directory has a symlinked ancestor, including macOS's default temporary directory, without expanding its file permissions.
 
 ## [1.5.0] - 2026-11-02
 

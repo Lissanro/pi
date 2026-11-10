@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-10
+
+## [1.5.1] - 2026-11-09
+
 ### Added
 
 - `Tx.submission(id)` reads a committed submission record by ID, so a tool can find the entries of its run's inputs (`pi.live.run.inputs`) without scanning the transcript.

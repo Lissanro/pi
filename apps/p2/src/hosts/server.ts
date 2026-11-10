@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isChordError, type PluginFacet, webSocketLink } from "@earendil-works/chord";
 import { filesFacet } from "@earendil-works/chord/app/files";
+import { nodeCompression } from "@earendil-works/chord/compression";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { RolloutResult } from "@earendil-works/chord/plugins";
 import { WebSocketServer } from "ws";
@@ -58,7 +59,7 @@ import {
 import { SessionWorkers } from "./session-workers.ts";
 import { limitedSocket, MAX_CLIENT_FRAME } from "./socket-limits.ts";
 import { tuiPreferencesFacet } from "./tui-preferences.ts";
-import { createWeb, isPublicFile } from "./web.ts";
+import { createWeb, isAppPage, isPublicFile } from "./web.ts";
 
 /** The p2 app directory (`apps/p2`), told to facets as `Server.info.app` and `WorkerInit.app`. */
 const APP = fileURLToPath(new URL("../../", import.meta.url));
@@ -144,6 +145,9 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 		address: Server(),
 		principal: SERVER,
 		store,
+		// JSON parts above 16 KiB this host originates (snapshots of the catalogs) go deflated: the WebSocket does not
+		// compress, and a tunnel carries them as they are.
+		compression: nodeCompression,
 		onError: (error) => {
 			if (isOwnerNotice(error)) processLogs.notice("server", hostErrorText(error));
 			console.error("p2 server:", error);
@@ -200,7 +204,10 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 			dataDir,
 			fake,
 			entry: fileURLToPath(new URL("./worker.ts", import.meta.url)),
-			execArgv: ["--import", new URL("../source.ts", import.meta.url).href],
+			// A young generation of at most 2 MiB per semi-space (default 16): V8 grows it to 32 MiB committed during bursts
+			// and keeps most of it, about 26 MiB of every worker's private memory; the cap costs a few ms more minor GC
+			// per run (measured: 53 minor GCs instead of 14 over a start and a turn, 18-23 ms instead of 15, same CPU).
+			execArgv: ["--max-semi-space-size=2", "--import", new URL("../source.ts", import.meta.url).href],
 			env: {
 				...options.workerEnv,
 				...(dev ? { P2_DEV: "1", P2_DEV_MODULE_DIR: join(dataDir, "dev-modules") } : {}),
@@ -619,11 +626,7 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 				const route = findRoute((await host.registry(Routes, ctx)).value, request.method ?? "GET", path);
 				if (route !== undefined) return route(request, response, { principal, origin }, ctx);
 				// An owner loading the app may get renewed cookies (a local session in use does not expire).
-				if (
-					isOwner(principal) &&
-					(request.method === "GET" || request.method === "HEAD") &&
-					(path === "/" || path.startsWith("/s/"))
-				) {
+				if (isOwner(principal) && (request.method === "GET" || request.method === "HEAD") && isAppPage(path)) {
 					const cookies = [...(await host.registry(PageCookies, ctx)).value.values()].flatMap(
 						(cookie) => cookie(request, { principal, origin }) ?? [],
 					);

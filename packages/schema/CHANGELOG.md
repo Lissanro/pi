@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-10
+
+## [1.5.1] - 2026-11-09
+
 ### Added
 
 - `unsafe<T>(schema)` types a schema as accepting `T` without checking it, as TypeBox's `Type.Unsafe` does.

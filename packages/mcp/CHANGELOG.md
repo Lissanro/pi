@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-10
+
+## [1.5.1] - 2026-11-09
+
 ### Added
 
 - Added `PipeTransport`, MCP's stdio transport over a program started by the caller through an `McpPipe` (`write`, `closeStdin`, `close`, `exited`), for example `@earendil-works/pi-env`'s `openProcess()` on another machine. `StdioTransport` and `PipeTransport` share the newline-delimited framing and the stderr tail.
@@ -14,6 +18,10 @@
 - Fixed Streamable HTTP `application/json` responses bypassing `maxMessageBytes`; oversized JSON responses are now cancelled and rejected like oversized SSE events ([#11335](https://github.com/earendil-works/pi/issues/11335))
 - Fixed Streamable HTTP errors reading the whole HTTP error body; only the first 8 KiB kept in the error is read, and the rest is cancelled
 - Fixed `OAuthCallbackServer.close()` waiting for minutes when the browser kept an unused connection open to the callback port, for example a preconnect. It now closes the remaining connections ([#11311](https://github.com/earendil-works/pi/issues/11311))
+- Fixed large MCP stdio messages being repeatedly copied and scanned as chunks arrived, causing slow tool responses ([#11761](https://github.com/earendil-works/pi/issues/11761))
+- Fixed MCP Streamable HTTP SSE replies with CR-only line endings failing with "stream ended without a response" ([#11764](https://github.com/earendil-works/pi/issues/11764))
+- Fixed oversized MCP SSE responses keeping their HTTP connections open after the message-size limit rejected them ([#11729](https://github.com/earendil-works/pi/issues/11729))
+- Fixed MCP stdio server subprocesses surviving disconnect or pi exit on POSIX when the server's main process had already exited ([#11721](https://github.com/earendil-works/pi/issues/11721))
 
 ## [1.5.0] - 2026-11-02
 
