@@ -262,6 +262,10 @@ body,
 	flex: none;
 	color: var(--faint);
 }
+/* An icon before a row's label keeps its size when the label is cut. */
+.row-button > span > svg {
+	flex: none;
+}
 .row-button.danger,
 .login-action.danger {
 	color: var(--bad);
@@ -316,7 +320,8 @@ textarea.input {
 	padding: var(--s2) 0;
 	resize: none;
 }
-.search input {
+.search input,
+.command-input input {
 	flex: 1;
 	min-width: 0;
 	height: 100%;
@@ -1918,7 +1923,8 @@ button.diff-number:hover {
 	gap: var(--s1);
 	padding: var(--s1) var(--bar-pad) 0 0;
 }
-.workspace-section {
+.workspace-section,
+.command-heading {
 	margin: 0;
 	padding: var(--s3) var(--x) var(--s1);
 	color: var(--muted);
@@ -2727,7 +2733,8 @@ button.diff-number:hover {
 	inset: 0;
 	z-index: 38;
 	display: flex;
-	align-items: flex-end;
+	/* A layer may place its dialog elsewhere (the command menu: near the top). */
+	align-items: var(--layer-align, flex-end);
 	justify-content: center;
 }
 .scrim {
@@ -2874,7 +2881,7 @@ button.diff-number:hover {
 }
 @media (min-width: 700px) {
 	.sheet-layer {
-		align-items: center;
+		align-items: var(--layer-align, center);
 	}
 	.sheet {
 		border: 1px solid var(--line);
@@ -2917,6 +2924,14 @@ button.diff-number:hover {
 }
 .directory-head {
 	padding-bottom: var(--s3);
+}
+/* A path in the directory picker (the Use button, folder and recent rows): one line, cut with "…" at its end; the
+   element's title has it whole. */
+.directory-path {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 .list .row-button.mono {
 	font-family: var(--mono);
@@ -3410,6 +3425,7 @@ button.history-edge:disabled {
 	.drawer,
 	.drawer-scrim,
 	.sheet,
+	.command-menu,
 	.scrim,
 	.toast,
 	.to-bottom {
@@ -3511,6 +3527,16 @@ button.history-edge:disabled {
 		height: var(--control);
 		min-width: var(--control);
 	}
+	/* The command menu's chip ×: a full target around its 16px glyph box without growing the chip. The row's bottom
+	   padding holds the target's lower half, so it never reaches the input below. */
+	.command-context {
+		padding-bottom: var(--s3);
+	}
+	.command-chip-remove::after {
+		position: absolute;
+		inset: calc((16px - var(--row)) / 2);
+		content: "";
+	}
 }
 
 /* A setting that applies at once (Switch.tsx): its label, and Elanor's switch at the row's end. */
@@ -3527,19 +3553,10 @@ button.history-edge:disabled {
 	min-width: 0;
 }
 
-/* The Pi macOS app (apps/p2-mac, in progress) shows the page under its transparent title bar, the window buttons over its top left
-   corner. It sets data-shell="macos" on <html> and --shell-inset-start to the width the buttons take (0 in full
-   screen): whichever bar is at the window's left edge starts its content after them. */
-:root[data-shell="macos"] .sidebar-root .drawer-top {
-	padding-left: max(var(--x), var(--shell-inset-start, 0px));
-}
-@media (min-width: 900px) {
-	:root[data-shell="macos"] .sidebar-collapsed .topbar {
-		padding-left: max(var(--bar-pad), var(--shell-inset-start, 0px));
-	}
-}
-@media (max-width: 899px) {
-	:root[data-shell="macos"] .topbar {
-		padding-left: max(var(--bar-pad), var(--shell-inset-start, 0px));
-	}
+/* The Pi macOS app (apps/p2-mac, in progress) shows the page under its transparent title bar, the window buttons over
+   its top left corner. It sets data-shell="macos" and --shell-inset-start (the buttons' width) on <html>, and marks the
+   bars at that corner with data-shell-corner, whichever layout or plugin put them there: their content starts after
+   the buttons. */
+:root[data-shell="macos"] [data-shell-corner] {
+	padding-left: var(--shell-inset-start);
 }
