@@ -19,7 +19,7 @@ function releasedRepository(t) {
 	writeFileSync(join(root, "packages", "ai", "package.json"), '{"name":"@test/ai","version":"1.0.0"}\n');
 	writeFileSync(join(root, "packages", "ai", "CHANGELOG.md"), `# Changelog\n\n${RELEASED}`);
 	git("init", "--quiet");
-	git("add", ".");
+	git("add", "packages");
 	git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "Release v1.0.0");
 	git("tag", "v1.0.0");
 	return root;
