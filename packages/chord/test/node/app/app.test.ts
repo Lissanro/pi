@@ -6,7 +6,7 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import { closeSync, constants, openSync, writeSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, readdir, readFile, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -383,6 +383,11 @@ describe("base code", () => {
 			const dir = await tempDir();
 			// A file only the scan reads (Node never runs the import): a pipe, so the scan waits until it is written.
 			execFileSync("mkfifo", [join(dir, "held.mjs")]);
+			// The pipe is fed through a hard link in an unwatched directory: feeding writes fire no inotify
+			// event on the app's own directory, so once feeding stops no trailing comparison stays blocked on
+			// the pipe and keeps the process alive.
+			const feeder = join(await tempDir(), "held.mjs");
+			await link(join(dir, "held.mjs"), feeder);
 			const stdout = await runStart(
 				dir,
 				['if (process.env.CHORD_TEST_NEVER === "yes") await import("./held.mjs");'],
@@ -390,7 +395,7 @@ describe("base code", () => {
 					'const owner = await fetch(new URL(started.ownerLink()).origin + "/_chord/owner");',
 					'console.log("answered", owner.status);',
 					// The pipe is fed from now on: each read of it (the scan's, the watcher's first comparison) gets the file.
-					`let feeding = true; void (async () => { while (feeding) { try { const fd = openSync(${JSON.stringify(join(dir, "held.mjs"))}, constants.O_WRONLY | constants.O_NONBLOCK); writeSync(fd, "export {};"); closeSync(fd); } catch {} await new Promise((resolve) => setTimeout(resolve, 10)); } })();`,
+					`let feeding = true; void (async () => { while (feeding) { try { const fd = openSync(${JSON.stringify(feeder)}, constants.O_WRONLY | constants.O_NONBLOCK); writeSync(fd, "export {};"); closeSync(fd); } catch {} await new Promise((resolve) => setTimeout(resolve, 10)); } })();`,
 					"await started.baseWatched;",
 					"feeding = false;",
 					'console.log("scanned");',

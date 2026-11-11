@@ -5,7 +5,7 @@
 
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
-import { chmod, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BACKGROUND_CONTEXT as context } from "../../../src/context/index.ts";
@@ -404,23 +404,27 @@ describe("base code compared with what the running bases read (p3 step 0a)", () 
 			const { watcher } = await based({});
 			const root = await realpath(await tempRoot());
 			await mkdir(join(root, "ancestor", "dir"), { recursive: true });
-			const pipe = join(root, "ancestor", "dir", "held.ts");
-			execFileSync("mkfifo", [pipe]);
-			watcher.recordBase(new Map([[pipe, hashOf("as built")]]));
-			await writeWhenRead(pipe, "as built");
+			const file = join(root, "ancestor", "dir", "held.ts");
+			await writeFile(file, "as built");
+			// A write through a hard link outside the watched tree fires no event the watcher can see, so only
+			// a re-comparison (what a renewal would do) ever notices the bytes written through it.
+			const probe = join(await realpath(await tempRoot()), "held.ts");
+			await link(file, probe);
+			watcher.recordBase(new Map([[file, hashOf("as built")]]));
 			await settled();
 			expect(watcher.value).toMatchObject({ base: false });
+			await writeFile(probe, "edited");
 			for (let round = 0; round < 20; round++) {
 				await chmod(join(root, "ancestor"), round % 2 === 0 ? 0o700 : 0o755);
 				await chmod(join(root, "ancestor", "dir"), round % 2 === 0 ? 0o700 : 0o755);
 			}
 			await settled();
-			// A renewal would compare the file again: a reader would wait on the pipe.
-			expect(readerWaits(pipe)).toBe(false);
+			// A renewal would compare the file again and find the bytes written through the hard link.
+			expect(watcher.value).toMatchObject({ base: false });
 			await rename(join(root, "ancestor"), join(root, "moved"));
 			await baseIs(watcher, true);
+			await writeFile(probe, "as built");
 			await rename(join(root, "moved"), join(root, "ancestor"));
-			await writeWhenRead(pipe, "as built");
 			await baseIs(watcher, false);
 			watcher.close();
 		},
@@ -441,16 +445,6 @@ describe("base code compared with what the running bases read (p3 step 0a)", () 
 		watcher.close();
 	});
 });
-
-/** Whether a reader has the pipe at `path` open (a non-blocking open for writing succeeds; it then reads nothing). */
-function readerWaits(path: string): boolean {
-	try {
-		closeSync(openSync(path, constants.O_WRONLY | constants.O_NONBLOCK));
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 /**
  * Writes `text` into the pipe at `path` once a reader has it open (a non-blocking open for writing fails until then),
