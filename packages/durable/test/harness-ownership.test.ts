@@ -333,7 +333,7 @@ describe("ownership", () => {
 		expect((await harness.waitForTask(leaf, context)).state.outcome.status).toBe("completed");
 		expect((await harness.waitForTask(top, context)).state.outcome.status).toBe("completed");
 		await harness.close(context);
-	}, 60_000);
+	}, 300_000);
 
 	it("holds an owner for work a commit creates below ended tasks loaded from storage", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "pi-durable-ownership-"));

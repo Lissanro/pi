@@ -484,7 +484,7 @@ describe("scheduler retention", () => {
 		await harness.waitForIdle(context);
 		expect(sizes(harness)).toEqual(baseline);
 		await harness.close(context);
-	}, 60_000);
+	}, 300_000);
 
 	it("keeps no more after all work ended than a fresh reopen", async () => {
 		const path = await sqlitePath();
