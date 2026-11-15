@@ -531,6 +531,87 @@ function rawModelHeaders(
 	return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
+/** Fields of a llama.cpp `/models` catalog entry that model verification reads. */
+interface LlamaCatalogEntry {
+	id?: unknown;
+	aliases?: unknown;
+	status?: { value?: unknown };
+}
+
+/** Strip the OpenAI-compatible `/v1` suffix: llama.cpp serves its model catalog at the server root. */
+function llamaServerRoot(baseUrl: string): string {
+	return baseUrl.replace(/\/+$/u, "").replace(/\/v1$/u, "") || baseUrl;
+}
+
+function catalogEntryIds(entry: LlamaCatalogEntry): string[] {
+	const ids = [entry.id, ...(Array.isArray(entry.aliases) ? entry.aliases : [])];
+	return ids.filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
+function verifyModelMatches(residentId: string, expected: string): boolean {
+	const resident = residentId.toLowerCase();
+	const needle = expected.toLowerCase();
+	return resident === needle || resident.includes(needle);
+}
+
+/**
+ * Verify that the expected model is the resident model on a llama.cpp server before the request is sent.
+ * Router-mode catalogs mark the loaded entry with `status: { value: "loaded" }`; single-model servers list
+ * the served model as their only catalog entry. Verification fails only while a model other than the
+ * expected one is resident: an empty or undetermined catalog passes, so autoload and server-side load
+ * failures surface as ordinary request outcomes instead of verification errors.
+ */
+async function verifyResidentModel(
+	model: Model<Api>,
+	expected: string,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	const root = llamaServerRoot(model.baseUrl);
+	let payload: unknown;
+	try {
+		const response = await fetch(`${root}/models`, { signal, headers: { Accept: "application/json" } });
+		if (!response.ok) throw new Error(`the model catalog returned HTTP ${response.status}`);
+		payload = await response.json();
+	} catch (error) {
+		throw new Error(
+			`model verification failed: could not query the model catalog at ${root}/models (${error instanceof Error ? error.message : String(error)})`,
+		);
+	}
+	const entries = Array.isArray((payload as { data?: unknown } | null)?.data)
+		? (payload as { data: unknown[] }).data.filter(
+				(entry): entry is LlamaCatalogEntry => typeof entry === "object" && entry !== null,
+			)
+		: [];
+	const resident: string[] = [];
+	const routed = entries.filter(
+		(entry) => typeof (entry.status as { value?: unknown } | undefined)?.value === "string",
+	);
+	if (routed.length > 0) {
+		for (const entry of routed) {
+			if ((entry.status as { value: string }).value === "loaded") resident.push(...catalogEntryIds(entry));
+		}
+	} else if (entries.length === 1) {
+		resident.push(...catalogEntryIds(entries[0]!));
+	}
+	if (resident.length === 0 || resident.some((id) => verifyModelMatches(id, expected))) return;
+	throw new Error(
+		`model verification failed for ${model.provider}/${model.id}: expected model "${expected}" to be resident on ${root}, but the server reports [${resident.join(", ")}]`,
+	);
+}
+
+/** Run the models.json `verifyModel` requirement for a chat model, when one is configured. */
+async function runModelVerification(
+	model: Model<Api>,
+	config: ModelsJsonProvider | undefined,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	const expected =
+		config?.modelOverrides?.[model.id]?.verifyModel ??
+		config?.models?.find((entry) => entry.id === model.id)?.verifyModel;
+	if (expected === undefined) return;
+	await verifyResidentModel(model, expected, signal);
+}
+
 export function validateExtensionProvider(
 	providerId: string,
 	base: Provider | undefined,
@@ -594,6 +675,7 @@ export function composeModelProvider(
 		lazyStream(
 			model,
 			async () => {
+				await runModelVerification(model, config, options?.signal);
 				if (extension?.streamSimple && model.api === extension.api) {
 					return extension.streamSimple(model, context, options as SimpleStreamOptions);
 				}

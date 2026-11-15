@@ -338,6 +338,14 @@ describe("retryAssistantCall", () => {
 });
 
 describe("isRetryableErrorMessage", () => {
+	it("matches llama.cpp model verification failures", () => {
+		expect(
+			isRetryableErrorMessage(
+				'model verification failed for test-provider/test-model: expected model "kimi-k3" to be resident on http://llama.local:5000, but the server reports [/mnt/models/GLM-5.2-744b.gguf]',
+			),
+		).toBe(true);
+	});
+
 	it("matches transient network and provider errors", () => {
 		expect(isRetryableErrorMessage("connection refused")).toBe(true);
 		expect(isRetryableErrorMessage("fetch failed")).toBe(true);

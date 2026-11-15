@@ -118,6 +118,11 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// retry policy so callers can surface/abort the backoff (#1123).
 	"retry delay",
 
+	// llama.cpp model verification (coding-agent models.json `verifyModel`): the resident
+	// core is checked before each request, and a mismatch resolves once the expected model
+	// is loaded, so the failure is transient by definition.
+	"model verification failed",
+
 	// Explicit retry guidance emitted mid-stream by OpenAI Responses and Bedrock
 	// stream exceptions (#6019).
 	"you can retry your request",

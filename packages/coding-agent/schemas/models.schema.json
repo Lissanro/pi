@@ -130,6 +130,11 @@
                     "default": 16384,
                     "description": "Maximum output tokens."
                   },
+                  "verifyModel": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "llama.cpp requirement: the server's resident (loaded) model must match this id (exact or substring, case-insensitive) before requests are sent. Absent disables verification."
+                  },
                   "samplingParams": {
                     "type": "object",
                     "patternProperties": {
@@ -302,6 +307,11 @@
                       "type": "number",
                       "exclusiveMinimum": 0,
                       "description": "Maximum output tokens."
+                    },
+                    "verifyModel": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "llama.cpp requirement: the server's resident (loaded) model must match this id (exact or substring, case-insensitive) before requests are sent. Absent disables verification."
                     },
                     "samplingParams": {
                       "type": "object",

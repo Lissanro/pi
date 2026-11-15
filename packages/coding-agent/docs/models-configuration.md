@@ -51,6 +51,7 @@ Each `models` entry adds a model to the provider. An entry whose `id` matches an
 | `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. Pi warms only tiers with a known lifetime. |
 | `contextWindow` | number | `128000` | Context window in tokens. |
 | `maxTokens` | number | `16384` | Maximum output tokens. |
+| `verifyModel` | string |  | llama.cpp requirement: the server's resident (loaded) model must match this id (exact or substring, case-insensitive) before requests are sent. Absent disables verification. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
 | `samplingParamsByThinkingLevel` | object |  | samplingParams per thinking level, merged over samplingParams. |
 | `headers` | object |  | Request headers. Values resolve like apiKey. |
@@ -81,6 +82,7 @@ Each `modelOverrides` key is the ID of a built-in or extension model. Unknown ID
 | `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. Pi warms only tiers with a known lifetime. |
 | `contextWindow` | number |  | Context window in tokens. |
 | `maxTokens` | number |  | Maximum output tokens. |
+| `verifyModel` | string |  | llama.cpp requirement: the server's resident (loaded) model must match this id (exact or substring, case-insensitive) before requests are sent. Absent disables verification. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
 | `samplingParamsByThinkingLevel` | object |  | samplingParams per thinking level, merged over samplingParams. |
 | `headers` | object |  | Request headers. Values resolve like apiKey. |

@@ -44,6 +44,8 @@ const ModelFieldDescriptions = {
 	reasoning: "Whether the model supports thinking.",
 	contextWindow: "Context window in tokens.",
 	maxTokens: "Maximum output tokens.",
+	verifyModel:
+		"llama.cpp requirement: the server's resident (loaded) model must match this id (exact or substring, case-insensitive) before requests are sent. Absent disables verification.",
 } as const;
 
 const ModelDefinitionSchema = Type.Object({
@@ -63,6 +65,7 @@ const ModelDefinitionSchema = Type.Object({
 	maxTokens: Type.Optional(
 		Type.Number({ exclusiveMinimum: 0, default: 16384, description: ModelFieldDescriptions.maxTokens }),
 	),
+	verifyModel: Type.Optional(Type.String({ minLength: 1, description: ModelFieldDescriptions.verifyModel })),
 	samplingParams: Type.Optional(SamplingParamsFieldSchema),
 	samplingParamsByThinkingLevel: Type.Optional(SamplingParamsByThinkingLevelSchema),
 	headers: Type.Optional(HeadersSchema),
@@ -81,6 +84,7 @@ const ModelOverrideSchema = Type.Object({
 		Type.Number({ exclusiveMinimum: 0, description: ModelFieldDescriptions.contextWindow }),
 	),
 	maxTokens: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: ModelFieldDescriptions.maxTokens })),
+	verifyModel: Type.Optional(Type.String({ minLength: 1, description: ModelFieldDescriptions.verifyModel })),
 	samplingParams: Type.Optional(SamplingParamsFieldSchema),
 	samplingParamsByThinkingLevel: Type.Optional(SamplingParamsByThinkingLevelSchema),
 	headers: Type.Optional(HeadersSchema),
