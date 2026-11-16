@@ -657,6 +657,15 @@ export class AgentSession {
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
+	/**
+	 * Inputs the current base prompt was built from, captured at persist time
+	 * and on resume. Rebuilds take these over live state so sections stay
+	 * byte-identical across turns: APPEND_SYSTEM.md edits, harness updates, and
+	 * skill-file changes never rewrite the prompt the model already has. Only
+	 * tools absent from the captured inputs take live definitions. Cleared by
+	 * reloadFromFiles, which deliberately refreshes from disk.
+	 */
+	private _restoredPromptInputs?: NormalizedBuildSystemPromptOptions;
 	private _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
 	private _systemPromptOverride?: string;
 	/** Custom base prompt text replacing the file-based SYSTEM.md prompt (via /system-prompt set). */
@@ -1181,8 +1190,6 @@ export class AgentSession {
 				toolGuidelines: { ...this._baseSystemPromptOptions.toolGuidelines, ...runOptions.toolGuidelines },
 			});
 			const updateMessage = this._preparePromptAndToolLoadout(options, nextContext.messages);
-			// Keep session.systemPrompt and ctx.getSystemPrompt() in step with what the provider sees.
-			this._runSystemPromptOptions = options;
 
 			return {
 				...previousSnapshot,
@@ -3076,31 +3083,36 @@ export class AgentSession {
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
-		const toolSnippets: Record<string, string> = {};
+		const captured = this._restoredPromptInputs;
+		const liveSnippets: Record<string, string> = {};
 		for (const name of this._toolRegistry.keys()) {
 			const snippet = this._toolPromptSnippets.get(name);
 			// Tools without a snippet are not listed.
-			if (snippet) toolSnippets[name] = snippet;
+			if (snippet) liveSnippets[name] = snippet;
 		}
+		const liveGuidelines = Object.fromEntries(this._toolPromptGuidelines);
 
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
-		const customPrompt = this._customSystemPromptOverride ?? loaderSystemPrompt;
+		const customPrompt = this._customSystemPromptOverride ?? (captured ? captured.customPrompt : loaderSystemPrompt);
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
-		const appendSystemPrompt =
-			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
+		const appendSystemPrompt = captured
+			? captured.appendSystemPrompt
+			: loaderAppendSystemPrompt.length > 0
+				? loaderAppendSystemPrompt.join("\n\n")
+				: undefined;
 		const loadedSkills = this._resolveEffectiveSkills();
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
 		this._baseSystemPromptOptions = normalizeBuildSystemPromptOptions({
-			cwd: this._cwd,
+			cwd: captured?.cwd ?? this._cwd,
 			skills: loadedSkills,
-			contextFiles: loadedContextFiles,
+			contextFiles: captured ? captured.contextFiles : loadedContextFiles,
 			customPrompt,
 			appendSystemPrompt,
 			selectedTools: validToolNames,
 			hiddenTools: [...this._hiddenDeclarations],
-			toolSnippets,
-			toolGuidelines: Object.fromEntries(this._toolPromptGuidelines),
+			toolSnippets: captured ? this._mergeCapturedInputs(captured.toolSnippets, liveSnippets) : liveSnippets,
+			toolGuidelines: captured ? this._mergeCapturedInputs(captured.toolGuidelines, liveGuidelines) : liveGuidelines,
 		});
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
@@ -3126,6 +3138,8 @@ export class AgentSession {
 			getCurrentSystemMessage(messages)?.sections ?? {},
 			buildSystemPromptSections(options),
 		);
+		// Keep session.systemPrompt and ctx.getSystemPrompt() in step with what the provider sees.
+		this._runSystemPromptOptions = options;
 		return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
 	}
 
@@ -3243,6 +3257,19 @@ export class AgentSession {
 	 * restore them. Persistence is skipped when the value is unchanged to avoid
 	 * accumulating redundant entries.
 	 */
+	/**
+	 * Overlay live entries for names the captured inputs do not know. Captured
+	 * text stays verbatim for every tool the capture knows; tools registered
+	 * after it take their live definitions.
+	 */
+	private _mergeCapturedInputs<T>(captured: Record<string, T>, live: Record<string, T>): Record<string, T> {
+		const merged = { ...captured };
+		for (const [name, value] of Object.entries(live)) {
+			if (!(name in merged)) merged[name] = value;
+		}
+		return merged;
+	}
+
 	private _commitBaseSystemPrompt(prompt: string, forcePersist = false): void {
 		if (this._restoreSystemPrompt) {
 			this._restoreSystemPrompt = false;
@@ -3259,6 +3286,15 @@ export class AgentSession {
 				this._baseSystemPrompt = saved.systemPrompt;
 				this._setAgentSystemPrompt(this._systemPromptOverride ?? this._baseSystemPrompt, saved.sections);
 				this._effectiveSkills = saved.skills !== undefined ? saved.skills : this._resourceLoader.getSkills().skills;
+				if (saved.options) {
+					// The snapshot's sections were built from exactly these inputs, so
+					// later rebuilds reproduce them and nothing drifts until an explicit
+					// reload. Old sessions carry no options; their rebuilds use live
+					// state and may patch prompt changes as before.
+					this._restoredPromptInputs = saved.options;
+					this._baseSystemPromptOptions = normalizeBuildSystemPromptOptions(saved.options);
+					this._hiddenDeclarations = new Set(this._baseSystemPromptOptions.hiddenTools);
+				}
 				return;
 			}
 		}
@@ -3275,8 +3311,10 @@ export class AgentSession {
 				this._customSystemPromptOverride,
 				this._effectiveSkills,
 				buildSystemPromptSections(this._baseSystemPromptOptions),
+				this._baseSystemPromptOptions,
 			);
 			this._lastPersistedSystemPrompt = prompt;
+			this._restoredPromptInputs = this._baseSystemPromptOptions;
 		}
 	}
 
@@ -3317,6 +3355,9 @@ export class AgentSession {
 			this._resourceLoader.reloadSkills();
 			this._effectiveSkills = undefined;
 		}
+		// An explicit reload deliberately refreshes from disk; the prompt built
+		// here becomes the new baseline once persisted.
+		this._restoredPromptInputs = undefined;
 		this._commitBaseSystemPrompt(this._rebuildSystemPrompt(this.getActiveToolNames()), true);
 	}
 
@@ -3595,7 +3636,6 @@ export class AgentSession {
 			});
 		}
 		const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
-		this._runSystemPromptOptions = result.systemPromptOptions;
 		if (updateMessage) messages.unshift(updateMessage);
 		return messages;
 	}

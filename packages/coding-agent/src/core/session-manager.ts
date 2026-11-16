@@ -39,7 +39,7 @@ import {
 	createCustomMessage,
 } from "./messages.ts";
 import type { Skill } from "./skills.ts";
-import type { SystemPromptSections } from "./system-prompt.ts";
+import type { NormalizedBuildSystemPromptOptions, SystemPromptSections } from "./system-prompt.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -185,6 +185,15 @@ export interface SystemPromptEntry extends SessionEntryBase {
 	 * Restored verbatim on resume so the prefill cache survives prompt edits.
 	 */
 	sections?: SystemPromptSections;
+	/**
+	 * The normalized prompt-assembly inputs that produced this prompt: tool
+	 * snippets and guidelines, skills, context files, and the effective custom
+	 * and appended prompt text. Restored on resume and reused as the base for
+	 * later rebuilds so the prompt stays verbatim and the prefill cache survives
+	 * harness and file changes; only tools absent from these inputs take live
+	 * definitions.
+	 */
+	options?: NormalizedBuildSystemPromptOptions;
 	/**
 	 * Optional custom base prompt text (set via /system-prompt set or
 	 * --system-prompt) that replaces the file-based SYSTEM.md prompt.
@@ -1468,6 +1477,7 @@ export class SessionManager {
 		customPrompt?: string,
 		skills?: Skill[],
 		sections?: SystemPromptSections,
+		options?: NormalizedBuildSystemPromptOptions,
 	): string {
 		const entry: SystemPromptEntry = {
 			type: "system_prompt",
@@ -1478,6 +1488,7 @@ export class SessionManager {
 			...(customPrompt !== undefined && { customPrompt }),
 			...(skills !== undefined && { skills }),
 			...(sections !== undefined && { sections }),
+			...(options !== undefined && { options }),
 		};
 		this._appendEntry(entry);
 		return entry.id;
@@ -1494,6 +1505,7 @@ export class SessionManager {
 				customPrompt?: string;
 				skills?: Skill[];
 				sections?: SystemPromptSections;
+				options?: NormalizedBuildSystemPromptOptions;
 		  }
 		| undefined {
 		const path = this.getBranch();
@@ -1505,6 +1517,7 @@ export class SessionManager {
 					customPrompt: entry.customPrompt,
 					skills: entry.skills,
 					sections: entry.sections,
+					options: entry.options,
 				};
 			}
 		}

@@ -290,6 +290,126 @@ describe("system prompt updates", () => {
 		}
 	});
 
+	test("resume keeps the saved prompt verbatim when tool guidelines changed on disk", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-prompt-restore-"));
+		try {
+			const sessionsDir = join(dir, "sessions");
+			const extension =
+				(guideline: string): ExtensionFactory =>
+				(pi) => {
+					pi.registerTool({
+						name: "sample",
+						label: "Sample",
+						description: "sample description",
+						promptGuidelines: [guideline],
+						parameters: Type.Object({}),
+						execute: async () => ({ content: [{ type: "text", text: "sample" }], details: {} }),
+					});
+				};
+			const first = await createHarness({
+				extensionFactories: [extension("Use sample V1.")],
+				sessionManager: SessionManager.create(dir, sessionsDir),
+			});
+			first.setResponses([fauxAssistantMessage("first")]);
+			await first.session.prompt("one");
+			const sessionFile = first.sessionManager.getSessionFile()!;
+			expect(first.sessionManager.getSavedSystemPrompt()?.systemPrompt).toContain("Use sample V1.");
+			first.cleanup();
+
+			// The harness now ships different guideline text for the same tool: a silent
+			// prompt change. Resuming must keep the saved prompt byte-identical so the
+			// prefill cache survives.
+			const second = await createHarness({
+				extensionFactories: [extension("Use sample V2.")],
+				sessionManager: SessionManager.open(sessionFile),
+			});
+			const requests: TranscriptContext[] = [];
+			second.setResponses([
+				(providerContext) => {
+					requests.push(providerContext);
+					return fauxAssistantMessage("second");
+				},
+			]);
+			await second.session.prompt("two");
+			const head = getCurrentSystemMessage(requests[0]!.messages);
+			expect(getSystemMessageText(head!)).toContain("Use sample V1.");
+			expect(getSystemMessageText(head!)).not.toContain("Use sample V2.");
+			// The snapshot was not rewritten by the resumed turn either.
+			expect(second.sessionManager.getSavedSystemPrompt()?.systemPrompt).toContain("Use sample V1.");
+			expect(second.sessionManager.getSavedSystemPrompt()?.systemPrompt).not.toContain("Use sample V2.");
+			second.cleanup();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("activating a new tool on a resumed session still updates the prompt sections", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-prompt-restore-loadout-"));
+		try {
+			const sessionsDir = join(dir, "sessions");
+			const extension =
+				(guideline: string): ExtensionFactory =>
+				(pi) => {
+					pi.registerTool({
+						name: "sample",
+						label: "Sample",
+						description: "sample description",
+						promptGuidelines: [guideline],
+						parameters: Type.Object({}),
+						execute: async () => ({ content: [{ type: "text", text: "sample" }], details: {} }),
+					});
+					pi.registerTool({
+						name: "extra",
+						label: "Extra",
+						description: "extra description",
+						promptGuidelines: ["EXTRA-TOOL-GUIDELINE"],
+						defaultActive: false,
+						parameters: Type.Object({}),
+						execute: async () => ({ content: [{ type: "text", text: "extra" }], details: {} }),
+					});
+				};
+			const first = await createHarness({
+				extensionFactories: [extension("Use sample V1.")],
+				sessionManager: SessionManager.create(dir, sessionsDir),
+			});
+			first.setResponses([fauxAssistantMessage("first")]);
+			await first.session.prompt("one");
+			const sessionFile = first.sessionManager.getSessionFile()!;
+			first.cleanup();
+
+			const second = await createHarness({
+				extensionFactories: [extension("Use sample V2.")],
+				sessionManager: SessionManager.open(sessionFile),
+			});
+			const requests: TranscriptContext[] = [];
+			second.setResponses([
+				(providerContext) => {
+					requests.push(providerContext);
+					return fauxAssistantMessage("second");
+				},
+				(providerContext) => {
+					requests.push(providerContext);
+					return fauxAssistantMessage("third");
+				},
+			]);
+			await second.session.prompt("two");
+			expect(getSystemMessageText(getCurrentSystemMessage(requests[0]!.messages)!)).toContain("Use sample V1.");
+
+			// Activating the inactive tool is a manual loadout change: the new tool's
+			// guidelines must appear while the captured wording of existing tools
+			// stays verbatim.
+			second.session.setActiveToolsByName([...second.session.getActiveToolNames(), "extra"]);
+			await second.session.prompt("three");
+			const updated = getSystemMessageText(getCurrentSystemMessage(requests[1]!.messages)!);
+			expect(updated).toContain("EXTRA-TOOL-GUIDELINE");
+			expect(updated).toContain("Use sample V1.");
+			expect(updated).not.toContain("Use sample V2.");
+			second.cleanup();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("keeps tool declarations stable across a session JSON round-trip", async () => {
 		const executableTool: AgentTool = {
 			name: "plain",
