@@ -24,6 +24,10 @@ export const SETTINGS_DEFAULTS = {
 			maxRetryDelayMs: 60000,
 		},
 	},
+	timeAwareness: {
+		mode: "off",
+		threshold: "10m",
+	},
 	hideThinkingBlock: false,
 	showCacheMissNotices: false,
 	quietStartup: false,

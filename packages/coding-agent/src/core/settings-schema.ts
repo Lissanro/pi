@@ -85,6 +85,22 @@ const RetrySettingsSchema = Type.Object({
 	),
 });
 
+const TimeAwarenessSettingsSchema = Type.Object({
+	mode: Type.Optional(
+		Type.Union([Type.Literal("off"), Type.Literal("auto"), Type.Literal("always")], {
+			description:
+				"When the model sees real time: never (off), only after a gap (auto), or on every prompt (always).",
+			default: SETTINGS_DEFAULTS.timeAwareness.mode,
+		}),
+	),
+	threshold: Type.Optional(
+		Type.String({
+			description: 'Gap threshold for auto mode, sleep-style duration: "30m", "1h 30m".',
+			default: SETTINGS_DEFAULTS.timeAwareness.threshold,
+		}),
+	),
+});
+
 const TerminalSettingsSchema = Type.Object({
 	showImages: Type.Optional(
 		Type.Boolean({
@@ -264,6 +280,7 @@ export const SettingsSchema = Type.Object(
 		compaction: Type.Optional(CompactionSettingsSchema),
 		branchSummary: Type.Optional(BranchSummarySettingsSchema),
 		retry: Type.Optional(RetrySettingsSchema),
+		timeAwareness: Type.Optional(TimeAwarenessSettingsSchema),
 		hideThinkingBlock: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.hideThinkingBlock })),
 		showCacheMissNotices: Type.Optional(
 			Type.Boolean({

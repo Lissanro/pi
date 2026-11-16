@@ -92,6 +92,7 @@ import {
 import { formatCacheWarmingStatus, formatCacheWarmingUsage } from "../../core/cache-warmer.ts";
 import { findExtensionStackMatches, recordCrash, takeUnnotifiedCrash } from "../../core/crash-log.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "../../core/defaults.ts";
+import { parseSleeptimeMs } from "../../core/duration.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -525,15 +526,8 @@ export function parseScheduleWhen(spec: string): ScheduledTrigger | undefined {
 		return { type: "time", at };
 	}
 	// sleep(1)-style durations; multiple tokens are summed ("1h 30m")
-	let totalMs = 0;
-	for (const token of trimmed.split(/\s+/)) {
-		const durationMatch = token.match(/^(\d+(?:\.\d+)?)([smhd])$/);
-		if (!durationMatch) return undefined;
-		const value = Number.parseFloat(durationMatch[1]);
-		const unit = durationMatch[2];
-		totalMs += value * (unit === "s" ? 1000 : unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : 86_400_000);
-	}
-	return totalMs > 0 ? { type: "time", at: Date.now() + totalMs } : undefined;
+	const totalMs = parseSleeptimeMs(trimmed);
+	return totalMs !== undefined ? { type: "time", at: Date.now() + totalMs } : undefined;
 }
 
 /**

@@ -233,6 +233,34 @@
         }
       }
     },
+    "timeAwareness": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "off"
+            },
+            {
+              "type": "string",
+              "const": "auto"
+            },
+            {
+              "type": "string",
+              "const": "always"
+            }
+          ],
+          "description": "When the model sees real time: never (off), only after a gap (auto), or on every prompt (always).",
+          "default": "off"
+        },
+        "threshold": {
+          "type": "string",
+          "description": "Gap threshold for auto mode, sleep-style duration: \"30m\", \"1h 30m\".",
+          "default": "10m"
+        }
+      }
+    },
     "hideThinkingBlock": {
       "type": "boolean",
       "default": false
