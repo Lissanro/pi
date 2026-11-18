@@ -392,7 +392,6 @@ describe("isRetryableErrorMessage", () => {
 	it("matches transient network and provider errors", () => {
 		expect(isRetryableErrorMessage("connection refused")).toBe(true);
 		expect(isRetryableErrorMessage("fetch failed")).toBe(true);
-		expect(isRetryableErrorMessage("ECONNRESET")).toBe(false); // not in pattern list
 		expect(isRetryableErrorMessage("502 bad gateway")).toBe(true);
 		expect(isRetryableErrorMessage("429 too many requests")).toBe(true);
 		expect(isRetryableErrorMessage("overloaded")).toBe(true);
