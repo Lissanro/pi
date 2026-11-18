@@ -6640,7 +6640,7 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
-	 * Get text content of the last non-harness assistant reply.
+	 * Get text content of the last assistant reply.
 	 * Useful for /copy command.
 	 * @returns Text content, or undefined if no assistant message exists or the last reply has no text
 	 */
@@ -6649,7 +6649,7 @@ export class AgentSession {
 			.slice()
 			.reverse()
 			.find((m) => {
-				if (m.role !== "assistant" || isHarnessMessage(m)) return false;
+				if (m.role !== "assistant") return false;
 				const msg = m as AssistantMessage;
 				// Skip messages without text from a turn that did not end normally: aborted, failed or only
 				// calling tools (#12119). A reply that ended normally stays the last reply even without text.
