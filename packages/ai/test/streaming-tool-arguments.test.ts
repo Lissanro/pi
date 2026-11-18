@@ -383,7 +383,12 @@ describe.each(PATHS)("$name tool-call argument streaming", (path) => {
 				if (call?.type === "toolCall") references.push(new WeakRef(call.arguments));
 			});
 		})();
-		await collectGarbage();
+		// WeakRefs clear on the collector's schedule: under full-suite memory pressure four
+		// settled rounds may not be enough, so collect until the references die or the bound
+		// is exhausted - a real leak still fails the assertion.
+		for (let attempt = 0; attempt < 10 && references.some((r) => r.deref() !== undefined); attempt++) {
+			await collectGarbage();
+		}
 		expect(references.filter((reference) => reference.deref() !== undefined)).toHaveLength(0);
 	});
 });
