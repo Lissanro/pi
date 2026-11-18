@@ -1,69 +1,62 @@
 // The rows of the sidebar and its list pages, items of Elanor's side navigation. Every row has one shape (`NavRow`): a
 // marker, the label (a link, an action, or the control that shows or hides what is below it, its chevron after the
 // label), its details and its controls at the trailing end, all inside the one control whose hover and selected
-// background spans the whole row. A session with several conversations (`/tree` branches, subagents) shows or hides
-// them on a click of its row.
+// background spans the whole row. A session with several conversations shows or hides them on a click of its chevron:
+// its `/tree` branches drawn as a tree, then its subagents as a list.
 import {
 	BranchIcon,
-	type CommandTargetRow,
 	HOME,
 	locationLabel,
 	NavDisclosureIcon,
 	NavEditIcon,
 	NavWarningIcon,
+	openLayer,
 	PinIcon,
-	routePath,
+	type Route,
 	SideNavigation,
 	shortPath,
+	ToolActivities,
+	useCommandMenuRow,
 	useCommandTargetRow,
+	useLinkHref,
+	useRegistry,
 } from "@p2/app/v1/web";
-import { type MouseEvent, type ReactNode, useEffect, useId, useState, useSyncExternalStore } from "react";
+import {
+	type CSSProperties,
+	createContext,
+	type ReactNode,
+	use,
+	useEffect,
+	useId,
+	useMemo,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import { GlyphIcon } from "../../glyphs/GlyphIcon.tsx";
+import { branchSheetLayer, branchTarget } from "../BranchSheet.tsx";
+import {
+	type ArchivedItem,
+	type BranchItem,
+	type ConversationItem,
+	conversationRows,
+	type SubagentItem,
+} from "./conversation-tree.ts";
+import { IconMarker, RunMark, UnreadMark, WorkingMark } from "./marks.tsx";
 import type { Activity, GlyphSeed, SidebarRow } from "./model.ts";
+import { NavRow } from "./NavRow.tsx";
+import {
+	failureWords,
+	type SubagentState,
+	stepWords,
+	subagentState,
+	subagentTitle,
+	type Tools,
+} from "./subagent-state.ts";
 
 // A row says two things in two places. Its marker says whether the session runs: a frame whose dash travels around its
 // icon, or a spinner where it has none; the only motion in the sidebar. The end of the row says whether it wants the
 // owner: a bold title and a blue dot for an unread answer, "Failed" for a failed worker. Every state has its own shape,
 // not only its own colour.
-
-/** A conversation running a turn where its row has no icon: a small spinner (a still ¾ ring with reduced motion). */
-export function WorkingMark() {
-	return <span className="working-mark" role="img" aria-label="Working" title="Working" />;
-}
-
-/** An answer the owner has not read: a steady blue dot. */
-export function UnreadMark() {
-	return <span className="unread-dot" role="img" aria-label="New answer" title="New answer" />;
-}
-
-/** The Familiar's corner mark: working (the spinner), else an unread answer (the dot), else nothing. */
-export function SessionDot({ worker }: { worker: SidebarRow["worker"] }) {
-	if (worker.busy.length) return <WorkingMark />;
-	if (worker.unread) return <UnreadMark />;
-	return null;
-}
-
-/**
- * A row's 16px icon (a project glyph, a folder, a lock), framed while `working`: a rounded frame just outside the icon,
- * clear of its corners, whose dash travels around it (a still dashed frame with reduced motion).
- */
-export function IconMarker({ working, children }: { working: boolean; children: ReactNode }) {
-	return (
-		<span className={`nav-icon ${working ? "working" : ""}`}>
-			{children}
-			{working && (
-				<svg className="working-frame" viewBox="0 0 22 22" role="img" aria-label="Working">
-					<title>Working</title>
-					<rect className="working-frame-track" {...FRAME} />
-					<rect className="working-frame-dash" {...FRAME} />
-				</svg>
-			)}
-		</span>
-	);
-}
-
-/** The frame's outline: 22px around a 16px icon, its 1.5px stroke inside the box; one unit per percent of its length. */
-const FRAME = { x: 0.75, y: 0.75, width: 20.5, height: 20.5, rx: 5.5, pathLength: 100 } as const;
 
 /** A failure that wants the owner: a warning sign and `label`, in the error colour; `title` says what failed. */
 export function FailedMark({ label, title, className = "" }: { label: string; title: string; className?: string }) {
@@ -93,6 +86,23 @@ export function HiddenAttention({ activity }: { activity: Activity }) {
 	);
 }
 
+/**
+ * The end of a subagent's row, in its session's time column: its step while busy, "Failed" or "Stopped", or how long
+ * ago it was last active.
+ */
+function SubagentEnd({ state, tools, now }: { state: SubagentState; tools: Tools; now: number }) {
+	switch (state.kind) {
+		case "busy":
+			return <span className="subagent-step">{stepWords(state.work, tools)}</span>;
+		case "failed":
+			return <FailedMark label="Failed" title={state.detail ?? failureWords(state.reason)} />;
+		case "stopped":
+			return <span className="subagent-step">Stopped</span>;
+		case "idle":
+			return state.since === undefined ? null : <span className="session-time">{ago(state.since, now)}</span>;
+	}
+}
+
 /** How long ago `time` was, in the sidebar's short form. */
 export function ago(time: number, now: number): string {
 	const seconds = Math.max(0, (now - time) / 1000);
@@ -113,18 +123,8 @@ export function folderName(env: string | null, cwd: string, segments: number): s
 	return env ? `${base} · ${env}` : base;
 }
 
-/**
- * A click handler for a link that acts in the page (`act`) on a plain primary click; any other click (a modifier, the
- * middle button, "Open in new tab") is the browser's, so the target opens in another tab or window.
- */
-export const inPage = (act: () => void) => (event: MouseEvent<HTMLAnchorElement>) => {
-	if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-	event.preventDefault();
-	act();
-};
-
-/** The address of a rollup's or a group's list page. */
-export const pageHref = (page: string): string => routePath({ ...HOME, page });
+/** The route of a rollup's or a group's list page, for its link (`useLinkHref`). */
+export const pageRoute = (page: string): Route => ({ ...HOME, page });
 
 const SCOPES_KEY = "p2-sidebar-opened-from";
 const scopeListeners = new Set<() => void>();
@@ -169,87 +169,6 @@ const subscribeScopes = (listener: () => void) => {
 export const useOpenedFrom = (): Readonly<Record<string, string>> =>
 	useSyncExternalStore(subscribeScopes, () => openedFrom);
 
-/**
- * One row: a marker (a session's working mark, a group's icon; its column is kept when empty, so labels line up; absent:
- * no column, as a rollup's), the label (on one line, cut with "…" at its end), then details and controls at the
- * trailing end. The label is a link to `href`, an action without one, or with `expanded`, the control that shows or
- * hides what is below the row (its chevron right after the label). The whole row is one control: its hover and selected
- * background spans it, and the label's hit area covers it (the controls stay above it). `after`: a control right after
- * the label (a rollup's or a session's chevron, `Toggle`). `target`: the command menu's target while the row is hovered
- * or has focus (`useCommandTargetRow`).
- */
-export function NavRow({
-	selected = false,
-	className = "",
-	linkClassName = "",
-	marker,
-	href,
-	title,
-	expanded,
-	controlsId,
-	onActivate,
-	label,
-	after,
-	details,
-	controls,
-	target,
-}: {
-	selected?: boolean;
-	className?: string;
-	linkClassName?: string;
-	/** The marker column (absent: the row has none): a mark or an icon, or `null` for its empty space. */
-	marker?: ReactNode;
-	/** The address the label links to; absent: the label is an action (restore, switch a branch, show or hide). */
-	href?: string;
-	title?: string;
-	/** Whether what the row shows or hides is shown; absent: the row does not show or hide anything. */
-	expanded?: boolean;
-	/** The element the row shows or hides. */
-	controlsId?: string;
-	onActivate: () => void;
-	label: ReactNode;
-	after?: ReactNode;
-	/** Information after the label (state, time last), not interactive. */
-	details?: ReactNode;
-	/** Buttons at the trailing end. */
-	controls?: ReactNode;
-	target?: CommandTargetRow;
-}) {
-	const link = `nav-link ${linkClassName} ${selected ? "active" : ""}`;
-	return (
-		<div className={`nav-row ${selected ? "selected" : ""} ${className}`} {...target}>
-			{marker !== undefined && <span className="nav-marker">{marker}</span>}
-			{href === undefined ? (
-				<button
-					type="button"
-					className={link}
-					title={title}
-					aria-expanded={expanded}
-					aria-controls={controlsId}
-					onClick={onActivate}
-				>
-					<span className="nav-label">{label}</span>
-					{expanded !== undefined && <NavDisclosureIcon className="nav-chevron" size={16} aria-hidden="true" />}
-				</button>
-			) : (
-				<SideNavigation.Link
-					className={link}
-					href={href}
-					title={title}
-					active={selected}
-					onClick={inPage(onActivate)}
-				>
-					<span className="nav-label">{label}</span>
-				</SideNavigation.Link>
-			)}
-			{after}
-			<span className="nav-fill" />
-			{details && <span className="nav-details">{details}</span>}
-			{controls}
-		</div>
-	);
-}
-
 /** The chevron right after a row's label that shows or hides what is below the row, as its own button. */
 export function Toggle({
 	open,
@@ -288,19 +207,15 @@ export type RowActions = {
 	now: number;
 	onOpen: (id: string, conversationId?: number) => void;
 	onBranch?: (id: string, conversationId: number) => void;
-	onRenameBranch?: (id: string, conversationId: number) => void;
 	onRestore: (id: string, conversationId?: number) => void;
 };
 
-/** One of a session's conversations below its row: a `/tree` branch, or a subagent or one-shot agent. */
-type Conversation =
-	| { kind: "branch"; conversation: number; label: string }
-	| { kind: "subagent"; conversation: number; agent: SidebarRow["subagents"][number] };
-
 /**
  * A session's item: its row is a link to its main conversation, selected while that shows (for an archived session, an
- * action that restores and opens it). Its other conversations (`/tree` branches, the current one a link and the others
- * switches; then its subagents and one-shot agents) are below it, shown or hidden only by the chevron after its title,
+ * action that restores and opens it). Its other conversations are below it (`conversationRows`): from two `/tree`
+ * branches on, a tree of them, conversation 1 first and each branch under the conversation it was forked from (the
+ * current one a link, the others switches), drawn with connector guides; then its subagents and one-shot agents as a
+ * list, archived ones behind their own row. They are shown or hidden only by the chevron after its title,
  * in the secondary style with their labels and working marks in the session's columns. Showing a subagent shows them.
  * A running or failed lifecycle operation shows below the row. `aged`: it fell out of its rollup's window and shows
  * dimmed. `glyph`: its project glyph in the marker column (framed while working), its path as the tooltip. An unread
@@ -325,15 +240,8 @@ export function SessionItem({
 	actions: RowActions;
 	glyph?: GlyphSeed;
 }) {
-	const {
-		activeId,
-		activeScope,
-		conversationId: shownConversation,
-		now,
-		onBranch,
-		onRenameBranch,
-		onRestore,
-	} = actions;
+	const linkHref = useLinkHref();
+	const { activeId, activeScope, conversationId: shownConversation, now, onBranch, onRestore } = actions;
 	const active = session.id === activeId && (activeScope === undefined || activeScope === scope);
 	const conversationId = active ? shownConversation : session.main;
 	// Opening a session or one of its conversations from here selects it here, not in the other places it shows.
@@ -341,116 +249,35 @@ export function SessionItem({
 		openFrom(session.id, scope);
 		actions.onOpen(session.id, conversation);
 	};
-	// Every conversation of the session is listed: subagents and code mode's one-shot agents (read-only), the most
-	// recently active first; archived subagents wait behind their own row.
-	const listed = (archived ? [] : session.subagents).toSorted(
-		(a, b) => (b.lastEntryId ?? 0) - (a.lastEntryId ?? 0) || b.conversationId - a.conversationId,
+	// Every conversation of the session is listed: branches (where the owner can switch them), subagents and code
+	// mode's one-shot agents (read-only). An archived session lists none.
+	const listed = listsConversations && !archived;
+	const { main, branches, subagents } = session;
+	const tree = useMemo(
+		() => (listed ? conversationRows({ branches: onBranch ? branches : [], subagents }) : []),
+		[listed, onBranch, branches, subagents],
 	);
-	const stored = listed.filter((agent) => agent.archived);
-	const branched = onBranch !== undefined && !archived && session.branches.length >= 2;
-	const conversations: Conversation[] = [
-		...(branched
-			? session.branches.map(
-					(branch): Conversation => ({
-						kind: "branch",
-						conversation: branch.conversation,
-						label: branch.label ?? session.title,
-					}),
-				)
-			: []),
-		...listed
-			.filter((agent) => !agent.archived)
-			.map((agent): Conversation => ({ kind: "subagent", conversation: agent.conversationId, agent })),
-	];
-	const [showStored, setShowStored] = useState(false);
-	const storedOpen = showStored || stored.some((agent) => agent.conversationId === conversationId);
-	const nested = listsConversations && (conversations.length > 0 || stored.length > 0);
+	const nested = tree.length > 0;
 	// Showing a subagent or agent shows them, so it is in view, selected; the main conversation is the row's. Not a
 	// branch: right after a `/tree` switch the page shows the new branch before the row names it main.
-	const showsNested = active && session.subagents.some((agent) => agent.conversationId === conversationId);
+	const showsNested = active && subagents.some((agent) => agent.conversationId === conversationId);
 	const [expanded, setExpanded] = useState(showsNested);
 	useEffect(() => {
 		if (showsNested) setExpanded(true);
 	}, [showsNested]);
 	const listId = useId();
-	const conversationRow = (item: Conversation) => {
+	const tools = useRegistry(ToolActivities);
+	const rows: ConversationRows = {
 		// The main conversation is selected on the session's row.
-		const selected = active && conversationId === item.conversation && item.conversation !== session.main;
-		const busy = session.worker.busy.includes(item.conversation) ? <WorkingMark /> : null;
-		const href = routePath({ session: session.id, conversation: item.conversation, layers: [] });
-		if (item.kind === "branch") {
-			const main = item.conversation === session.main;
-			return (
-				<SideNavigation.Item key={`b${item.conversation}`}>
-					<NavRow
-						selected={selected}
-						className="conversation-row"
-						linkClassName="subagent-row branch-row"
-						title={main ? "The current branch" : "Switch the session to this branch"}
-						// Another branch is a switch of the session, not an address: an action, not a link.
-						{...(main ? { href } : {})}
-						onActivate={() => {
-							if (main) onOpen(item.conversation);
-							else {
-								openFrom(session.id, scope);
-								onBranch?.(session.id, item.conversation);
-							}
-						}}
-						marker={busy}
-						label={<span className="session-title">{item.label}</span>}
-						// Where a subagent shows its model, a branch shows its kind; the pencil takes its place on hover.
-						details={
-							<span className="branch-mark" title="Branch">
-								<BranchIcon size={16} />
-							</span>
-						}
-						controls={
-							onRenameBranch && (
-								<button
-									type="button"
-									className="nav-control branch-rename"
-									aria-label={`Rename branch ${item.label}`}
-									title="Rename branch"
-									onClick={() => onRenameBranch(session.id, item.conversation)}
-								>
-									<NavEditIcon size={16} />
-								</button>
-							)
-						}
-					/>
-				</SideNavigation.Item>
-			);
-		}
-		const { agent } = item;
-		return (
-			<SideNavigation.Item key={`s${item.conversation}`}>
-				<NavRow
-					selected={selected}
-					className="conversation-row"
-					linkClassName={`subagent-row ${agent.kind === "agent" ? "agent-row" : ""}`}
-					href={href}
-					title={
-						agent.location
-							? `Works in ${locationLabel(agent.location.env, agent.location.cwd)}`
-							: `Follows the session: ${locationLabel(session.env, session.cwd)}`
-					}
-					onActivate={() => onOpen(item.conversation)}
-					marker={busy}
-					label={<span className="session-title">{agent.name}</span>}
-					details={
-						<>
-							{/* A subagent with its own location shows it: it stays there when the session moves. */}
-							{agent.location && (
-								<span className="subagent-location">
-									{locationLabel(agent.location.env, agent.location.cwd)}
-								</span>
-							)}
-							<span className="subagent-model">{agent.model.split("/").pop()}</span>
-						</>
-					}
-				/>
-			</SideNavigation.Item>
-		);
+		state: { session, selected: active && conversationId !== main ? conversationId : undefined, now },
+		actions: {
+			open: onOpen,
+			switchTo: (conversation) => {
+				openFrom(session.id, scope);
+				onBranch?.(session.id, conversation);
+			},
+		},
+		meta: { tools },
 	};
 	const { worker } = session;
 	const working = worker.busy.length > 0;
@@ -478,16 +305,16 @@ export function SessionItem({
 	) : null;
 	const target = useCommandTargetRow({ type: "session", id: session.id, kind: "Session", label: session.title });
 	return (
-		<SideNavigation.Item className={`session-row ${aged ? "aged" : ""}`}>
+		<SideNavigation.Item className={`session-row ${aged ? "aged" : ""}`} data-session={session.id}>
 			<NavRow
-				selected={active && conversationId === session.main}
+				selected={active && conversationId === main}
 				className={`session-header ${nested ? "has-subagents" : ""}`}
 				linkClassName="session-main"
 				{...(archived
 					? { title: "Restore and open" }
 					: {
 							title: glyph?.title,
-							href: routePath({ session: session.id, conversation: session.main, layers: [] }),
+							href: linkHref({ session: session.id, conversation: main, layers: [] }),
 						})}
 				onActivate={() => {
 					if (archived) {
@@ -526,28 +353,197 @@ export function SessionItem({
 				</div>
 			)}
 			{nested && (
-				<SideNavigation.List className="conversation-items" id={listId} hidden={!expanded}>
-					{conversations.map(conversationRow)}
-					{stored.length > 0 && (
-						<SideNavigation.Item>
-							<NavRow
-								className="conversation-row"
-								linkClassName="subagent-row subagent-stored"
-								expanded={storedOpen}
-								controlsId={`${listId}-stored`}
-								onActivate={() => setShowStored(!storedOpen)}
-								marker={null}
-								label={<span className="session-title">{stored.length} archived</span>}
-							/>
-							<SideNavigation.List className="conversation-items" id={`${listId}-stored`} hidden={!storedOpen}>
-								{stored.map((agent) =>
-									conversationRow({ kind: "subagent", conversation: agent.conversationId, agent }),
-								)}
-							</SideNavigation.List>
-						</SideNavigation.Item>
-					)}
-				</SideNavigation.List>
+				<ConversationRowsContext value={rows}>
+					<SideNavigation.List className="conversation-items" id={listId} hidden={!expanded}>
+						{tree.map((row) => (
+							<ConversationListItem key={row.key} row={row} />
+						))}
+					</SideNavigation.List>
+				</ConversationRowsContext>
 			)}
 		</SideNavigation.Item>
+	);
+}
+
+/**
+ * What a session's conversation rows share: its row, the conversation selected below it (none while the session's
+ * own row is), the time; opening a conversation, switching to a branch.
+ */
+type ConversationRows = {
+	readonly state: { readonly session: SidebarRow; readonly selected: number | undefined; readonly now: number };
+	readonly actions: {
+		readonly open: (conversation: number) => void;
+		readonly switchTo: (conversation: number) => void;
+	};
+	readonly meta: { readonly tools: Tools };
+};
+
+const ConversationRowsContext = createContext<ConversationRows | null>(null);
+
+function useConversationRows(): ConversationRows {
+	const value = use(ConversationRowsContext);
+	if (value === null) throw new Error("A conversation row belongs inside its session's item");
+	return value;
+}
+
+/** A style setting one CSS custom property (React's style type has none, hence the cast). */
+const customProperty = (name: `--${string}`, value: number) => ({ [name]: value }) as CSSProperties;
+
+/** One row below a session's, as an item of its list, indented by its depth (`--depth`). */
+function ConversationListItem({ row }: { row: ConversationItem }) {
+	return (
+		<SideNavigation.Item style={customProperty("--depth", row.depth)}>{conversationRow(row)}</SideNavigation.Item>
+	);
+}
+
+/** The row of `row`'s kind. */
+function conversationRow(row: ConversationItem): ReactNode {
+	switch (row.kind) {
+		case "branch":
+			return <BranchRow row={row} />;
+		case "subagent":
+			return <SubagentRow row={row} />;
+		case "archived":
+			return <ArchivedRows row={row} />;
+	}
+}
+
+/**
+ * A branch row's connector guides, outside its layout: its ancestors' lines that continue below it, then its own tee or
+ * elbow, each at its level (`--level`).
+ */
+function TreeGuides({ row }: { row: BranchItem }) {
+	const pipes = row.guides.flatMap((guide, at) => (guide === "pipe" ? [at + 1] : []));
+	return (
+		<>
+			{pipes.map((level) => (
+				<span
+					key={level}
+					className="tree-guide"
+					data-guide="pipe"
+					style={customProperty("--level", level)}
+					aria-hidden="true"
+				/>
+			))}
+			<span
+				className="tree-guide"
+				data-guide={row.joint}
+				style={customProperty("--level", row.depth)}
+				aria-hidden="true"
+			/>
+		</>
+	);
+}
+
+/**
+ * A `/tree` branch's row: the current one is a link to it, another one switches the session to it. Its mark
+ * (`BranchItem.mark`): on a row something forked from the fork icon, framed while it works; on a leaf the ring a
+ * subagent row has, the spinner while it works. Its end says what it does, as a subagent's does. Renaming: its pencil
+ * (a fine pointer's, on hover or keyboard focus), or "Rename branch…" in its command menu (a long press, or Cmd+K
+ * while it has focus).
+ */
+function BranchRow({ row }: { row: BranchItem }) {
+	const { state, actions, meta } = useConversationRows();
+	const linkHref = useLinkHref();
+	const { session } = state;
+	const id = row.branch.conversation;
+	// A null label shows the session title (conversation 1's default, docs/tree.md).
+	const label = row.branch.label ?? session.title;
+	const main = id === session.main;
+	const busy = session.worker.busy.includes(id);
+	const branch = branchTarget({ session: session.id, conversation: id }, label);
+	const target = useCommandMenuRow(branch);
+	return (
+		<NavRow
+			selected={state.selected === id}
+			className="conversation-row branch-nav-row"
+			linkClassName="subagent-row branch-row"
+			title={main ? "The current branch" : "Switch the session to this branch"}
+			// Another branch is a switch of the session, not an address: an action, not a link.
+			{...(main ? { href: linkHref({ session: session.id, conversation: id, layers: [] }) } : {})}
+			onActivate={() => (main ? actions.open(id) : actions.switchTo(id))}
+			guides={<TreeGuides row={row} />}
+			marker={
+				row.mark === "fork" ? (
+					<IconMarker working={busy}>
+						<BranchIcon size={16} />
+					</IconMarker>
+				) : (
+					<RunMark state={busy ? "working" : "idle"} />
+				)
+			}
+			label={<span className="session-title">{label}</span>}
+			details={
+				busy ? <span className="subagent-step">{stepWords(session.worker.work[id], meta.tools)}</span> : undefined
+			}
+			controls={
+				<button
+					type="button"
+					className="nav-control branch-rename"
+					aria-label={`Rename branch ${label}`}
+					title="Rename branch"
+					onClick={() => openLayer(branchSheetLayer(branch.id))}
+				>
+					<NavEditIcon size={16} />
+				</button>
+			}
+			target={target}
+		/>
+	);
+}
+
+/**
+ * A subagent's or one-shot agent's row, a link to it: a ring in its marker column that spins while it works, its end in
+ * the session's time column (`SubagentEnd`: how its last run ended), its model and where it works as the tooltip.
+ */
+function SubagentRow({ row: { agent } }: { row: SubagentItem }) {
+	const { state, actions, meta } = useConversationRows();
+	const linkHref = useLinkHref();
+	const { session } = state;
+	const id = agent.conversationId;
+	const busy = session.worker.busy.includes(id);
+	const shown = subagentState(agent, busy, session.worker.work[id]);
+	return (
+		<NavRow
+			selected={state.selected === id}
+			className="conversation-row"
+			linkClassName={`subagent-row ${agent.kind === "agent" ? "agent-row" : ""}`}
+			href={linkHref({ session: session.id, conversation: id, layers: [] })}
+			// Its model and where it works, for a pointer that rests on it; its view shows them too.
+			title={subagentTitle(agent, shown, agent.location && locationLabel(agent.location.env, agent.location.cwd))}
+			onActivate={() => actions.open(id)}
+			marker={<RunMark state={busy ? "working" : "idle"} />}
+			label={<span className="session-title">{agent.name}</span>}
+			details={<SubagentEnd state={shown} tools={meta.tools} now={state.now} />}
+		/>
+	);
+}
+
+/**
+ * The row "N archived" and the archived subagents' rows below it, shown or hidden by it (shown while one of them is
+ * selected).
+ */
+function ArchivedRows({ row: { agents } }: { row: ArchivedItem }) {
+	const { state } = useConversationRows();
+	const [shown, setShown] = useState(false);
+	const open = shown || agents.some((each) => each.agent.conversationId === state.selected);
+	const listId = useId();
+	return (
+		<>
+			<NavRow
+				className="conversation-row"
+				linkClassName="subagent-row subagent-stored"
+				expanded={open}
+				controlsId={listId}
+				onActivate={() => setShown(!open)}
+				marker={null}
+				label={<span className="session-title">{agents.length} archived</span>}
+			/>
+			<SideNavigation.List className="conversation-items" id={listId} hidden={!open}>
+				{agents.map((each) => (
+					<ConversationListItem key={each.key} row={each} />
+				))}
+			</SideNavigation.List>
+		</>
 	);
 }

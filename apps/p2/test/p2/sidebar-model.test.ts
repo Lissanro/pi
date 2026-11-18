@@ -45,7 +45,7 @@ function row(id: string, change: Partial<SidebarRow> = {}): SidebarRow {
 		main: 1,
 		branches: [],
 		subagents: [],
-		worker: { busy: [] },
+		worker: { work: {}, busy: [] },
 		...change,
 	};
 }
@@ -79,12 +79,19 @@ function short(section: Section): unknown[] {
 }
 
 describe("sectionsOf", () => {
-	it("shows every rollup: Recents flat, projects and folders as groups with relevant sessions, the Archive as a link", () => {
+	it("shows every rollup: Recents flat, every project and folders with relevant sessions as groups, the Archive as a link", () => {
 		assert.deepEqual(sectionsOf(ROLLUPS, ROWS, CONTEXT, VIEW).map(short), [
 			// Pinned first, then the most recently active; a session shows in every rollup and group that has it.
 			[RECENT, "sessions", ["p", "b", "free", "a"]],
-			// "web" has no session: no group in the sidebar (its list page has it, with its "+").
-			[PROJECTS, "groups", [[projectKey("pi"), ["p", "b", "a"]]]],
+			// "web" has no session but shows anyway: its "+" starts a new project's first session.
+			[
+				PROJECTS,
+				"groups",
+				[
+					[projectKey("pi"), ["p", "b", "a"]],
+					[projectKey("web"), []],
+				],
+			],
 			// The sandbox folder of "stale" has no relevant session: no group in the sidebar.
 			[
 				FOLDERS,
@@ -102,9 +109,9 @@ describe("sectionsOf", () => {
 		const ancient = { updatedAt: NOW - 30 * DAY };
 		const held = [
 			row("pinned", { ...ancient, pinned: true }),
-			row("busy", { ...ancient, worker: { busy: [1] } }),
-			row("unread", { ...ancient, worker: { busy: [], unread: true } }),
-			row("failed", { ...ancient, worker: { busy: [], error: "boom" } }),
+			row("busy", { ...ancient, worker: { work: {}, busy: [1] } }),
+			row("unread", { ...ancient, worker: { work: {}, busy: [], unread: true } }),
+			row("failed", { ...ancient, worker: { work: {}, busy: [], error: "boom" } }),
 			row("moving", { ...ancient, operation: { label: "Moving…" } }),
 			row("open", ancient),
 			row("closed", ancient),
@@ -148,11 +155,11 @@ describe("sectionsOf", () => {
 
 describe("activity", () => {
 	const states = [
-		row("busy", { worker: { busy: [1] } }),
-		row("child", { worker: { busy: [3] } }),
-		row("read", { worker: { busy: [], unread: true } }),
-		row("both", { worker: { busy: [1], unread: true } }),
-		row("broken", { worker: { busy: [], error: "boom" } }),
+		row("busy", { worker: { work: {}, busy: [1] } }),
+		row("child", { worker: { work: {}, busy: [3] } }),
+		row("read", { worker: { work: {}, busy: [], unread: true } }),
+		row("both", { worker: { work: {}, busy: [1], unread: true } }),
+		row("broken", { worker: { work: {}, busy: [], error: "boom" } }),
 		row("move", { operation: { label: "Move failed", error: "refused" } }),
 		row("moving", { operation: { label: "Moving…" } }),
 		row("idle"),
@@ -195,8 +202,8 @@ describe("activity", () => {
 		assert.deepEqual(wantingOf(states, undefined), { count: 4, failed: true });
 		assert.deepEqual(wantingOf(states, "broken"), { count: 3, failed: true });
 		const unread = [
-			row("read", { worker: { busy: [], unread: true } }),
-			row("gone", { archivedAt: NOW, worker: { busy: [], unread: true } }),
+			row("read", { worker: { work: {}, busy: [], unread: true } }),
+			row("gone", { archivedAt: NOW, worker: { work: {}, busy: [], unread: true } }),
 		];
 		assert.deepEqual(wantingOf(unread, undefined), { count: 1, failed: false });
 		assert.deepEqual(wantingOf(unread, "read"), { count: 0, failed: false });
@@ -221,7 +228,7 @@ describe("listPageOf", () => {
 
 	it("lists every session of a rollup, the relevant ones first, then the aged ones, whatever their activity", () => {
 		// "held" is older than "old" but unread: it is relevant, so it comes before the aged "old".
-		const rows = [...ROWS, row("held", { updatedAt: NOW - 20 * DAY, worker: { busy: [], unread: true } })];
+		const rows = [...ROWS, row("held", { updatedAt: NOW - 20 * DAY, worker: { work: {}, busy: [], unread: true } })];
 		const data = listPageOf(RECENT, ROLLUPS, rows, CONTEXT, VIEW);
 		assert(data?.content.layout === "sessions");
 		assert.deepEqual(

@@ -1,8 +1,15 @@
-import { type Component, dispatchMouseEvent, type TuiMouseDispatchResult, type TuiMouseEvent } from "../tui.ts";
-import { applyBackgroundToLine, isPadLinesToWidth, padLineToWidth } from "../utils.ts";
+import {
+	type ChildLines,
+	type Component,
+	dispatchMouseToChildLines,
+	renderChildLines,
+	type TuiMouseDispatchResult,
+	type TuiMouseEvent,
+} from "../tui.ts";
+import { applyBackgroundToLine, flattenLines, isPadLinesToWidth, padLineToWidth } from "../utils.ts";
 
 type RenderCache = {
-	childLines: string[];
+	childLines: readonly string[];
 	width: number;
 	bgSample: string | undefined;
 	separatorBgSample: string | undefined;
@@ -22,7 +29,7 @@ export class Box implements Component {
 
 	// Cache for rendered output
 	private cache?: RenderCache;
-	private mouseLayout?: { width: number; children: Array<{ component: Component; height: number }> };
+	private childLines?: ChildLines;
 
 	constructor(paddingX = 1, paddingY = 1, bgFn?: (text: string) => string) {
 		this.paddingX = paddingX;
@@ -66,23 +73,7 @@ export class Box implements Component {
 
 	private invalidateCache(): void {
 		this.cache = undefined;
-	}
-
-	private matchCache(
-		width: number,
-		childLines: string[],
-		bgSample: string | undefined,
-		separatorBgSample: string | undefined,
-	): boolean {
-		const cache = this.cache;
-		return (
-			!!cache &&
-			cache.width === width &&
-			cache.bgSample === bgSample &&
-			cache.separatorBgSample === separatorBgSample &&
-			cache.childLines.length === childLines.length &&
-			cache.childLines.every((line, i) => line === childLines[i])
-		);
+		this.childLines = undefined;
 	}
 
 	invalidate(): void {
@@ -93,32 +84,20 @@ export class Box implements Component {
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
-		const contentWidth = Math.max(1, event.width - this.paddingX * 2);
+		const padEnabled = isPadLinesToWidth();
+		const contentWidth = padEnabled ? Math.max(1, event.width - this.paddingX * 2) : event.width;
 		const contentY = event.y - this.paddingY;
-		const contentX = event.x - this.paddingX;
+		const contentX = padEnabled ? event.x - this.paddingX : event.x;
 		if (contentY < 0 || contentX < 0 || contentX >= contentWidth) return undefined;
 
-		const mouseChildren =
-			this.mouseLayout?.width === contentWidth
-				? this.mouseLayout.children
-				: this.children.map((component) => ({ component, height: component.render(contentWidth).length }));
-		let childY = 0;
-		for (const { component: child, height: childHeight } of mouseChildren) {
-			if (contentY >= childY && contentY < childY + childHeight) {
-				return dispatchMouseEvent(child, {
-					...event,
-					x: contentX,
-					y: contentY - childY,
-					width: contentWidth,
-					height: childHeight,
-				});
-			}
-			childY += childHeight;
-		}
-		return undefined;
+		const layout =
+			this.childLines?.width === contentWidth
+				? this.childLines
+				: renderChildLines(this.children, contentWidth, undefined);
+		return dispatchMouseToChildLines(layout, { ...event, x: contentX, y: contentY, width: contentWidth });
 	}
 
-	render(width: number): string[] {
+	render(width: number): readonly string[] {
 		if (this.children.length === 0) {
 			return [];
 		}
@@ -127,19 +106,10 @@ export class Box implements Component {
 		const contentWidth = padEnabled ? Math.max(1, width - this.paddingX * 2) : width;
 		const leftPad = " ".repeat(this.paddingX);
 
-		// Render all children. Keep the child lines unpadded: children usually return the same string
-		// objects every frame, so the cache check below is a cheap identity comparison per line.
-		// Padding here would create new strings that must be compared character by character.
-		const childLines: string[] = [];
-		const mouseChildren: Array<{ component: Component; height: number }> = [];
-		for (const child of this.children) {
-			const lines = child.render(contentWidth);
-			mouseChildren.push({ component: child, height: lines.length });
-			for (const line of lines) {
-				childLines.push(padEnabled ? leftPad + line : line);
-			}
-		}
-		this.mouseLayout = { width: contentWidth, children: mouseChildren };
+		// Keep the child lines unpadded: unchanged children keep their line array, so the cache check
+		// below is one identity comparison. Padding here would create new strings every frame.
+		this.childLines = renderChildLines(this.children, contentWidth, this.childLines);
+		const childLines = this.childLines.lines;
 
 		if (childLines.length === 0) {
 			return [];
@@ -150,8 +120,14 @@ export class Box implements Component {
 		const separatorBgSample = this.separatorBgFn ? this.separatorBgFn("test") : undefined;
 
 		// Check cache validity
-		if (this.matchCache(width, childLines, bgSample, separatorBgSample)) {
-			return this.cache!.lines;
+		const cache = this.cache;
+		if (
+			cache?.childLines === childLines &&
+			cache.width === width &&
+			cache.bgSample === bgSample &&
+			cache.separatorBgSample === separatorBgSample
+		) {
+			return cache.lines;
 		}
 
 		// Apply background and padding
@@ -162,11 +138,11 @@ export class Box implements Component {
 			result.push(this.applySeparatorBg("", width));
 		}
 
-		// Content. childLines already carry leftPad when padLinesToWidth is
-		// enabled, so applyBg must not add it again (that would double the padding
-		// when enabled and force padding when disabled).
+		// Content. leftPad is added only when padLinesToWidth is enabled: without it lines keep
+		// only their own content (trailing spaces pollute terminal copy/paste), while a set
+		// background still spans the full width.
 		for (const line of childLines) {
-			result.push(this.applyBg(line, width));
+			result.push(this.applyBg(padEnabled ? leftPad + line : line, width));
 		}
 
 		// Bottom padding
@@ -175,6 +151,7 @@ export class Box implements Component {
 		}
 
 		// Update cache
+		flattenLines(result);
 		this.cache = { childLines, width, bgSample, separatorBgSample, lines: result };
 
 		return result;

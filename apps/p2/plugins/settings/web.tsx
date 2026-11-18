@@ -1,9 +1,17 @@
 // The owner's Settings window, opened from the gear beside the sidebar's theme switch: a list of sections beside a
-// pane (on phones the list, then a section). Its own sections edit settings.json; the plugins' sections (Providers,
+// pane (on phones the list, then a section). Its own sections edit settings.json (General also the server's name, which
+// the server keeps beside it: src/runtime/server-name-file.ts); the plugins' sections (Providers,
 // Envs, ...) are their sheets, shown as pages of the window (`SettingsSections`, src/web/SettingsNav.tsx). Each
 // change of settings.json is saved at once (text and number fields when they lose focus or on Enter) and shown before
 // the save returns. The command menu opens it at a section (commands.tsx).
-import { BACKGROUND_CONTEXT, contribute, defineFacet } from "@p2/app/v1";
+import {
+	BACKGROUND_CONTEXT,
+	contribute,
+	defineFacet,
+	type Held,
+	MAX_SERVER_NAME_LENGTH,
+	ServerNameSettings,
+} from "@p2/app/v1";
 import {
 	CommandPages,
 	CommandSearches,
@@ -26,7 +34,7 @@ import {
 	useSettingsSections,
 	useWide,
 } from "@p2/app/v1/web";
-import { type ReactNode, useCallback, useId, useState } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useId, useMemo, useState } from "react";
 import { Models } from "../models/contract.ts";
 import { SETTINGS_COMMANDS, SETTINGS_PAGES, SETTINGS_SEARCH } from "./commands.tsx";
 import { type MobileSettings, Settings } from "./contract.ts";
@@ -60,12 +68,35 @@ function patched<T extends object>(group: T | undefined, change: T): T | undefin
 const numberText = (value: number | undefined) => (value === undefined ? "" : String(value));
 const textNumber = (text: string) => (text === "" ? undefined : Number(text));
 
+/**
+ * The objects the window's own sections show, held by the gear (mounted from the page's start, for owners) so General
+ * and the others open without a round trip: settings.json's values and the server's name, a few hundred bytes.
+ */
+const HeldSettings = createContext<{
+	readonly settings: Held<typeof Settings> | undefined;
+	readonly serverName: Held<typeof ServerNameSettings> | undefined;
+}>({ settings: undefined, serverName: undefined });
+
+/** Opens Settings on p2-mac's Pi > Settings… (Cmd+,): its bridge sends "pi-host-menu" (HostBridge.swift). */
+function listenForMenuSettings(): () => void {
+	const chosen = (event: Event) => {
+		// Trust boundary: any script of the page can dispatch the event; only the item's name is read.
+		if ((event as CustomEvent<{ item?: unknown } | null>).detail?.item === "settings") openSettings();
+	};
+	window.addEventListener("pi-host-menu", chosen);
+	return () => window.removeEventListener("pi-host-menu", chosen);
+}
+
 function GearButton() {
 	const owner = useOwner();
 	const open = useSettingsSection() !== undefined;
+	const settings = useObject(Settings, owner ? {} : undefined);
+	const serverName = useObject(ServerNameSettings, owner ? {} : undefined);
+	const held = useMemo(() => ({ settings, serverName }), [settings, serverName]);
+	useEffect(() => (owner ? listenForMenuSettings() : undefined), [owner]);
 	if (!owner) return null;
 	return (
-		<>
+		<HeldSettings.Provider value={held}>
 			<button
 				type="button"
 				className="icon-button settings-open"
@@ -76,7 +107,7 @@ function GearButton() {
 				<SettingsIcon />
 			</button>
 			{open && <SettingsWindow />}
-		</>
+		</HeldSettings.Provider>
 	);
 }
 
@@ -121,7 +152,7 @@ function SettingsWindow() {
 
 /** One of the window's own sections: its settings.json fields, as a page of the window. */
 function SettingsSection({ id }: { id: OwnSection }) {
-	const service = useObject(Settings, {});
+	const service = useContext(HeldSettings).settings;
 	const models = useReadable(useObject(Models, {})?.models);
 	const loaded = useReadable(service?.settings);
 	const fileError = useReadable(service?.error);
@@ -169,6 +200,7 @@ function SettingsSection({ id }: { id: OwnSection }) {
 					keeps the settings it started with.
 				</p>
 
+				<ServerNameSetting onError={onError} />
 				<TextSetting
 					label="Your name on your messages"
 					value={settings.ownerName ?? ""}
@@ -408,6 +440,34 @@ function SettingsSection({ id }: { id: OwnSection }) {
 				{fields[id]}
 			</div>
 		</Sheet>
+	);
+}
+
+/**
+ * The server's name, as Radius and the other places that show this server name it. Empty is the device's name (the
+ * placeholder, as of the server's start).
+ */
+function ServerNameSetting({ onError }: { onError: (reason: unknown) => void }) {
+	const service = useContext(HeldSettings).serverName;
+	const loaded = useReadable(service?.chosen);
+	const device = useReadable(service?.device);
+	const [chosen, guess] = useOptimisticCall<string | null | undefined, string | null>(
+		loaded,
+		(_value, next) => next,
+		onError,
+	);
+	if (!service || chosen === undefined) return null;
+	return (
+		<TextSetting
+			label="Server name"
+			value={chosen ?? ""}
+			placeholder={device ?? "This device's name"}
+			maxLength={MAX_SERVER_NAME_LENGTH}
+			onSave={(text) => {
+				const name = text.trim() ? text.trim() : null;
+				guess(name, () => service.rename({ name }, BACKGROUND_CONTEXT));
+			}}
+		/>
 	);
 }
 

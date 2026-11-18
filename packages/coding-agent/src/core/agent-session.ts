@@ -619,9 +619,11 @@ export class AgentSession {
 	/**
 	 * Tools of the restored or reloaded loadout that are not registered yet, such as tools of MCP
 	 * servers that are still connecting. They are activated when they are registered, and dropped when
-	 * `setActiveToolsByName()` deactivates a tool or the next agent run starts.
+	 * `setActiveToolsByName()` deactivates a tool of that loadout or the next agent run starts.
 	 */
 	private _pendingToolNames = new Set<string>();
+	/** The restored or reloaded loadout that `_pendingToolNames` belongs to. */
+	private _restoredToolNames = new Set<string>();
 	private _usesDefaultTools: boolean;
 	private _defaultToolModifiers: string[];
 	/** Matches the `--tools` entries: tool names or patterns. */
@@ -641,6 +643,8 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	// Set by bindExtensions(): reload() restarts extensions only if the host started them.
+	private _extensionsBound = false;
 
 	private _modelRuntime: ModelRuntime;
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
@@ -1859,10 +1863,14 @@ export class AgentSession {
 	setActiveToolsByName(toolNames: string[]): void {
 		const previous = this.getActiveToolNames();
 		this._setActiveTools(toolNames);
-		// A loadout that deactivates a tool replaces the restored one, whose pending tools are dropped.
-		// One that only adds tools, like activating tool_search, keeps them.
+		// A loadout that deactivates a tool of the restored one replaces it, and its pending tools are
+		// dropped. One that only adds tools, like activating tool_search, keeps them, and so does one
+		// that only deactivates tools outside the restored loadout, such as an extension's own tool that
+		// the restore or reload activated as newly registered.
 		const active = new Set(this.getActiveToolNames());
-		if (previous.some((name) => !active.has(name))) this._pendingToolNames.clear();
+		if (previous.some((name) => !active.has(name) && this._restoredToolNames.has(name))) {
+			this._pendingToolNames.clear();
+		}
 	}
 
 	private _setActiveTools(toolNames: string[]): void {
@@ -3203,6 +3211,7 @@ export class AgentSession {
 	 */
 	private _restoreToolsFromTranscript(modifiers: readonly string[] = []): void {
 		this._pendingToolNames.clear();
+		this._restoredToolNames.clear();
 		// All system messages on the branch, including those before a compaction. Compaction snapshots
 		// are derived from these, so replaying them gives the current loadout.
 		const systemMessages = this.sessionManager
@@ -3230,6 +3239,12 @@ export class AgentSession {
 		// Recorded tools that are not registered yet, such as MCP tools of servers still connecting, are
 		// activated when they register. Excluded tools never register, so they are not kept pending.
 		this._pendingToolNames = new Set(names.filter((name) => this._isAllowedTool(name)));
+		this._restoredToolNames = new Set(
+			applyToolModifiers(
+				getCurrentTools(systemMessages).map((tool) => tool.name),
+				modifiers,
+			),
+		);
 		// Ignores names that are not registered.
 		this._setActiveTools(names);
 	}
@@ -5381,6 +5396,7 @@ export class AgentSession {
 			this._extensionErrorListener = bindings.onError;
 		}
 
+		this._extensionsBound = true;
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		this._extensionRunner.reportUnhandledMcpServers();
@@ -5793,18 +5809,14 @@ export class AgentSession {
 		const addedDefaultTools = getDefaultTools().filter((name) => !previousDefaultTools.has(name));
 		// Tools the new extensions register later, such as MCP tools, are pending until then.
 		for (const name of this.getActiveToolNames()) this._pendingToolNames.add(name);
+		this._restoredToolNames = new Set(this.getActiveToolNames());
 		this._buildRuntime({
 			activeToolNames: [...this.getActiveToolNames(), ...addedDefaultTools],
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
 
-		const hasBindings =
-			this._extensionUIContext ||
-			this._extensionCommandContextActions ||
-			this._extensionShutdownHandler ||
-			this._extensionErrorListener;
-		if (hasBindings) {
+		if (this._extensionsBound) {
 			await options?.beforeSessionStart?.();
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			this._extensionRunner.reportUnhandledMcpServers();
@@ -6628,15 +6640,22 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
-	 * Get raw text content of the last non-harness assistant message.
+	 * Get text content of the last non-harness assistant reply.
 	 * Useful for /copy command.
-	 * @returns Text content, or undefined if no assistant message exists
+	 * @returns Text content, or undefined if no assistant message exists or the last reply has no text
 	 */
 	getLastAssistantText(): string | undefined {
 		const lastAssistant = this.messages
 			.slice()
 			.reverse()
-			.find((m) => m.role === "assistant" && !isHarnessMessage(m));
+			.find((m) => {
+				if (m.role !== "assistant" || isHarnessMessage(m)) return false;
+				const msg = m as AssistantMessage;
+				// Skip messages without text from a turn that did not end normally: aborted, failed or only
+				// calling tools (#12119). A reply that ended normally stays the last reply even without text.
+				if (msg.stopReason !== "stop" && !msg.content.some((c) => c.type === "text" && c.text.trim())) return false;
+				return true;
+			});
 
 		return lastAssistant ? getMessageTextContent(lastAssistant) : undefined;
 	}

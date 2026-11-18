@@ -267,6 +267,20 @@ export const ListIcon = ({ size = 16 }: { size?: number }) => (
 		<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01" />
 	</Icon>
 );
+/** Two speech bubbles: a session's conversations (Switch conversation…). */
+export const ConversationsIcon = ({ size = 16 }: { size?: number }) => (
+	<Icon size={size}>
+		<path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
+		<path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1" />
+	</Icon>
+);
+/** An arrow turning up: up to the parent (Back to main conversation). */
+export const ParentIcon = ({ size = 16 }: { size?: number }) => (
+	<Icon size={size}>
+		<path d="M14 9 9 4 4 9" />
+		<path d="M20 20h-7a4 4 0 0 1-4-4V4" />
+	</Icon>
+);
 /** A chip: a model. */
 export const ModelIcon = ({ size = 16 }: { size?: number }) => (
 	<Icon size={size}>
@@ -313,6 +327,12 @@ export const EyeOffIcon = ({ size = 16 }: { size?: number }) => (
 export const BookmarkIcon = ({ size = 16 }: { size?: number }) => (
 	<Icon size={size}>
 		<path d="M6 3h12v18l-6-4-6 4z" />
+	</Icon>
+);
+/** A star: make a choice the default (the footer's model). */
+export const StarIcon = ({ size = 16 }: { size?: number }) => (
+	<Icon size={size}>
+		<path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z" />
 	</Icon>
 );
 /** A folder with a plus: a new session in a folder. */

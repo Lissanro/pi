@@ -43,8 +43,8 @@ version 2; absent: `{ 1, [{ 1, null }] }`):
   terminals, reading unread answers, `Sessions.fork`, and peer messages (the conversations broker).
 - Clients learn it through the session row (`Sessions` version 4, catalog schema 4; version 5: null labels); the
   worker pushes it inside the switch, before answering, and at every start (`treeSelf`). Clients built before still
-  bind: the providers accept `Sessions` 3, 4 and 5 and `SessionTree` 1, mapping rows and the tree back (no `main`/`branches` for 3, a null
-  label as the session title for 4, no labels for `SessionTree` 1). A web page or TUI viewing the previous main conversation follows a switch.
+  bind: the providers accept `Sessions` 3, 4 and 5 and `SessionTree` 1 and 2, mapping rows and the tree back (no `main`/`branches` for 3, a null
+  label as the session title for 4, no labels for `SessionTree` 1; 2 lacks only `branch`). A web page or TUI viewing the previous main conversation follows a switch.
 - Earlier branches are read-only (`ReadOnlyConversations`): only the main conversation takes input (send, dequeue,
   configure); Stop stays allowed. A branch left while it works keeps running in the background: its run and queued
   input go on, its sidebar row shows the working mark, and its answer counts as unread. To watch or stop it, switch
@@ -101,6 +101,28 @@ What the sidebar and the TUI selector call a branch: `label` in `p2.main`, store
   null branches other than conversation 1 once, in one commit: the fork point's message (`parent.at`; for an Edit that
   is the entry before the edited message), else the branch's first own user message.
 
+### Sending in a new branch
+
+Navigating to where the main conversation already ends changes nothing (pi: choosing the current position is a no-op),
+so a branch after the last answer is made with the next message instead: "send in a new branch" (Alt+Enter while
+idle, or Send's menu). It keeps an idea apart without writing a throwaway message first, and leaves no empty
+branch behind when the owner changes their mind.
+
+```
+1 "add login"  2 answer            ← main conversation 1, ends at 2
+Alt+Enter "what about OAuth?"
+→ conversation 3 forked at 2, labelled "what about OAuth?", becomes main; the message is sent there
+→ conversation 1 still ends at 2
+```
+
+`SessionTree.branch({ conversation, label })` (owner, version 3) forks the top-level conversation at its last entry
+(from the conversation storing that entry, as `navigate`), labels the fork (one line, `PREVIEW_LENGTH`) and makes it
+the main conversation, in one commit; the client then sends the message to the fork as any message. Fork and send are
+two steps (Durable's first input is a `submit()` after the fork): a lost connection between them leaves the message in
+the composer or editor and an empty branch, which is harmless. Clients offer it only to the owner, in the main
+conversation, idle and with entries; while a run is busy the same key queues a follow-up (pi's Alt+Enter). The label
+is the message (attachments only: their names).
+
 ### Tree
 
 `SessionTree.tree()` (owner) returns the nodes (entry, parent node, role, preview), the main conversation and its last
@@ -117,14 +139,63 @@ node:
   adapted from pi's `tree-selector.ts` (layout, active path, paging, label input; no filters or folding). A branch's
   label shows before its first own message (`TreeNode.conversation` names the branch storing a node).
 - Web: "Edit" beside the owner's view of a user message (on hover; always shown on touch screens) and "Branch from
-  here" under an answer, in the main conversation. Under the session in the sidebar, from two branches on, one row per
+  here" under an answer, in the main conversation; not under the conversation's last entry, where the composer sends
+  in a new branch instead. The composer has one Send button: a tap sends (steers while a run is busy); a long press
+  on it (touch), a right-click, the Menu key or Shift+F10, or ArrowUp while it has focus opens its menu of both ways
+  to send (Elanor's `Menu`, opened by Send's own handlers: a trigger would open on the click that sends): Send and
+  "Send in a new branch" while idle, "Steer" and "Follow up" while a run is busy (owner decisions: one
+  button, no second control; Elanor's component; it replaced the Steer toggle). Alt+Enter is the second way at once.
+  The menu takes the focus and gives it back when it closes (Escape returns to Send); opened from the keyboard or a
+  mouse its first item has it. On a phone the keyboard closes while the menu is open. Under the session in the sidebar, from two branches on, one row per
   branch (`Sessions` rows' `branches`: the stored labels, null for the session title, newest first in a stable order,
   the current one marked in place), behind the session row's expand control, which also shows its subagents
   (collapsed by default, expanded while a subagent is shown); choosing one switches the session to its end
   (`SessionTree.select`). The worker
   pushes `p2.main` (`treeSelf`: `main` and the branches with their labels) at start and inside each `SessionTree`
   method that changes it, before the method answers (nothing else changes `p2.main`).
+- TUI: `app.message.followUp` (Alt+Enter) sends in a new branch while idle (`ChatSurface.sendAlternate`).
+- Web: the tree panel (below).
 - Search indexes each branch's own entries (after its fork point).
+
+### Tree panel
+
+The web's view of the whole tree, as a table of contents beside the transcript (`plugins/tree/web.tsx`,
+`TreePanel.tsx`, `toc.ts`, `entry-in-view.ts`; Elanor's `TableOfContents`). The top bar's branch button (slot
+`tree-actions`, beside the terminal's and the workspace's) opens it in the side panel (`Route.panel` "tree"; a sheet
+on phones). The owner's only, as `SessionTree` is.
+
+```
+first / Echo: first
+    [Session title] second / Echo: second    ← conversation 1, inset under the turn it left, secondary colour
+┃ [Current: retry] other / Echo: other         ← the current branch at the top level; ┃ the turn in view
+```
+
+- **Order:** oldest first, as the transcript beside it reads; a panel in the opposite direction moves against the chat
+  while scrolling.
+- **Turns:** one item per turn: a user message with its final answer as a second line (an answer that is a turn of its
+  own: one something was forked from, or one starting a branch). The agent's intermediate steps (the text it wrote
+  before calling tools, which the chat shows inside the turn's collapsed steps) are left out. The tree does not mark
+  them, so the shape does: an answer followed by exactly one message, another answer, is a step; a final answer is
+  followed by a user message or ends a branch. An answer something was forked from stays.
+- **Branches:** the current branch's turns are the top level, in the primary text colour. Every other branch is a list
+  nested under the turn it was forked after, inset one step per level, in the secondary colour; a branch's chain
+  continues in its own conversation, branches of it nest deeper. Branches started before the first message are listed
+  apart at the top.
+- **Indicator:** Elanor's bar marks the turn in view in the main conversation's transcript (the last turn of the
+  current branch starting above the middle of the transcript, where a revealed message is centred; read from the rows'
+  `data-entry`), and the panel scrolls to keep it visible. A chosen turn stays marked until the reader scrolls the
+  transcript (wheel, touch, its scrollbar, keys): near the transcript's end the reveal cannot centre it, so the turn in
+  view would be an earlier one.
+- **Labels:** at each branch's last turn (null: the session title); the main one reads "Current: …". A main branch
+  without messages of its own yet sits at the turn it continues. Other branches without own messages are not shown:
+  the tree does not say where they were forked.
+- **Jumping:** the panel only moves through the tree (owner decision: Edit and Branch from here are the transcript's,
+  not repeated here). Choosing a turn of the current branch shows it in the transcript. Choosing a turn of another
+  branch switches the session to the branch storing the turn's first message (`SessionTree.select`: the session
+  continues at that branch's end), then shows the turn there. On phones the panel, a sheet over the chat, closes.
+- **Updates:** the panel reads the tree again when the session row's `main`, `branches` or `updatedAt` (a new
+  message) changes, not per streamed part: a read scans the whole history.
+- Tests: `tree-toc.test.ts` (turns and nesting), `ui-tree-panel.test.ts`.
 
 ## Later
 

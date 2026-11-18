@@ -61,6 +61,11 @@
 			"types": "./dist/telemetry-sqlite/node.d.ts",
 			"import": "./dist/telemetry-sqlite/node.js"
 		},
+		"./telemetry-ingest": {
+			"source": "./src/telemetry-ingest/index.ts",
+			"types": "./dist/telemetry-ingest/index.d.ts",
+			"import": "./dist/telemetry-ingest/index.js"
+		},
 		"./http": {
 			"source": "./src/node/http/index.ts",
 			"types": "./dist/node/http/index.d.ts",
@@ -169,9 +174,9 @@
 		"@earendil-works/pi-telemetry": "1.5.2"
 	},
 	"peerDependencies": {
-		"esbuild": "0.28.2",
-		"react": "19.3.0",
-		"ws": "8.21.0"
+		"esbuild": "^0.28.2",
+		"react": "^19.3.0",
+		"ws": "^8.21.0"
 	},
 	"peerDependenciesMeta": {
 		"esbuild": {

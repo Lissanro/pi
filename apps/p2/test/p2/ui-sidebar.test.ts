@@ -15,7 +15,7 @@ import { Models } from "../../plugins/models/contract.ts";
 import { Projects } from "../../plugins/projects/contract.ts";
 import { Sessions, SidebarSettings } from "../../plugins/sessions/contract.ts";
 import { folderKey, projectKey } from "../../plugins/sessions/sidebar/model.ts";
-import { Browser, browserTests } from "./browser.ts";
+import { Browser, browserTests, COMPOSER, setComposer } from "./browser.ts";
 import { type Fixture, holdIn, startFixture, until } from "./helpers.ts";
 
 /** Each rollup's key, then its sessions' titles, or its groups' names with their sessions' titles. */
@@ -254,7 +254,7 @@ describe("sidebar rollups", { skip: !browserTests }, () => {
 		await browser.open(`http://127.0.0.1:${fixture.server.port}/new`);
 		await browser.click(`.sidebar-group${withAttribute("data-key", folderKey(null, target))} .group-new`);
 		await browser.wait(`!document.querySelector('.offline') && document.body.textContent.includes('Faux Model')`);
-		await browser.evaluate(setInput(".composer textarea", "Folder start"));
+		await browser.evaluate(setComposer("Folder start"));
 		await browser.click("button[aria-label=Send]");
 		await browser.wait(`location.pathname.startsWith('/s/')`);
 		const rows = await until(sessions.sessions, (list) => list?.some((row) => row.title.startsWith("Folder start")));
@@ -273,7 +273,7 @@ describe("sidebar rollups", { skip: !browserTests }, () => {
 		await browser.wait(
 			`document.querySelector('.cwd-join')?.textContent==='in zebra' && !document.querySelector('.offline') && document.body.textContent.includes('Faux Model')`,
 		);
-		await browser.evaluate(setInput(".composer textarea", "Project start"));
+		await browser.evaluate(setComposer("Project start"));
 		await browser.click("button[aria-label=Send]");
 		await browser.wait(`location.pathname.startsWith('/s/')`);
 		const rows = await until(sessions.sessions, (list) => list?.some((row) => row.title.startsWith("Project start")));
@@ -285,7 +285,7 @@ describe("sidebar rollups", { skip: !browserTests }, () => {
 		);
 		// The next new session joins no project.
 		await browser.click(".new-session");
-		await browser.wait(`document.querySelector('.composer textarea') && !document.querySelector('.cwd-join')`);
+		await browser.wait(`document.querySelector('${COMPOSER}') && !document.querySelector('.cwd-join')`);
 		projects.release();
 	});
 
@@ -301,7 +301,15 @@ describe("sidebar rollups", { skip: !browserTests }, () => {
 		await chat.send({ text: "slow-tool", requestId: "working" }, BACKGROUND_CONTEXT);
 		// Working: a frame around a Recents row's glyph, a spinner on a group's session row (it has no glyph).
 		await browser.wait(`Boolean(${inRecents}.querySelector('.nav-icon.working > .working-frame'))`);
-		await browser.wait(`Boolean(document.querySelector(${JSON.stringify(`${group} .session-row .working-mark`)}))`);
+		const spinner = `document.querySelector(${JSON.stringify(`${group} .session-row .run-mark[data-state=working]`)})`;
+		await browser.wait(`Boolean(${spinner})`);
+		// The spinner outside a conversation's rows keeps its 10px box, named "Working".
+		assert.deepEqual(
+			await browser.evaluate<unknown>(
+				`[${spinner}.offsetWidth, ${spinner}.offsetHeight, ${spinner}.getAttribute('role'), ${spinner}.getAttribute('aria-label'), ${spinner}.title]`,
+			),
+			[10, 10, "img", "Working", "Working"],
+		);
 		// A collapsed group frames its own icon while a session it hides works.
 		await settings.setCollapsed({ key: folderKey(null, work), collapsed: true }, BACKGROUND_CONTEXT);
 		await browser.wait(`Boolean(document.querySelector(${JSON.stringify(`${group} .group-row .working-frame`)}))`);

@@ -12,7 +12,7 @@ import { Models } from "../../plugins/models/contract.ts";
 import { Sessions } from "../../plugins/sessions/contract.ts";
 import { type Child, Subagents } from "../../plugins/subagents/contract.ts";
 import type { Host, RefIn } from "../../src/runtime/chord.ts";
-import { Browser, browserTests } from "./browser.ts";
+import { Browser, browserTests, COMPOSER } from "./browser.ts";
 import { type Fixture, holdIn, startFixture, until } from "./helpers.ts";
 
 const SCRIPT = `return await tools.agent({ prompt: 'json {"ok":true}', label: "Check ok", schema: { type: "object" }, tools: [] });`;
@@ -108,6 +108,26 @@ describe("one-shot agents and subagent archiving in the browser", { skip: !brows
 		);
 	});
 
+	it("focuses no composer when a sidebar row opens a read-only conversation, and the next writable one's", async () => {
+		await browser.open(`http://127.0.0.1:${fixture.server.port}/s/${session}`);
+		await browser.wait(`document.querySelector('${COMPOSER}') && !document.querySelector('.offline')`);
+		// Any focus of a composer counts, also one gone in the next render (the previous screen's).
+		await browser.evaluate(
+			`window.composerFocused = false; document.addEventListener('focusin', (e) => { if (e.target.matches('${COMPOSER}')) window.composerFocused = true; }, true)`,
+		);
+		const header = ".sidebar-section[data-key=recent] .session-header.has-subagents";
+		await browser.click(`${header} .subagent-toggle`);
+		await browser.click(`.sidebar-section[data-key=recent] a.agent-row[href$="/c/${agent.conversationId}"]`);
+		await browser.wait(
+			`location.pathname.endsWith('/c/${agent.conversationId}') && document.querySelector('.subagent-wrap .subagent-bar')`,
+		);
+		assert.equal(await browser.evaluate<boolean>(`window.composerFocused`), false);
+		await browser.click(`${header} a.session-main`);
+		await browser.wait(
+			`location.pathname === '/s/${session}' && document.activeElement === document.querySelector('${COMPOSER}')`,
+		);
+	});
+
 	it("stops a working one-shot agent from its bar", async () => {
 		const chat = await holdIn(owner, Chat, { session, conversation: 1 }, "participant");
 		await chat.send(
@@ -150,7 +170,7 @@ describe("one-shot agents and subagent archiving in the browser", { skip: !brows
 		await browser.open(`http://127.0.0.1:${fixture.server.port}/s/${session}/c/${helper.conversationId}`);
 		await browser.wait(`document.querySelector('.subagent-bar .text-action')?.textContent==='Archive'`);
 		assert.equal(await browser.evaluate(text(".topbar .sub-tag")), "subagent");
-		assert.equal(await browser.evaluate(`document.querySelector('.composer textarea')!==null`), true);
+		assert.equal(await browser.evaluate(`document.querySelector('${COMPOSER}')!==null`), true);
 		await browser.click(".subagent-bar .text-action");
 		await until(
 			list.children,
@@ -216,11 +236,11 @@ describe("one-shot agents and subagent archiving in the browser", { skip: !brows
 			await browser.evaluate(text(".subagent-wrap .subagent-bar span")),
 			`Tools: none · in ${worktree.replace(/^\/home\/[^/]+/, "~")}`,
 		);
-		// The sidebar row shows its own location (it stays there when the session moves).
-		assert.equal(
-			await browser.evaluate(text(".nav-row:has(> .subagent-row.active) .subagent-location")),
-			worktree.replace(/^\/home\/[^/]+/, "~"),
+		// Its row's tooltip names its own location (it stays there when the session moves).
+		const tooltip = await browser.evaluate<string>(
+			`document.querySelector('.nav-row:has(> .subagent-row.active) .subagent-row').title`,
 		);
+		assert.equal(tooltip.split("\n")[1], `Works in ${worktree.replace(/^\/home\/[^/]+/, "~")}`);
 		await browser.click('button[aria-label="Workspace files and changes"]');
 		await browser.wait(`[...document.querySelectorAll('.workspace-name')].some(e=>e.textContent==='marker.txt')`);
 		assert.equal(await browser.evaluate(`document.querySelectorAll('.workspace-name').length`), 1);

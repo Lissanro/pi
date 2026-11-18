@@ -1,19 +1,22 @@
-// p2's plugins on Chord v2's plugin component: plugin directories under plugins/, each facet of kind `server` or
-// `worker` built on its own against p2's plugin API (`@p2/app/v1`) and the packages a facet shares with its host,
-// and evaluated with this process's instances of them (host-packages.ts). TUI and web facets stay in p2's own bundles
-// (bundles.ts).
+// p2's plugins on Chord v2's plugin component: plugin directories under plugins/, each facet of kind `server`,
+// `worker` or `web` built on its own against p2's plugin API (`@p2/app/v1`) and the packages a facet shares with its
+// host: server and worker facets evaluated with this process's instances of them (host-packages.ts), web facets served
+// to pages by Chord's web surface (server.ts) and evaluated there with the page's (src/hosts/web/main.tsx). TUI facets
+// stay in p2's own bundle (bundles.ts).
+
 import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { createPlugins, type Plugins, type PluginsError } from "@earendil-works/chord/plugins";
-import * as articulated from "articulated";
+import { WEB_PREFIX } from "@earendil-works/chord/surfaces";
 import * as discordJs from "discord.js";
 import * as api from "../api/v1/index.ts";
 import * as apiNode from "../api/v1/node.ts";
 import * as apiServer from "../api/v1/server.ts";
 import { SHARED_PACKAGES, WORKER_PACKAGES } from "./host-packages.ts";
+import { WEB_PACKAGES } from "./web/packages.ts";
 
 export type PluginName = string;
 export type FacetKind = "server" | "worker" | "web" | "tui";
@@ -26,26 +29,36 @@ export const PLUGINS_DIRECTORY = fileURLToPath(new URL("../../plugins/", import.
 export const BASE_DIRECTORY = fileURLToPath(new URL("../", import.meta.url));
 const FACET_KINDS = ["server", "worker", "web", "tui"] as const;
 
+/** Where pages load web facets' assets from (the web surface's). */
+export const WEB_ASSETS = `${WEB_PREFIX}assets/`;
+
 /** p2's plugin API: one version so far. */
 export const API = { name: "@p2/app", versions: ["v1"] } as const;
 
 /**
- * The host packages of server facets: the API's kind-neutral, Node and server modules, the shared packages, discord.js
- * (the discord plugin's bot) and articulated (the views plugin's text rooms): a plugin cannot bundle a package from
- * the app's hoisted node_modules.
+ * The host packages of server facets: the API's kind-neutral, Node and server modules, the shared packages, and
+ * discord.js (the discord plugin's bot; a plugin cannot bundle a package from the app's hoisted node_modules).
  */
 export const SERVER_PACKAGES = {
 	"@p2/app/v1": api,
 	"@p2/app/v1/node": apiNode,
 	"@p2/app/v1/server": apiServer,
-	articulated,
 	"discord.js": discordJs,
 	...SHARED_PACKAGES,
 };
 
-/** A directory listing, alphabetical: every subdirectory with at least one facet file is a plugin. */
+/** The plugins of `roots`, alphabetical; the first root that has a name wins it. */
+export function listRoots(roots: readonly string[]): PluginListing {
+	const plugins = new Map<PluginName, PluginFacets>();
+	for (const root of roots)
+		for (const [name, facets] of listPlugins(root)) if (!plugins.has(name)) plugins.set(name, facets);
+	return new Map([...plugins].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+
+/** A directory listing, alphabetical: every subdirectory with at least one facet file is a plugin (none: no directory). */
 export function listPlugins(directory: string = PLUGINS_DIRECTORY): PluginListing {
 	const plugins = new Map<PluginName, PluginFacets>();
+	if (!existsSync(directory)) return plugins;
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		if (!entry.isDirectory()) continue;
 		const facets: Partial<Record<FacetKind, string>> = {};
@@ -71,24 +84,29 @@ export function selectPlugins(listing: PluginListing, requested?: readonly strin
 export type P2Plugins = { readonly plugins: Plugins; readonly directory: string; close(): void };
 
 /**
- * p2's plugins: every plugin of plugins/, or exactly `selection` (tests). A selection is a copy of plugins/ in which the
- * other plugins keep only their non-facet files: their contracts stay importable, their facets are gone.
+ * p2's plugins: every plugin of plugins/, or exactly `selection` (tests), and every plugin of the user root `user`
+ * (after them: a built-in wins a name, the clash reported). A selection is a copy of plugins/ in which the other
+ * plugins keep only their non-facet files: their contracts stay importable, their facets are gone.
  */
 export function createP2Plugins(
 	selection: readonly string[] | undefined,
 	onError: (error: PluginsError) => void,
 	context: Context = BACKGROUND_CONTEXT,
+	user?: string,
+	publicPath: string = WEB_ASSETS,
 ): P2Plugins {
 	const directory = selection === undefined ? PLUGINS_DIRECTORY : selectedCopy(selection);
 	const plugins = createPlugins(
 		{
-			roots: [{ path: directory, required: true }],
+			roots: [{ path: directory, required: true }, ...(user === undefined ? [] : [user])],
 			api: API,
 			base: [BASE_DIRECTORY],
 			kinds: {
 				server: { platform: "node", hostPackages: Object.keys(SERVER_PACKAGES) },
 				worker: { platform: "node", hostPackages: Object.keys(WORKER_PACKAGES) },
+				web: { platform: "browser", hostPackages: WEB_PACKAGES },
 			},
+			publicPath,
 			onError,
 		},
 		context,

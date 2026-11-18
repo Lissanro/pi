@@ -97,6 +97,13 @@ export type SubmissionDraft = {
 			 * answered and waits for its `afterRun` tasks is still busy, and such an input queues and starts the next run.
 			 */
 			readonly whenIdle?: "reject";
+			/**
+			 * What `Conversation.abort()` and abort cascades do with the input while it is queued: `withdraw` (default)
+			 * settles it `unanswered` with reason `aborted`; `keep` leaves it queued, as a failed run leaves its queue under
+			 * `afterFailedRun: "keep"`, so the next input places it and that run answers it. For input its sender cannot
+			 * take back, such as another agent's message. `Submission.abort()` withdraws it either way.
+			 */
+			readonly onAbort?: "withdraw" | "keep";
 			/** Place the input as this entry; default `pi.user` without data. The kind must not start with `pi.`. */
 			readonly entry?: InputEntry;
 	  }
@@ -496,8 +503,20 @@ export type Wrap<Tool extends ToolRegistration = ToolRegistration> =
 	| { readonly section: string; wrap(section: PromptSection<Tool>): PromptSection<Tool> };
 
 /** Named bundle of code; installed in a registry and selected by conversations by name. */
+/**
+ * A named group of tools for code mode: the extension that brings the tools declares it. `description` is one line,
+ * shown in the `codemode` prompt section; `instructions` is the longer how-to, returned only by `describeNamespace()`;
+ * `searchTools()` searches both.
+ */
+export type ToolNamespace = { readonly name: string; readonly description: string; readonly instructions?: string };
+
 export interface Extension<Tool extends ToolRegistration = ToolRegistration> {
 	readonly name: string;
+	/**
+	 * The code-mode namespace of this extension's tools (a tool named by several extensions belongs to the first). The
+	 * `codemode` section lists it while the extension is selected, also before it has any tools.
+	 */
+	readonly namespace?: ToolNamespace;
 	readonly tools?: readonly Tool[];
 	readonly sections?: readonly PromptSection<Tool>[];
 	readonly hooks?: readonly HookRegistration[];

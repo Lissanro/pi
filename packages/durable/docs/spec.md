@@ -375,6 +375,8 @@ type SubmissionDraft = {
       readonly whenBusy?: "steer" | "followUp" | "reject";
       /** `reject`: an idle conversation rejects the input with `ConversationIdle` (section 6). */
       readonly whenIdle?: "reject";
+      /** `keep`: a conversation abort or abort cascade leaves the input queued (section 6). */
+      readonly onAbort?: "withdraw" | "keep";
       readonly entry?: never;
     }
   | {
@@ -1093,7 +1095,7 @@ watch. An idle wait does not guarantee placement of queued passive writes.
 `abortTask()` commits `abortRequested`, then signals and joins the active run;
 the scheduler then starts the abort invocation and marks the foreground-owned
 subtree in its next reconcile commit (section 5.4). `Conversation.abort()` withdraws queued
-input submissions, marks non-background tasks selected by ordinary ownership
+input submissions (except `onAbort: "keep"` ones, section 6), marks non-background tasks selected by ordinary ownership
 traversal, signals them, and resolves only after that scope is ordinarily idle.
 Passive writes and background subtrees survive. Conversation idle means no live
 non-background task selected from that conversation. Harness idle applies the
@@ -2561,7 +2563,8 @@ created there after the cascade. Deriving the marks in their own commit
 keeps them out of the owner's commit, which may already have written the tasks
 involved. Every conversation the cascade reaches is treated like
 `Conversation.abort()`: its queued input submissions become `unanswered` with
-reason `aborted` and leave its inbox, while queued writes stay. The cascade starts
+reason `aborted` and leave its inbox, except `onAbort: "keep"` inputs, while
+queued writes stay. The cascade starts
 below the cancelled task, so that task's own conversation keeps its queue.
 Held outcomes `failed`, `faulted`, `orphaned`, and `aborted` record the same
 durable cancellation intent as an abort mark; `completed` does not. Conversation
@@ -3095,8 +3098,8 @@ wait in the built-in inbox document, an ordered list of tagged items:
 
 ```ts
 type InboxItem =
-  /** `entry` is the input's `InputEntry` (`kind` and optional `data`), present when given. */
-  | { readonly id: SubmissionId; readonly mode: "steer" | "followUp"; readonly content: UserInput; readonly entry?: InputEntry }
+  /** `entry` is the input's `InputEntry` (`kind` and optional `data`), present when given; `onAbort` only as `keep`. */
+  | { readonly id: SubmissionId; readonly mode: "steer" | "followUp"; readonly content: UserInput; readonly entry?: InputEntry; readonly onAbort?: "keep" }
   /** `entry` is the write's `EntryDraft`, stored as plain JSON. */
   | { readonly id: SubmissionId; readonly mode: "write"; readonly entry: JsonObject };
 
@@ -3235,7 +3238,14 @@ selected before the new input.
 A `Submission` waits until `done` or `unanswered`; abort withdraws only a still-
 queued submission, reports `already_placed` for a placed input, and reports
 `settled` for any terminal submission. Conversation abort withdraws queued
-steer/follow-up submissions but keeps writes for later placement.
+steer/follow-up submissions but keeps writes for later placement, and keeps
+inputs submitted with `onAbort: "keep"`: they stay queued as after a failed run
+under `afterFailedRun: "keep"`, so the next input or queued write places them
+and its run answers them. It is for input its sender cannot take back, such as
+another agent's message, which a person's Stop must not drop. `Submission.abort()`
+withdraws a kept input too: it is the explicit withdrawal, and a host that must
+empty the queue withdraws kept inputs with it. Run failures follow
+`afterFailedRun` alone.
 
 Boundary selection is deterministic by item ID, with the settings'
 `steeringMode` and `followUpMode` (section 2.2), read at each boundary on the
@@ -4720,6 +4730,26 @@ exits after 30 s without images (`{ worker: false }` prepares them inline);
 does not take images still gets the image; pi-ai replaces it with a placeholder
 in requests, and the diagnostic says so.
 
+Images reach the model in two other ways, which `/images/fit` fits with any
+processor before they are stored, so the transcript, and with it the provider's
+prompt cache, never changes later (nothing is fitted per request):
+`fitImage(bytes, mimeType, limits, processor)` and `fitImages(content, limits,
+processor)` fit a host's input before it submits it, and
+`createFitImagesExtension(processor)` (the `fit-images` extension) is an
+`afterTool` hook that fits the images of every result a model-issued call
+writes, whichever tool made them, with an `info` diagnostic (code `image`)
+saying what changed. Nested calls' results are left as they are: the calling
+program gets them, not the model. Hooks of extensions installed before it see
+the images unfitted. The limits are the conversation model's when the image
+enters (`imageLimits(model)`, exported by `/tools`); a later switch to a model
+with smaller limits does not refit stored images. Every image goes through the
+processor, which decodes it, as the coding agent's images do, so a damaged
+image never reaches the transcript; its type is read from its bytes, and one
+the processor cannot prepare, or fails on, and malformed base64, is left out
+with a note. Unlike the coding agent, which keeps a tool's original image when
+it cannot process it, the image is left out: kept, it would fail every later
+request. `/images/fit` does not load Photon.
+
 For text, `read` reads a file through `openBinaryReader`: image detection reads
 the header (and a PNG's chunk headers), `scanLines` counts and locates the
 selected lines, and only the shown head is read and decoded, so its cost and transfer are bounded by the
@@ -4920,10 +4950,16 @@ recorded in the start data, so a resumed script maps results as it began.
 
 The tool's description is fixed: the script environment and its globals. The
 extension's `codemode` prompt section lists the agent's `callable` tools as
-TypeScript declarations, grouped by `namespaces` (a tool belongs to the one with
-the longest matching name prefix), within an inline budget of 3000 estimated
-tokens: every namespace places its cheapest tool before any places a second,
-and what does not fit is said so and found with `searchTools()`. Scripts find
+TypeScript declarations, ungrouped tools first, then every namespace a selected
+extension declares (`Extension.namespace`; a tool several extensions name belongs
+to the first one's), by name, as `## <name>` and its one-line description, listed
+also while it has no tools (an MCP server waiting for sign-in) and without tool
+counts, so the section changes only with the declared tools. Deferred tools are
+never declared there. Declarations fit an inline budget of 3000 estimated tokens:
+every namespace places its cheapest tool before any places a second, and what does
+not fit is said so and found with `searchTools()`. A namespace's `instructions`
+are returned by `describeNamespace()` only; `searchTools()` searches its name,
+description and instructions. Scripts find
 tools with `ALL_TOOLS`, `searchTools(query, { limit?, namespace? })` (BM25),
 `describeTool(name)`, and `describeNamespace(name)`, answered from the start
 data and journaled like other globals. The result's content is a

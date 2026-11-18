@@ -18,14 +18,14 @@ import {
 	CommandSearches,
 	Commands,
 	closeLayers,
+	getNavigation,
+	type Layer,
 	MoreIcon,
 	NEW_SESSION,
 	navigate,
 	openLayer,
 	openPage,
-	PiLogo,
 	rememberMains,
-	Slot,
 	SlotList,
 	Slots,
 	startNewSession,
@@ -43,14 +43,14 @@ import {
 } from "@p2/app/v1/web";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Envs } from "../envs/contract.ts";
-import { directoryPickerLayer } from "../envs/contract.web.tsx";
-import { Projects, placeOn } from "../projects/contract.ts";
+import { DirectoryPicker, directoryPickerLayer } from "../envs/contract.web.tsx";
+import { type ProjectPlace, Projects, placeOn } from "../projects/contract.ts";
 import { SidebarRollups } from "../rollups/contract.ts";
 import { Search, SessionReads } from "../search/contract.ts";
 import { SessionStatus } from "../status/contract.ts";
-import { Subagents } from "../subagents/contract.ts";
+import { type Child, Subagents } from "../subagents/contract.ts";
 import { SessionTree } from "../tree/contract.ts";
-import { BranchSheet } from "./BranchSheet.tsx";
+import { BRANCH_SHEET, BranchSheet, branchOf } from "./BranchSheet.tsx";
 import { SESSION_COMMANDS, SESSION_PAGES, SESSION_SEARCH } from "./commands.tsx";
 import { type Operation, type Session, Sessions, SidebarSettings, type SidebarWindow } from "./contract.ts";
 import { type DrawerRows, DrawerRowsContext } from "./contract.web.tsx";
@@ -64,6 +64,7 @@ import {
 	moved,
 	type NewTarget,
 	ordered,
+	PROJECTS,
 	ROLLUPS,
 	type RollupContext,
 	type SidebarRow,
@@ -71,10 +72,17 @@ import {
 	type Wanting,
 	wantingOf,
 } from "./sidebar/model.ts";
+import { NEW_PROJECT, NewProjectSheet, newProjectLayer, PROJECT_FOLDER, placeOf } from "./sidebar/NewProjectSheet.tsx";
 import { publishPage, usePageData } from "./sidebar/page-data.ts";
 import { type CodeSource, RollupSheet } from "./sidebar/RollupSheet.tsx";
 import { folderName } from "./sidebar/Row.tsx";
 import { SidebarView, useNow } from "./sidebar/Sidebar.tsx";
+
+/** Closes the top layer only (a sheet), keeping those below it (a phone's drawer). */
+const closeTopLayer = () => void getNavigation().close((route) => ({ ...route, layers: route.layers.slice(0, -1) }));
+
+/** A session without subagents (one value, so its rows keep their identity across renders). */
+const NO_SUBAGENTS: readonly Child[] = [];
 
 const subscribeVisibility = (listener: () => void) => {
 	document.addEventListener("visibilitychange", listener);
@@ -83,10 +91,12 @@ const subscribeVisibility = (listener: () => void) => {
 /** Whether the page is shown (not a background tab or a hidden app). */
 const usePageVisible = () => useSyncExternalStore(subscribeVisibility, () => document.visibilityState === "visible");
 
-/** The owner's sidebar header start: the Pi logo, unless a plugin puts its own there (the Familiar's). */
-const brand = <Slot name="drawer-brand" fallback={<PiLogo compact />} />;
+/** Rows before the sidebar's "New session", each a list item (`sidebar-start:<name>`, e.g. the Familiar's). */
+const startRows = <SlotList prefix="sidebar-start" />;
 /** Icon buttons at the footer's end, before the theme switch (`sidebar-actions:<name>`, e.g. the Settings gear). */
 const actions = <SlotList prefix="sidebar-actions" />;
+/** Icon buttons in the header, before the collapse button (`sidebar-header:<name>`, e.g. the scope prompt's). */
+const headerActions = <SlotList prefix="sidebar-header" />;
 
 /** The sidebar's New session: the new-session screen, without the project or model chosen before. */
 const newSession = () => startNewSession();
@@ -161,7 +171,7 @@ function useSidebarData() {
 	const owner = useOwner();
 	const status = keptIn(useObject(SessionStatus, {}), "reader");
 	const agents = keptIn(useObject(Subagents, {}), "reader");
-	const { fail } = useComposerState();
+	const { fail, focusWhenOpen } = useComposerState();
 	const [list, edit] = useOptimisticCall(useReadable(keptIn(service, "owner", "guest")?.sessions), applyRow, fail);
 	const statuses = useReadable(status?.statuses);
 	const children = useReadable(agents?.children);
@@ -190,10 +200,11 @@ function useSidebarData() {
 					env: session.env ?? null,
 					worker: {
 						busy,
+						work: statuses?.[session.id]?.work ?? {},
 						error: statuses?.[session.id]?.error,
 						unread: (answers?.[session.id] ?? 0) > (reads?.[session.id] ?? 0),
 					},
-					subagents: children?.[session.id] ?? [],
+					subagents: children?.[session.id] ?? NO_SUBAGENTS,
 					operation: operationOf(operations, session.id, dismiss),
 				};
 			}),
@@ -253,21 +264,40 @@ function useSidebarData() {
 		[settings, now, route.session],
 	);
 	// A session opens at its main conversation; `/s/<id>` would open conversation 1, which redirects there.
-	const onOpen = useCallback(
-		(session: string, conversation?: number) =>
-			navigate({ session, conversation: conversation ?? list?.find((each) => each.id === session)?.main ?? 1 }),
+	const targetOf = useCallback(
+		(session: string, conversation?: number) => ({
+			session,
+			conversation: conversation ?? list?.find((each) => each.id === session)?.main ?? 1,
+		}),
 		[list],
+	);
+	// The opened composer takes the focus, unless a touch opened it: that would open the keyboard, which a tap on the
+	// composer does.
+	const onOpen = useCallback(
+		(session: string, conversation?: number) => {
+			const target = targetOf(session, conversation);
+			focusWhenOpen(target);
+			navigate(target);
+		},
+		[targetOf, focusWhenOpen],
 	);
 	// The restored row is back at once; the session opens once the server has it (an archived one would bounce).
 	const onRestore = useCallback(
 		(id: string, conversation?: number) => {
 			if (!catalog) return;
+			const target = targetOf(id, conversation);
+			const cancel = focusWhenOpen(target);
 			edit({ id, change: { archivedAt: null } }, async () => {
-				await catalog.restore({ id }, BACKGROUND_CONTEXT);
-				onOpen(id, conversation);
+				try {
+					await catalog.restore({ id }, BACKGROUND_CONTEXT);
+				} catch (error) {
+					cancel();
+					throw error;
+				}
+				navigate(target);
 			});
 		},
-		[catalog, edit, onOpen],
+		[catalog, edit, targetOf, focusWhenOpen],
 	);
 	const searchHeld = useObject(Search, owner ? {} : undefined);
 	const search = liveIn(searchHeld, "owner");
@@ -323,9 +353,10 @@ function Sidebar() {
 	const { route, catalog, owner, fail, list, edit, rows, answers, reads, marks, search, settings, changeSettings } =
 		data;
 	const { rollups, rollupsHeld, entries, context, view, onOpen, onRestore } = data;
+	const { focusWhenOpen } = useComposerState();
 	// Project glyphs for groups and the sessions of flat lists; the owner's only (guests read no projects).
 	const glyphs = useMemo(() => (owner ? glyphsOf(context) : undefined), [owner, context]);
-	// Sessions a plugin's sidebar entry shows (the Familiar's, in `drawer-brand`) are left out of the rollups.
+	// Sessions a plugin's sidebar entry shows (the Familiar's, a `sidebar-start` row) are left out of the rollups.
 	const [apart, setApart] = useState<Readonly<Record<string, readonly string[]>>>({});
 	const listApart = useCallback(
 		(key: string, ids: readonly string[]) => setApart((current) => ({ ...current, [key]: ids })),
@@ -379,20 +410,30 @@ function Sidebar() {
 	);
 	// The row marks the chosen branch at once; the view follows once the session's main conversation moved.
 	const onBranch = useCallback(
-		(session: string, conversation: number) =>
+		(session: string, conversation: number) => {
+			const cancel = focusWhenOpen({ session, conversation });
 			edit({ id: session, change: { main: conversation } }, async () => {
-				await withTree(session, (tree) => tree.select({ conversation }, BACKGROUND_CONTEXT));
+				try {
+					await withTree(session, (tree) => tree.select({ conversation }, BACKGROUND_CONTEXT));
+				} catch (error) {
+					cancel();
+					throw error;
+				}
 				navigate({ session, conversation });
-			}),
-		[withTree, edit],
+			});
+		},
+		[withTree, edit, focusWhenOpen],
 	);
-	const [renaming, setRenaming] = useState<{ session: string; conversation: number }>();
-	const onRenameBranch = useCallback(
-		(session: string, conversation: number) => setRenaming({ session, conversation }),
-		[],
-	);
+	// A branch's rename sheet: a layer the branch row's "Rename branch…" opens (commands.tsx).
+	const branchSheet = useSheet(BRANCH_SHEET);
+	const renaming = branchOf(branchSheet?.locator);
 	const renamed = renaming && list?.find((each) => each.id === renaming.session);
 	const branch = renamed?.branches.find((each) => each.conversation === renaming?.conversation);
+	// A layer naming no branch of the loaded sessions (an old address, a branch of a deleted session) goes away.
+	const staleBranchSheet = branchSheet !== undefined && list !== undefined && branch === undefined;
+	useEffect(() => {
+		if (staleBranchSheet) closeLayers();
+	}, [staleBranchSheet]);
 	const renameBranch = (session: Session, conversation: number, label: string | null) =>
 		edit(
 			{
@@ -494,6 +535,19 @@ function Sidebar() {
 			...(live ? { onRefresh: refresh } : {}),
 		};
 	};
+	const projectFolder = useSheet(PROJECT_FOLDER);
+	const newProject = useSheet(NEW_PROJECT);
+	const newPlace = placeOf(newProject?.locator);
+	/** Each step of New project is a layer over the rollup's options: Back returns to the previous one. */
+	const pushLayer = (layer: Layer) => {
+		const nav = getNavigation();
+		void nav.push({ ...nav.route, layers: [...nav.route.layers, layer] });
+	};
+	const createProject = async (name: string, place: ProjectPlace) => {
+		const live = projectsHeld && liveIn(projectsHeld, "owner");
+		if (!live) throw new Error("Not connected");
+		await live.create({ name, place }, BACKGROUND_CONTEXT);
+	};
 	/** A rollup's options: its window, and moving it among the rollups. */
 	const rollupActions = (key: string) => {
 		const at = rollups.findIndex((rollup) => rollup.key === key);
@@ -517,14 +571,13 @@ function Sidebar() {
 				now={view.now}
 				page={route.page}
 				newSession={route.newSession === true}
-				brand={brand}
+				startRows={startRows}
 				guest={guest}
 				activeId={route.session}
 				conversationId={route.conversation}
 				connected={connected}
 				onOpen={onOpen}
 				onBranch={catalog ? onBranch : undefined}
-				onRenameBranch={catalog ? onRenameBranch : undefined}
 				onRestore={onRestore}
 				onNew={newSession}
 				onNewIn={ownerNewIn}
@@ -533,6 +586,7 @@ function Sidebar() {
 				onCollapse={owner ? onCollapse : undefined}
 				onPage={openPage}
 				onCollapseSidebar={toggleSidebar}
+				headerActions={headerActions}
 				footerActions={actions}
 			/>
 			{optionsOf && (
@@ -541,17 +595,40 @@ function Sidebar() {
 					section={optionsOf}
 					code={codeOf(optionsOf.key)}
 					now={view.now}
+					{...(optionsOf.key === PROJECTS
+						? { onNewProject: () => pushLayer(directoryPickerLayer(null, "~", PROJECT_FOLDER)) }
+						: {})}
 					{...rollupActions(optionsOf.key)}
 					onClose={closeLayers}
 				/>
 			)}
-			{renamed && branch && (
+			{projectFolder && (
+				<DirectoryPicker
+					sheet={PROJECT_FOLDER}
+					title="Project folder"
+					env={null}
+					value="~"
+					onChange={(env, path) => pushLayer(newProjectLayer({ env, path }))}
+					onClose={closeLayers}
+				/>
+			)}
+			{newProject && newPlace && (
+				<NewProjectSheet
+					key={newProject.locator}
+					place={newPlace}
+					taken={context.projects.map((project) => project.name)}
+					onCreate={(name) => createProject(name, newPlace)}
+					onClose={closeLayers}
+				/>
+			)}
+			{catalog && renamed && branch && (
 				<BranchSheet
 					title={renamed.title}
 					conversation={branch.conversation}
 					label={branch.label}
 					onSave={(label) => renameBranch(renamed, branch.conversation, label)}
-					onClose={() => setRenaming(undefined)}
+					// Only the sheet closes: a phone's drawer it was opened over stays open.
+					onClose={closeTopLayer}
 				/>
 			)}
 			{sessionSheet && catalog && viewed && route.conversation === viewed.main && (

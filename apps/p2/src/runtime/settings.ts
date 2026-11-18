@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { type AuthOperationOptions, StringEnum } from "@earendil-works/pi-ai";
 import { arr, bool, compile, int, obj, opt, type Static, str } from "@earendil-works/pi-schema";
 import { stripBom, stripJsonComments } from "./config-json.ts";
@@ -71,10 +72,11 @@ const schema = obj({
 		}),
 	),
 	/**
-	 * p2 addition: how much memory, in MiB, all custom views' rooms may keep together (messages kept for peers that have
-	 * not taken them, keyed messages); past it a room refuses new messages until it drains. Default 64.
+	 * p2 addition: record telemetry (Chord's §29: the server's `<data>/telemetry.sqlite`, session workers' and owners'
+	 * pages' spans sent to it, the Traces pane and the `telemetry_*` tools). Default off. Read once at the server's start
+	 * (`readTelemetrySetting`): a change needs a restart.
 	 */
-	viewRoomsMemory: opt(int({ minimum: 1 })),
+	telemetry: opt(bool()),
 });
 const validator = compile(schema);
 export type MobileSettings = Static<typeof schema>;
@@ -101,4 +103,16 @@ export async function saveSettings(path: string, value: unknown, options?: AuthO
 		}),
 		options,
 	);
+}
+
+/**
+ * settings.json's `telemetry` at `path` as the server reads it once at its start: on only when the file says `true` (a
+ * missing or invalid file: off).
+ */
+export function readTelemetrySetting(path: string): boolean {
+	try {
+		return parseSettings(readFileSync(path, "utf8")).telemetry === true;
+	} catch {
+		return false;
+	}
 }

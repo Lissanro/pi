@@ -1,7 +1,8 @@
 // The sidebar's view, built from Elanor's sidebar and side navigation: one navigation group per rollup, in the layout
 // of what it collected (its relevant sessions, groups with theirs, or only its name), and the guest's list of shared
 // sessions. Every row has the same shape (Row.tsx's `NavRow`): a marker, a label, details and controls at the trailing
-// end. The owner's first row opens the new-session screen. A rollup's name opens its list page, its chevron shows or
+// end. The owner's list starts with the rows plugins put there (the Familiar's), then the row that opens the
+// new-session screen. A rollup's name opens its list page, its chevron shows or
 // hides its sessions; a group's row shows or hides its sessions; a session's row opens it (and shows its
 // conversations), its chevron shows or hides them. It renders what model.ts computes and calls back for every action.
 import { type Grant, grantMode } from "@p2/app/v1";
@@ -12,25 +13,17 @@ import {
 	NavMoreIcon,
 	NEW_SESSION,
 	PiLogo,
-	routePath,
 	Sidebar,
 	SideNavigation,
 	ThemeButton,
+	useLinkHref,
 } from "@p2/app/v1/web";
 import { memo, type ReactNode, useEffect, useId, useState } from "react";
 import { GlyphIcon } from "../../glyphs/GlyphIcon.tsx";
+import { IconMarker, WorkingMark } from "./marks.tsx";
 import type { Glyphs, GroupSection, NewTarget, Section, SidebarRow } from "./model.ts";
-import {
-	HiddenAttention,
-	IconMarker,
-	NavRow,
-	pageHref,
-	type RowActions,
-	SessionItem,
-	Toggle,
-	useOpenedFrom,
-	WorkingMark,
-} from "./Row.tsx";
+import { NavRow } from "./NavRow.tsx";
+import { HiddenAttention, pageRoute, type RowActions, SessionItem, Toggle, useOpenedFrom } from "./Row.tsx";
 import "./style.css";
 
 /** The current time, again every minute: a rollup's window passes while the sidebar is shown. */
@@ -122,6 +115,7 @@ function GroupItem({ group, rows, actions }: { group: GroupSection; rows: RowAct
  */
 function RollupGroup({ section, rows, actions }: { section: Section; rows: RowActions; actions: HeadingActions }) {
 	const { page, onPage, onCollapse, onOptions, glyphs } = actions;
+	const linkHref = useLinkHref();
 	const listId = useId();
 	const collapsed = section.layout === "link" ? undefined : section.collapsed;
 	// A collapsed rollup lists nothing, whatever it has: "No activity" is for an open one with nothing to show.
@@ -135,7 +129,7 @@ function RollupGroup({ section, rows, actions }: { section: Section; rows: RowAc
 				selected={page === section.key}
 				className="rollup-row group-head"
 				linkClassName="group-label"
-				href={pageHref(section.key)}
+				href={linkHref(pageRoute(section.key))}
 				onActivate={() => onPage(section.key)}
 				label={section.name}
 				after={
@@ -216,14 +210,13 @@ export const SidebarView = memo(function SidebarView({
 	now,
 	page,
 	newSession,
-	brand,
+	startRows,
 	guest,
 	activeId,
 	conversationId,
 	connected,
 	onOpen,
 	onBranch,
-	onRenameBranch,
 	onRestore,
 	onNew,
 	onNewIn,
@@ -232,6 +225,7 @@ export const SidebarView = memo(function SidebarView({
 	onCollapse,
 	onPage,
 	onCollapseSidebar,
+	headerActions,
 	footerActions,
 }: {
 	/** Every session the reader may see, archived ones included (the guest's list). */
@@ -244,8 +238,8 @@ export const SidebarView = memo(function SidebarView({
 	page: string | undefined;
 	/** Whether the new-session screen is shown. */
 	newSession: boolean;
-	/** The owner's header start: the Pi logo, or what a plugin puts there (the `drawer-brand` slot: the Familiar's). */
-	brand: ReactNode;
+	/** The owner's rows before "New session", each a list item (the `sidebar-start:<name>` slots: the Familiar's). */
+	startRows?: ReactNode;
 	guest?: Grant;
 	activeId?: string;
 	conversationId: number;
@@ -253,8 +247,6 @@ export const SidebarView = memo(function SidebarView({
 	onOpen: (id: string, conversationId?: number) => void;
 	/** Switches a session to one of its `/tree` branches (the owner's). */
 	onBranch?: (id: string, conversationId: number) => void;
-	/** Asks for a new label of one of a session's `/tree` branches (the owner's). */
-	onRenameBranch?: (id: string, conversationId: number) => void;
 	onRestore: (id: string, conversationId?: number) => void;
 	onNew: () => void;
 	/** Starts a new session in a group; absent: groups have no "+". */
@@ -268,9 +260,12 @@ export const SidebarView = memo(function SidebarView({
 	/** Opens a rollup's or a group's list in the main area. */
 	onPage: (key: string) => void;
 	onCollapseSidebar: () => void;
+	/** Icon buttons in the owner's header, before the collapse button (e.g. the scope prompt's). */
+	headerActions?: ReactNode;
 	/** Icon buttons at the footer's end, before the theme switch (the owner's), e.g. the Settings gear. */
 	footerActions?: ReactNode;
 }) {
+	const linkHref = useLinkHref();
 	// The open session is selected in one place only: where it was opened from, else the first place it shows.
 	const openedFrom = useOpenedFrom();
 	const places = activeId === undefined ? [] : placesOf(sections, activeId);
@@ -283,7 +278,6 @@ export const SidebarView = memo(function SidebarView({
 		now,
 		onOpen,
 		onBranch,
-		onRenameBranch,
 		onRestore,
 	};
 	const headings: HeadingActions = { page, connected, onPage, onCollapse, onOptions, onNewIn, glyphs };
@@ -336,17 +330,21 @@ export const SidebarView = memo(function SidebarView({
 	return frame(
 		"Sessions",
 		<div className="drawer-header-row">
-			<div className="brand">{brand}</div>
+			<div className="brand">
+				<PiLogo compact />
+			</div>
+			{headerActions}
 			<Sidebar.Trigger className="collapse-sidebar" aria-label="Collapse sidebar" />
 		</div>,
 		<SideNavigation.Root className="sidebar-nav" aria-label="Rollups">
 			<SideNavigation.List className="sidebar-start">
+				{startRows}
 				<SideNavigation.Item>
 					<NavRow
 						selected={newSession}
 						className="group-row"
 						linkClassName="new-session"
-						href={routePath(NEW_SESSION)}
+						href={linkHref(NEW_SESSION)}
 						onActivate={onNew}
 						marker={<NavAddIcon size={16} />}
 						label="New session"
