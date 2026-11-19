@@ -154,7 +154,8 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 		expect(order).toEqual(["drainInput", "stop", "dispose"]);
 		const resumeCall = stdoutWrite.mock.calls.find((call) => String(call[0]).includes("To resume this session:"));
 		expect(resumeCall?.[0]).toBe(
-			`\x1b[2J\x1b[3J\x1b[H${chalk.dim("To resume this session:")} ${APP_NAME} --session test-session\n`,
+			// Command on its own line (#12237); screen cleared and flushed before exit.
+			`\x1b[2J\x1b[3J\x1b[H${chalk.dim("To resume this session:")}\n${APP_NAME} --session test-session\n`,
 		);
 	});
 
