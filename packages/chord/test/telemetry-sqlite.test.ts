@@ -5,6 +5,7 @@ import type {
 	TelemetryCarrier,
 	TelemetrySpan,
 } from "@earendil-works/pi-telemetry";
+import { telemetryNow } from "@earendil-works/pi-telemetry";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTelemetryAdapterConformance } from "../../telemetry/src/testing/index.ts";
 import type { SqliteDatabase } from "../src/sqlite/index.ts";
@@ -111,7 +112,15 @@ describe("SQLite telemetry buffering and aggregation", () => {
 
 	it("stores span times in whole microseconds of telemetryNow, read back as milliseconds", async () => {
 		vi.spyOn(Date, "now").mockReturnValue(20_001);
-		const clock = vi.spyOn(performance, "now").mockReturnValue(500);
+		const clock = vi.spyOn(performance, "now").mockReturnValue(60_000);
+		// The anchored clock is module state and survives from earlier tests, where the wall
+		// clock was mocked against the real monotonic clock. Re-anchor deterministically: a
+		// clock value far from any plausible earlier reading forces the tolerance re-anchor,
+		// and a second call at this test's own clock pins the anchor to wall - clock, so the
+		// stored times below do not depend on when the worker happened to start.
+		telemetryNow();
+		clock.mockReturnValue(500);
+		telemetryNow();
 		await using f = await fixture();
 		await f.telemetry.startSpan({ name: "root" }, async (span) => {
 			clock.mockReturnValue(500.125);
