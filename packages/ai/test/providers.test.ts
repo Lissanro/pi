@@ -105,6 +105,9 @@ describe("builtin providers", () => {
 			supportsOpenAIGrammarTools: true,
 		});
 		expect(getBuiltinModel("anthropic", "claude-haiku-4-5").compat?.supportsStrictTools).toBe(true);
+		const copilotClaude = getBuiltinModels("github-copilot").filter((model) => model.api === "anthropic-messages");
+		expect(copilotClaude.length).toBeGreaterThan(0);
+		for (const model of copilotClaude) expect(model.compat).toMatchObject({ supportsStrictTools: true });
 	});
 
 	it.skipIf(process.env.PI_DISABLE_CLOUD_PROVIDERS === "1")(

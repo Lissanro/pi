@@ -107,7 +107,7 @@ P2_FAKE=1 npm start          # http://127.0.0.1:8788, data in ~/.pi/p2
 ## Dev mode
 
 ```sh
-cd /home/badlogic/pi-private/apps/p2
+cd /home/badlogic/pi/apps/p2
 export PATH=/home/badlogic/node-v24.4.1-linux-x64/bin:$PATH
 # The proxy sets X-P2-Proxy-Secret: 1 on every request (never an owner grant).
 P2_ALLOWED_HOSTS=p2.mariozechner.at P2_PUBLIC_URL=https://p2.mariozechner.at \
@@ -1039,10 +1039,14 @@ call, hold, method, relay and activation; nothing is measured or walked for it. 
     is bold, `.session-title.unread`, whatever the status shows first), a red dot for a failure (`FailedDot`, what
     failed in its tooltip and accessible name). The two dots differ by colour only (owner decision); forced-colour mode
     keeps their colours. A subagent's status is `runState` of its `Child.failure`: busy, failed, or nothing (stopped,
-    reset, nothing to answer). A session's is its main conversation's, what wants the owner first: `failureOf`, then
-    unread, then working (the main conversation only; owner decision: a running subagent must not hide that the session
-    waits for the owner). While the status shows anything but working and some conversation runs, pi's dots (and the
-    count of running conversations, when more than one) show before the age (`BackgroundWork`, `.background-work`). Its main
+    reset, nothing to answer). A session's is what wants the owner first: `failureOf`, then unread, then working (any
+    of its conversations, its subagents' too, as the Familiar's row; owner decision: a running subagent must not hide
+    that the session waits for the owner). While the status shows a failure or an unread answer and some conversation
+    runs, pi's dots (and the count of running conversations, when more than one) show before the age (`BackgroundWork`,
+    `.background-work`). The
+    open session's main conversation says the same above its composer (the chat's `RunningAgents`, `.running-agents`):
+    pi's dots and the running subagents' and one-shot agents' names, each opening its conversation; on a phone the
+    drawer is closed, and an idle main conversation shows no wheel. Its main
     conversation's last run failure comes from the session worker (`SessionStatus` 3's `failure`, below). A collapsed
     group or rollup sums up what it hides (`hidden`, `activityOf` in `model.ts`): pi's dots with the working count, a
     warning sign with the failed count (`FailedMark`), a blue unread count. The top bars' menu button (`menu-badge`
