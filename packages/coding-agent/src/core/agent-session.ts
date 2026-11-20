@@ -2821,37 +2821,47 @@ export class AgentSession {
 		// sharing entries; editing one version never affects the other's content.
 		// Tool results carried by the edit block override the copies, and results
 		// whose tool call the edited message no longer makes stay on the original
-		// version.
+		// version. Deleted status lives on the entry, not the message, so each copy
+		// is re-marked from its source entry: without that, soft-deleted followers
+		// reappear on the new version.
 		const branch = this.sessionManager.getBranch();
 		const targetIndex = branch.findIndex((entry) => entry.id === target.entryId);
-		const followerMessages = branch
+		const followerEntries = branch
 			.slice(targetIndex + 1)
-			.filter((entry): entry is SessionMessageEntry => entry.type === "message")
-			.map((entry) => entry.message as Message | CustomMessage | BashExecutionMessage);
+			.filter((entry): entry is SessionMessageEntry => entry.type === "message");
 		const overrideById = new Map((block.toolResults ?? []).map((result) => [result.id, result]));
 		const blockCallIds = new Set(block.content.filter((c) => c.type === "toolCall").map((c) => c.id));
 
+		const appendFollower = (message: Message | CustomMessage | BashExecutionMessage, source: SessionMessageEntry) => {
+			const appendedId = this.sessionManager.appendMessage(message);
+			this.sessionManager.copyDeletedStatus(source.id, appendedId);
+		};
+
 		this.sessionManager.branch(targetEntry.parentId);
 		this.sessionManager.appendMessage(message);
-		for (const followerMessage of followerMessages) {
+		for (const followerEntry of followerEntries) {
+			const followerMessage = followerEntry.message as Message | CustomMessage | BashExecutionMessage;
 			if (followerMessage.role === "toolResult") {
 				const toolCallId = (followerMessage as ToolResultMessage).toolCallId;
 				if (!blockCallIds.has(toolCallId) && !overrideById.has(toolCallId)) continue;
 				const override = overrideById.get(toolCallId);
 				if (override) {
 					const base = followerMessage as ToolResultMessage;
-					this.sessionManager.appendMessage({
-						...base,
-						content: override.content,
-						isError: override.isError,
-					});
+					appendFollower(
+						{
+							...base,
+							content: override.content,
+							isError: override.isError,
+						},
+						followerEntry,
+					);
 					overrideById.delete(toolCallId);
 				} else {
-					this.sessionManager.appendMessage(followerMessage);
+					appendFollower(followerMessage, followerEntry);
 				}
 				continue;
 			}
-			this.sessionManager.appendMessage(followerMessage);
+			appendFollower(followerMessage, followerEntry);
 		}
 		// Results for tool calls the edited message has but the original version
 		// did not are appended after the copied followers.

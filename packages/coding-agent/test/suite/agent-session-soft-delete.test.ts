@@ -45,6 +45,51 @@ describe("AgentSession soft delete and restore", () => {
 		expect(entry?.deletedAt).toBeDefined();
 	});
 
+	it("editing a message keeps soft-deleted followers hidden on the new version", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage("answer one"),
+			fauxAssistantMessage("answer two"),
+			fauxAssistantMessage("answer three"),
+		]);
+		await harness.session.prompt("question one");
+		await harness.session.prompt("question two");
+		await harness.session.prompt("question three");
+
+		// Delete two assistant replies; the latest editable message is now the
+		// user message "question three".
+		const branch = harness.sessionManager.getBranch();
+		const assistantEntries = branch.filter(
+			(e) => e.type === "message" && (e as { message: { role: string } }).message.role === "assistant",
+		);
+		expect(harness.session.softDeleteMessage(assistantEntries[1]!.id)).toBe(true);
+		expect(harness.session.softDeleteMessage(assistantEntries[2]!.id)).toBe(true);
+		expect(visibleTexts(harness)).toEqual(["question one", "answer one", "question two", "question three"]);
+
+		// Edit the user message: the edit becomes a new swipe version whose
+		// followers are copies. The copies must carry the deleted status of their
+		// source entries, or the deleted replies reappear on the new version.
+		const result = harness.session.applyMessageEdits('<pi_edit id="0" role="user">question three edited</pi_edit>');
+		expect(result.versioned).toBe(1);
+		expect(visibleTexts(harness)).toEqual(["question one", "answer one", "question two", "question three edited"]);
+
+		// The model context does not see the deleted replies either.
+		const contextTexts = harness.sessionManager
+			.buildContextEntries()
+			.filter((e) => e.type === "message")
+			.map((e) => getMessageText((e as { message: Parameters<typeof getMessageText>[0] }).message));
+		expect(contextTexts).not.toContain("answer two");
+		expect(contextTexts).not.toContain("answer three");
+
+		// "answer three" follows the edit target, so the new version carries its
+		// own deleted copy; "answer two" precedes the target and stays a single
+		// shared entry: three entry-level units in total.
+		const deleted = harness.sessionManager.getDeletedUnits().filter((u) => !u.toolCallId);
+		expect(deleted).toHaveLength(3);
+	});
+
 	it("restores batched deletions context-earlier first", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

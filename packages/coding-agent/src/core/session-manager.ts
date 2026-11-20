@@ -1958,6 +1958,32 @@ export class SessionManager {
 	}
 
 	/**
+	 * Copy the soft-deleted status of a source entry onto a target entry: entry-level
+	 * `deletedAt`, or per-tool-call `deletedToolCalls` when the entry itself is not deleted
+	 * (a whole-entry mark already covers its tool-call marks, so they are not duplicated).
+	 * Timestamps are copied too, keeping restore order faithful. Used when a new swipe
+	 * version re-attaches follower entries: the copies are fresh entries, and deletion
+	 * marks live on entries, not on messages. The session file is rewritten when the
+	 * target changes.
+	 */
+	copyDeletedStatus(sourceEntryId: string, targetEntryId: string): void {
+		const source = this.byId.get(sourceEntryId);
+		const target = this.byId.get(targetEntryId);
+		if (!source || !target || source.type !== "message" || target.type !== "message") return;
+		const sourceMessage = source as SessionMessageEntry;
+		const targetMessage = target as SessionMessageEntry;
+		if (sourceMessage.deletedAt !== undefined) {
+			targetMessage.deletedAt = sourceMessage.deletedAt;
+			this._rewriteFile();
+			return;
+		}
+		if (sourceMessage.deletedToolCalls !== undefined && Object.keys(sourceMessage.deletedToolCalls).length > 0) {
+			targetMessage.deletedToolCalls = { ...sourceMessage.deletedToolCalls };
+			this._rewriteFile();
+		}
+	}
+
+	/**
 	 * Currently soft-deleted units, ordered by deletion time (latest first).
 	 * Tool-call deletions of an entry that is itself deleted are folded into
 	 * the entry-level unit (restoring the entry restores the whole message).
